@@ -9,7 +9,9 @@ carrying the relay's own error body.
 What GP would remember is remembered in `demo_gp_records` (app/models/demo_gp_record.py): the jobs, the
 POs registered into it, the receipts posted against them, buyers and customer addresses. The masters a
 real company sets up once and rarely touches - vendors, customers, tax, cost codes, sites, employees -
-are fixed and live below.
+are UBC's own (#1657): the build loads what it read from UBC's GP (`load`), and the simulated GP answers
+with them. Nothing it answers with is ever written back to UBC's GP. Until a build has loaded any, the
+made-up masters below stand in - and the made-up build (CI's) loads those.
 
 A real GP refuses plenty of things this does not: it is a stand-in good enough to walk every workflow,
 not a model of eConnect. The refusals it does make are the ones a user can reach from the screens, such
@@ -27,7 +29,7 @@ from app.demo import DEMO_BUYER_ID, DEMO_COMPANY, DEMO_COMPANY_NAME
 from app.errors import RelayCallError
 from app.models.demo_gp_record import DemoGpRecord
 
-# --- the fixed masters ------------------------------------------------------------------------------
+# --- the made-up masters ----------------------------------------------------------------------------
 
 VENDORS = [
     {
@@ -135,8 +137,24 @@ SITES = [
 
 UNITS_OF_MEASURE = ["Each", "Pair", "Box"]
 
-# The jobs the simulated GP starts with. The seed adopts them as the demo company's projects through the
-# same job sync a real company's are adopted by.
+# The made-up masters as the build loads them: the shape `load` takes UBC's in.
+MADE_UP_MASTERS = {
+    "vendors": VENDORS,
+    "vendor_addresses": {},
+    "customers": CUSTOMERS,
+    "customer_addresses": CUSTOMER_ADDRESSES,
+    "tax_details": TAX_DETAILS,
+    "tax_schedules": TAX_SCHEDULES,
+    "purchase_tax_schedules": PURCHASE_TAX_SCHEDULES,
+    "divisions": DIVISIONS,
+    "cost_code_master": {division: COST_CODE_MASTER for division in DIVISIONS},
+    "employees": EMPLOYEES,
+    "buyers": BUYERS,
+    "po_entry_options": {"shipping_methods": SHIPPING_METHODS, "sites": SITES, "units_of_measure": UNITS_OF_MEASURE},
+}
+
+# The made-up jobs the simulated GP starts with. The made-up build adopts them as the demo company's
+# projects through the same job sync a real company's are adopted by.
 JOBS = [
     {
         "job_number": "DEMO-1001",
@@ -222,9 +240,24 @@ def _next_number(session: Session, kind: str, prefix: str) -> str:
     return f"{prefix}{count + 1:06d}"
 
 
-def _job_record(job: dict) -> dict:
+def _masters(session: Session) -> dict:
+    """The masters the simulated GP answers with: the ones the build loaded, or the made-up ones."""
+    row = _get(session, "master", "masters")
+    return {**MADE_UP_MASTERS, **row.data} if row else MADE_UP_MASTERS
+
+
+def _employee_name(masters: dict, employee_id: str | None) -> str | None:
+    employee = next((e for e in masters["employees"] if e.get("employee_id") == employee_id), None)
+    if employee is None:
+        return None
+    return " ".join(p for p in (employee.get("first_name"), employee.get("last_name")) if p) or None
+
+
+def _job_record(job: dict, masters: dict = MADE_UP_MASTERS) -> dict:
     """A job in the shape the relay's list_jobs reads one back in."""
-    customer = next((c for c in CUSTOMERS if c["customer_number"] == job.get("customer_number")), None)
+    customer = next((c for c in masters["customers"] if c["customer_number"] == job.get("customer_number")), None)
+    estimator_id = job.get("estimator_id") or "DEMOEST1"
+    manager_id = job.get("ws_manager_id") or "DEMOPM1"
     return {
         "job_number": job["job_number"],
         "job_name": job.get("job_name"),
@@ -232,7 +265,7 @@ def _job_record(job: dict) -> dict:
         "closed_date": None,
         "closed_by": None,
         "customer_number": job.get("customer_number"),
-        "customer_name": customer["customer_name"] if customer else None,
+        "customer_name": job.get("customer_name") or (customer["customer_name"] if customer else None),
         "job_address_code": job.get("job_address_code"),
         "billto_address_code": job.get("billto_address_code") or "PRIMARY",
         "address1": job.get("address1") or "100 Demo Street",
@@ -241,13 +274,13 @@ def _job_record(job: dict) -> dict:
         "state": job.get("state") or "ON",
         "zip_code": job.get("zip_code") or "A1A 1A1",
         "country": job.get("country") or "Canada",
-        "division": job.get("division") or DIVISIONS[0],
+        "division": job.get("division") or masters["divisions"][0],
         "tax_schedule_id": job.get("tax_schedule_id") or "ON HST",
         "use_tax_schedule_id": job.get("use_tax_schedule_id"),
-        "estimator_id": job.get("estimator_id") or "DEMOEST1",
-        "estimator_name": "Erin Estimator",
-        "ws_manager_id": job.get("ws_manager_id") or "DEMOPM1",
-        "ws_manager_name": "Morgan Manager",
+        "estimator_id": estimator_id,
+        "estimator_name": _employee_name(masters, estimator_id),
+        "ws_manager_id": manager_id,
+        "ws_manager_name": _employee_name(masters, manager_id),
         "created_date": job.get("created_date") or "2026-09-01",
         "schedule_start_date": job.get("schedule_start_date"),
         "scheduled_completion_date": job.get("scheduled_completion_date"),
@@ -262,11 +295,11 @@ def _job_record(job: dict) -> dict:
 
 
 def _jobs(session: Session) -> list[dict]:
-    """Every job, the fixed ones written in on first use so a job update has a row to change. The ongoing
-    projects of the stored inventory snapshot (#1638) are jobs from the start too: the seed adopts them
-    like the fixed ones, and puts their hardware on them."""
+    """Every job. A build loads its jobs (`load`); before any has, the made-up ones are written in on first
+    use, so a job update has a row to change - with the jobs the stored legacy list holds anything against
+    (#1638)."""
     rows = _all(session, "job")
-    if not rows:
+    if not rows and _get(session, "master", "masters") is None:
         # Under the job lock and read again: two first calls at once must not both write the fixed jobs.
         _lock(session, "job")
         rows = _all(session, "job")
@@ -282,8 +315,38 @@ def _jobs(session: Session) -> list[dict]:
     return [r.data for r in rows]
 
 
-def _vendor(vendor_id: str) -> dict:
-    vendor = next((v for v in VENDORS if v["vendor_id"] == (vendor_id or "").strip()), None)
+def load(session: Session, *, masters: dict, jobs: list[dict], pos: list[dict]) -> None:
+    """What a build starts the simulated GP with (#1657): the masters it answers with, the jobs the job sync
+    adopts as projects, and POs already open in GP. Whatever it held is gone - the build wiped it. A
+    PO's lines may say what was received before the copy (`received_base`); receipts count on top."""
+    _put(session, "master", "masters", masters)
+    for job in jobs:
+        _put(session, "job", job["job_number"], _job_record(job, masters))
+    for po in pos:
+        _put(session, "po", po["po_number"], po)
+
+
+def update_masters(session: Session, masters: dict) -> None:
+    """The nightly sync's fresh read of the masters (#1657). The caller commits."""
+    _put(session, "master", "masters", masters)
+
+
+def add_jobs(session: Session, jobs: list[dict]) -> list[str]:
+    """Jobs that are not in the simulated GP yet, added as GP would add them (#1657): the nightly sync's.
+    Returns the numbers added. The caller commits."""
+    _lock(session, "job")
+    masters = _masters(session)
+    known = {j["job_number"] for j in _jobs(session)}
+    added = []
+    for job in jobs:
+        if job["job_number"] not in known:
+            _put(session, "job", job["job_number"], _job_record(job, masters))
+            added.append(job["job_number"])
+    return added
+
+
+def _vendor(session: Session, vendor_id: str) -> dict:
+    vendor = next((v for v in _masters(session)["vendors"] if v["vendor_id"] == (vendor_id or "").strip()), None)
     if vendor is None:
         raise _refuse("vendor_not_found", f"Vendor '{vendor_id}' does not exist in {DEMO_COMPANY}", vendor_id=vendor_id)
     return vendor
@@ -301,10 +364,35 @@ def _received(session: Session) -> dict[str, dict[int, float]]:
 
 
 def _po_with_receipts(po: dict, received: dict[str, dict[int, float]]) -> dict:
-    """A PO as the relay reads it back: its lines, each with what has been received against it."""
+    """A PO as the relay reads it back: its lines, each with what has been received against it - what a
+    copied PO had received in GP before it was copied, and the receipts posted here since."""
     by_ord = received.get(po["po_number"]) or {}
-    lines = [{**ln, "received": by_ord.get(int(ln["ord"]), 0.0)} for ln in po["lines"]]
+    lines = []
+    for ln in po["lines"]:
+        line = {k: v for k, v in ln.items() if k != "received_base"}
+        line["received"] = float(ln.get("received_base") or 0) + by_ord.get(int(ln["ord"]), 0.0)
+        lines.append(line)
     return {**po, "lines": lines}
+
+
+_NO_ADDRESS = {
+    "code": "PRIMARY",
+    "contact": None,
+    "address1": "1 Supplier Way",
+    "address2": None,
+    "address3": None,
+    "city": "Toronto",
+    "state": "ON",
+    "postal_code": "M1M 1M1",
+    "country": "Canada",
+    "phone": None,
+}
+
+
+def _vendor_addresses(session: Session, vendor: dict) -> list[dict]:
+    """A vendor's addresses: UBC's own where the build read them, one made-up address otherwise."""
+    addresses = _masters(session)["vendor_addresses"].get(vendor["vendor_id"])
+    return addresses or [{**_NO_ADDRESS, "contact": vendor.get("contact")}]
 
 
 # --- the ops ------------------------------------------------------------------------------------------
@@ -316,63 +404,45 @@ def _list_vendors(session: Session, payload: dict) -> dict:
         "vendors": [
             {
                 "vendor_id": v["vendor_id"],
-                "vendor_name": v["vendor_name"],
-                "vendor_class": v["vendor_class"],
-                "status": 1,
-                "currency": v["currency"],
-                "shipping_method": "LOCAL DELIVERY",
-                "purchase_address_code": "PRIMARY",
-                "contact": v["contact"],
+                "vendor_name": v.get("vendor_name"),
+                "vendor_class": v.get("vendor_class"),
+                "status": v.get("status", 1),
+                "currency": v.get("currency") or "CAD",
+                "shipping_method": v.get("shipping_method") or "LOCAL DELIVERY",
+                "purchase_address_code": v.get("purchase_address_code") or "PRIMARY",
+                "contact": v.get("contact"),
             }
-            for v in VENDORS
+            for v in _masters(session)["vendors"]
         ],
     }
 
 
 def _get_vendor_contact(session: Session, payload: dict) -> dict:
-    vendor = _vendor(payload.get("vendor_id"))
+    vendor = _vendor(session, payload.get("vendor_id"))
     return {
         "company": DEMO_COMPANY,
         "vendor_id": vendor["vendor_id"],
-        "vendor_name": vendor["vendor_name"],
-        "contact_name": vendor["contact"],
-        "email": vendor["email"],
+        "vendor_name": vendor.get("vendor_name"),
+        "contact_name": vendor.get("contact"),
+        "email": vendor.get("email"),
     }
 
 
 def _list_vendor_addresses(session: Session, payload: dict) -> dict:
-    vendor = _vendor(payload.get("vendor_id"))
-    return {
-        "company": DEMO_COMPANY,
-        "vendor_id": vendor["vendor_id"],
-        "addresses": [
-            {
-                "code": "PRIMARY",
-                "contact": vendor["contact"],
-                "address1": "1 Supplier Way",
-                "address2": None,
-                "address3": None,
-                "city": "Toronto",
-                "state": "ON",
-                "postal_code": "M1M 1M1",
-                "country": "Canada",
-                "phone": "4165550100",
-            }
-        ],
-    }
+    vendor = _vendor(session, payload.get("vendor_id"))
+    return {"company": DEMO_COMPANY, "vendor_id": vendor["vendor_id"], "addresses": _vendor_addresses(session, vendor)}
 
 
 def _list_po_entry_options(session: Session, payload: dict) -> dict:
-    return {
-        "company": DEMO_COMPANY,
-        "shipping_methods": SHIPPING_METHODS,
-        "sites": SITES,
-        "units_of_measure": UNITS_OF_MEASURE,
-    }
+    return {"company": DEMO_COMPANY, **_masters(session)["po_entry_options"]}
 
 
 def _buyers(session: Session) -> list[dict]:
-    return BUYERS + [r.data for r in _all(session, "buyer")]
+    """The masters' buyers, with the demo buyer everybody registers as always among them."""
+    buyers = list(_masters(session)["buyers"])
+    if not any(b.get("buyer_id") == DEMO_BUYER_ID for b in buyers):
+        buyers.insert(0, BUYERS[0])
+    return buyers + [r.data for r in _all(session, "buyer")]
 
 
 def _list_buyers(session: Session, payload: dict) -> dict:
@@ -395,29 +465,40 @@ def _create_buyer(session: Session, payload: dict) -> dict:
 
 
 def _list_tax_details(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "tax_details": TAX_DETAILS}
+    return {"company": DEMO_COMPANY, "tax_details": _masters(session)["tax_details"]}
 
 
 def _list_tax_schedules(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "tax_schedules": TAX_SCHEDULES}
+    return {"company": DEMO_COMPANY, "tax_schedules": _masters(session)["tax_schedules"]}
 
 
 def _list_purchase_tax_schedules(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "tax_schedules": PURCHASE_TAX_SCHEDULES}
+    return {"company": DEMO_COMPANY, "tax_schedules": _masters(session)["purchase_tax_schedules"]}
+
+
+def _cost_codes(session: Session, division: str | None) -> list[dict]:
+    """A division's cost code master; a division the masters have none for takes the first one's."""
+    by_division = _masters(session)["cost_code_master"]
+    if division and division in by_division:
+        return by_division[division]
+    return next(iter(by_division.values()), [])
 
 
 def _list_cost_codes(session: Session, payload: dict) -> dict:
+    """A job's cost codes. A job set up in GP carries its division's codes, so those are its codes here."""
     job = (payload.get("job") or "").strip()
     if not job:
         raise _refuse("missing_job", "job is required")
-    return {"company": DEMO_COMPANY, "job": job, "cost_codes": COST_CODE_MASTER}
+    record = next((j for j in _jobs(session) if j["job_number"] == job), None)
+    codes = _cost_codes(session, record.get("division") if record else None)
+    return {"company": DEMO_COMPANY, "job": job, "cost_codes": codes}
 
 
 def _list_cost_code_master(session: Session, payload: dict) -> dict:
     division = (payload.get("division") or "").strip()
     if not division:
         raise _refuse("missing_division", "division is required")
-    return {"company": DEMO_COMPANY, "division": division, "cost_codes": COST_CODE_MASTER}
+    return {"company": DEMO_COMPANY, "division": division, "cost_codes": _cost_codes(session, division)}
 
 
 def _list_jobs(session: Session, payload: dict) -> dict:
@@ -432,8 +513,9 @@ def _job_setup_health(session: Session, payload: dict) -> dict:
     else:
         single = (payload.get("job") or "").strip() or None
         asked = [single] if single else sorted(known)
+    divisions = {j["job_number"]: j.get("division") for j in _jobs(session)}
     jobs = [
-        {"job_number": j, "ok": True, "active_cost_code_count": len(COST_CODE_MASTER), "issues": []}
+        {"job_number": j, "ok": True, "active_cost_code_count": len(_cost_codes(session, divisions[j])), "issues": []}
         for j in asked
         if j in known
     ]
@@ -441,12 +523,12 @@ def _job_setup_health(session: Session, payload: dict) -> dict:
 
 
 def _list_customers(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "customers": CUSTOMERS}
+    return {"company": DEMO_COMPANY, "customers": _masters(session)["customers"]}
 
 
 def _customer_addresses(session: Session, customer: str) -> list[dict]:
     created = [r.data for r in _all(session, "customer_address") if r.data.get("customer") == customer]
-    return CUSTOMER_ADDRESSES.get(customer, []) + [
+    return _masters(session)["customer_addresses"].get(customer, []) + [
         {"address_code": a["address_code"], "city": a.get("city"), "state": a.get("state")} for a in created
     ]
 
@@ -475,11 +557,11 @@ def _create_customer_address(session: Session, payload: dict) -> dict:
 
 
 def _list_divisions(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "divisions": DIVISIONS}
+    return {"company": DEMO_COMPANY, "divisions": _masters(session)["divisions"]}
 
 
 def _list_employees(session: Session, payload: dict) -> dict:
-    return {"company": DEMO_COMPANY, "employees": EMPLOYEES}
+    return {"company": DEMO_COMPANY, "employees": _masters(session)["employees"]}
 
 
 def _create_job(session: Session, payload: dict) -> dict:
@@ -492,7 +574,9 @@ def _create_job(session: Session, payload: dict) -> dict:
             "job_already_exists", f"Job '{job_number}' already exists in {DEMO_COMPANY}", job_number=job_number
         )
     fields = {k: v for k, v in payload.items() if v is not None and not isinstance(v, (list, dict))}
-    record = _job_record({**fields, "job_number": job_number, "created_date": str(payload.get("created_date") or "")})
+    record = _job_record(
+        {**fields, "job_number": job_number, "created_date": str(payload.get("created_date") or "")}, _masters(session)
+    )
     _put(session, "job", job_number, record)
     return {
         "job_number": job_number,
@@ -545,7 +629,7 @@ def _create_po(session: Session, payload: dict) -> dict:
     lines = payload.get("lines") or []
     if not lines:
         raise _refuse("invalid_payload", "a PO needs at least one line")
-    vendor = _vendor(header.get("vendor_id"))
+    vendor = _vendor(session, header.get("vendor_id"))
     _lock(session, "po")
     key = (payload.get("idempotency_key") or "").strip() or None
     if key is not None:
@@ -568,8 +652,8 @@ def _create_po(session: Session, payload: dict) -> dict:
         "po_number": po_number,
         "gp_status": 1,
         "vendor_id": vendor["vendor_id"],
-        "vendor_name": vendor["vendor_name"],
-        "currency": header.get("currency_id") or vendor["currency"],
+        "vendor_name": vendor.get("vendor_name"),
+        "currency": header.get("currency_id") or vendor.get("currency") or "CAD",
         "doc_date": doc_date,
         "freight": float(header.get("freight_amount") or 0),
         "modified_at": datetime.utcnow().isoformat(),
@@ -696,18 +780,13 @@ def _read_po_totals(session: Session, payload: dict) -> dict:
     if row is None:
         return {"company": DEMO_COMPANY, "totals": None}
     po = row.data
-    vendor = _vendor(po["vendor_id"])
+    vendor = _vendor(session, po["vendor_id"])
     subtotal = sum(ln["qty"] * ln["unit_cost"] for ln in po["lines"])
+    where = _vendor_addresses(session, vendor)[0]
     address = {
-        "name": vendor["vendor_name"],
-        "contact": vendor["contact"],
-        "address1": "1 Supplier Way",
-        "address2": None,
-        "address3": None,
-        "city": "Toronto",
-        "state": "ON",
-        "postal_code": "M1M 1M1",
-        "country": "Canada",
+        "name": vendor.get("vendor_name"),
+        "contact": where.get("contact") or vendor.get("contact"),
+        **{k: where.get(k) for k in ("address1", "address2", "address3", "city", "state", "postal_code", "country")},
     }
     return {
         "company": DEMO_COMPANY,
@@ -721,8 +800,8 @@ def _read_po_totals(session: Session, payload: dict) -> dict:
         },
         "header": {
             "shipping_method": "LOCAL DELIVERY",
-            "vendor_address_code": "PRIMARY",
-            "buyer_id": BUYERS[0]["buyer_id"],
+            "vendor_address_code": where.get("code") or "PRIMARY",
+            "buyer_id": DEMO_BUYER_ID,
             "currency": po.get("currency") or "CAD",
             "vendor_address": address,
             "ship_to_code": "MAIN",

@@ -16,6 +16,13 @@ How a caller ends up in it:
 GP for `DEMO` is simulated (app/services/demo_gp.py): the relay gateway answers a call for `DEMO`
 itself and never puts it on the socket, so nothing reaches a real GP.
 
+What is in it is built from UBC (app/services/demo_mirror.py): UBC's jobs as its projects, the legacy
+inventory list as its warehouse, UBC's open POs, and GP's masters behind the simulated GP. It is built
+once and kept - everybody in demo mode works in the same copy - and only an admin rebuilds it.
+
+Only an account of a UBC company turns demo mode on (#1658): UBC and its test company TUBC. Whichever of
+the two it is, the demo it lands in is the copy of UBC.
+
 `DEMO` is never a real company. It cannot be assigned to an account, is not offered in the admin
 switcher, and is skipped by every loop that walks the relay's real companies.
 """
@@ -31,8 +38,20 @@ DEMO_COMPANY_NAME = "Demo Company (simulated)"
 # master, so in demo mode the account's own is set aside for this one, which the simulated GP knows.
 DEMO_BUYER_ID = "DEMOBUYER"
 
+# The company the demo is a copy of (#1657).
+MIRROR_COMPANY = "UBC"
+
+# The companies whose accounts may turn demo mode on (#1658): UBC and its test company. UCSH and any
+# other company may not, however the account is set up.
+DEMO_ALLOWED_COMPANIES = frozenset({"UBC", "TUBC"})
+
 # The publicMetadata key the flag lives under.
 DEMO_MODE_METADATA_KEY = "demoMode"
+
+
+def may_use_demo_mode(company: str | None) -> bool:
+    """Whether an account working in `company` may turn demo mode on (#1658)."""
+    return (company or "").strip().upper() in DEMO_ALLOWED_COMPANIES
 
 
 def is_demo_company(company: str | None) -> bool:

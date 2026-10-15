@@ -1,11 +1,23 @@
-"""The demo company's starting state (#1608).
+"""The demo company's starting state (#1608): the build of the copy of UBC (#1657).
 
-The seed is built by running the app's own GraphQL mutations, in-process, as a demo identity - the same
-mutations the screens send. So every seeded row is in a state the screens themselves produce, and when a
-workflow changes shape the seed stops validating and the seed test fails in CI, instead of the demo
-quietly drifting away from the app.
+The build runs the app's own GraphQL mutations, in-process, as a demo identity - the same mutations the
+screens send. So every row it makes is in a state the screens themselves produce, and when a workflow
+changes shape the build stops validating and the demo mode test fails in CI, instead of the demo quietly
+drifting away from the app.
 
-What it leaves behind, by module:
+It builds from a source (app/services/demo_mirror.py) - UBC, or in CI the made-up company - and from any
+source leaves behind:
+
+  - GP (simulated): the source's masters and jobs, the jobs adopted as the demo company's projects
+    through the job sync.
+  - Warehouse: the legacy inventory list as the warehouse (see app/services/demo_snapshot.py): a
+    specialties job's inventory on its project, everything else in the stock pool.
+  - Import: the source's own hardware schedule on a project that has one, a made-up one built from the
+    legacy list on every other project the list has door hardware for.
+  - POs: the source's open POs, copied in through the GP PO mirror's own upsert.
+
+On top of that the made-up company runs its scripted workflow states - every module with something in
+each of its states - so CI walks every workflow once:
 
   - GP (simulated): four jobs, adopted as the demo company's projects through the job sync.
   - Warehouse: two buildings with shelf locations, shipment methods, a custom item type with an item,
@@ -18,9 +30,6 @@ What it leaves behind, by module:
   - Shop assembly: requests waiting, batched with a pull being picked, batched and pulled, rejected.
   - Shipping: requests waiting, rejected and accepted; shipments scheduled, picked up, delivered and
     cancelled; a return.
-  - The legacy inventory snapshot (#1638), when an admin has stored one: the company's real warehouse as
-    the stock pool, specialties on their projects, and every ongoing project with a made-up hardware
-    schedule to start an import from (see app/services/demo_snapshot.py).
 
 The demo identity is not a Clerk account: its roles, company and demo flag are written straight into the
 request context's memos, which is where `app.auth` would have put them after asking Clerk.
@@ -31,11 +40,14 @@ import base64
 import logging
 from datetime import date, timedelta
 
+from sqlalchemy import select
+
 from app.auth import DEMO_SEEDING_KEY, NEXUS_ADMIN_ROLE, TENANT_OWNER_ROLE, remember_display_name
 from app.database import SessionLocal
 from app.demo import DEMO_BUYER_ID, DEMO_COMPANY
-from app.repositories import demo_snapshot_repository
-from app.services import demo_snapshot
+from app.models.project import Project
+from app.repositories import gp_po_sync_repository
+from app.services import demo_gp, demo_mirror, demo_snapshot
 from app.services.demo_gp import COST_CODE_MASTER
 
 logger = logging.getLogger(__name__)
@@ -454,6 +466,9 @@ class _Demo:
 
     async def projects_from_gp(self) -> None:
         await self.s.gql(_SYNC_JOBS)
+        await self.load_projects()
+
+    async def load_projects(self) -> None:
         for project in (await self.s.gql(_PROJECTS))["projects"]:
             self.projects[project["projectId"]] = project["id"]
 
@@ -709,23 +724,15 @@ class _Demo:
             },
         )
 
-    async def legacy_inventory(self) -> None:
-        """The stored legacy inventory snapshot (#1638), as a company that has just adopted Nexus holds it:
-        every ongoing project's hardware moved into the stock pool to be pulled back from there, its
-        specialties already on it, and a hardware schedule on file to start the import from.
+    async def legacy_inventory(self, rows: list[demo_snapshot.SnapshotRow]) -> None:
+        """The legacy inventory list (#1638, #1657), as a company that has just adopted Nexus holds it:
+        a specialties job's inventory on its project, everything else moved into the stock pool to be
+        pulled back from there.
 
-        The inventory goes in through the legacy migration - the mutation that brought the real warehouse
-        across - and the schedules through the import's own finalize. Nothing is done without a stored
-        snapshot: the demo keeps only its made-up projects."""
-        with SessionLocal() as session:
-            rows = demo_snapshot_repository.rows(session)
+        It goes in through the legacy migration - the mutation that brought the real warehouse across.
+        Nothing is done without a stored list."""
         if not rows:
             return
-        # Every snapshot project was adopted from the simulated GP's jobs; one that was not is named here
-        # rather than failing the seed further on as a missing key.
-        missing = sorted(set(demo_snapshot.ongoing_projects(rows)) - set(self.projects))
-        if missing:
-            raise SeedError(f"legacy inventory: projects not adopted from the simulated GP: {', '.join(missing)}")
 
         # A legacy location can land on one the made-up warehouse already defines (A-1 02 is A / 1 / 2).
         listed = await self.s.gql(_LOCATIONS, warehouseId=self.warehouse_id)
@@ -752,7 +759,7 @@ class _Demo:
             for legacy, code, description, finish in demo_snapshot.catalog_items(rows)
         ]
         entries = []
-        for entry in demo_snapshot.inventory_entries(rows):
+        for entry in demo_snapshot.inventory_entries(rows, self.projects):
             aisle, row, bay = entry.location or (None, None, None)
             entries.append(
                 {
@@ -773,24 +780,87 @@ class _Demo:
             _MIGRATE_LEGACY_INVENTORY, input={"entries": entries, "catalogItems": catalog, "allowRerun": True}
         )
 
-        for schedule in demo_snapshot.schedules(rows):
-            await self.s.gql(
-                _FINALIZE,
-                input={
-                    "projectId": self.projects[schedule.project_number],
-                    "openings": schedule.openings,
-                    "hardwareItems": schedule.hardware_items,
-                    "scheduleFilename": f"{schedule.project_number}-hardware-schedule.xml",
-                },
-            )
+    async def import_schedules(self, source: demo_mirror.Source, *, only: set[str] | None = None) -> list[str]:
+        """A hardware schedule on every project that can have one: the source's own where it has one, a
+        made-up one from the legacy list on the others, so the import wizard offers "use last uploaded".
+        Finalized with no PO requests, so the hardware is there to be pulled back from the pool. `only`
+        limits it to those job numbers. Returns the job numbers given one."""
+        wanted = set(self.projects) if only is None else set(self.projects) & only
+        done = []
+        for job, schedule in sorted(source.schedules.items()):
+            if job in wanted:
+                await self.finalize(job, schedule["openings"], schedule["hardwareItems"])
+                done.append(job)
+        for schedule in demo_snapshot.schedules(source.rows, wanted - set(source.schedules)):
+            await self.finalize(schedule.project_number, schedule.openings, schedule.hardware_items)
+            done.append(schedule.project_number)
+        return done
+
+    async def finalize(self, job: str, openings: list[dict], hardware: list[dict]) -> None:
+        await self.s.gql(
+            _FINALIZE,
+            input={
+                "projectId": self.projects[job],
+                "openings": openings,
+                "hardwareItems": hardware,
+                "scheduleFilename": f"{job}-hardware-schedule.xml",
+            },
+        )
+
+    async def open_pos(self, source: demo_mirror.Source) -> None:
+        """The source's open POs, read back from the simulated GP and written in by the GP PO mirror's own
+        upsert - the same code that mirrors a real company's POs from its GP, so they land as that
+        company's do: on the project of their job, received as far as GP says."""
+        if source.open_pos:
+            await asyncio.to_thread(_mirror_pos, [po["po_number"] for po in source.open_pos])
 
 
-async def seed() -> None:
-    """Build the demo company's starting state. Assumes it is empty - `demo_reset.reset` wipes it first."""
+def nightly_demo() -> _Demo:
+    """The build's working state, for the nightly sync's additions (app/services/demo_build.py)."""
+    return _Demo(Seeder())
+
+
+def _mirror_pos(po_numbers: list[str]) -> None:
+    pos = demo_gp.call_sync("read_pos_by_number", {"po_numbers": po_numbers})["pos"]
+    with SessionLocal() as session:
+        projects = dict(
+            session.execute(select(Project.project_id, Project.id).where(Project.company == DEMO_COMPANY)).all()
+        )
+        for po in pos:
+            gp_po_sync_repository.upsert_mirrored_po(session, DEMO_COMPANY, po, projects)
+        session.commit()
+
+
+def _load_gp(source: demo_mirror.Source) -> None:
+    with SessionLocal() as session:
+        demo_gp.load(session, masters=source.masters, jobs=source.jobs, pos=source.open_pos)
+        session.commit()
+
+
+def _load_source() -> demo_mirror.Source:
+    with SessionLocal() as session:
+        return demo_mirror.load_source(session)
+
+
+async def seed(source: demo_mirror.Source | None = None) -> None:
+    """Build the demo company from `source`, the configured one when none is given. Assumes the demo
+    company is empty - `demo_reset.reset` wipes it first."""
+    if source is None:
+        source = await asyncio.to_thread(_load_source)
+    await asyncio.to_thread(_load_gp, source)
     demo = _Demo(Seeder())
     await demo.warehouse()
-    await demo.catalog()
     await demo.projects_from_gp()
+    if source.made_up:
+        await _scripted(demo)
+    await demo.legacy_inventory(source.rows)
+    await demo.import_schedules(source)
+    await demo.open_pos(source)
+
+
+async def _scripted(demo: _Demo) -> None:
+    """The made-up company's workflow states: something in every state of every module."""
+    await demo.catalog()
     await demo.doors_on_hand()
 
     # Tower A: everything ordered and received, then worked through the shop and out the door.
@@ -879,8 +949,6 @@ async def seed() -> None:
     await demo.s.gql(_REJECT_SHOP_REQUEST, id=demo.shop_requests[school], reason="Openings are being re-specified.")
 
     # Office Retrofit is left with no schedule: the project to try an import on.
-
-    await demo.legacy_inventory()
 
 
 def seed_blocking() -> None:

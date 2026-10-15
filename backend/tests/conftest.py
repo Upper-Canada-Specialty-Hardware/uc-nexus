@@ -5,6 +5,11 @@ from alembic.config import Config
 
 from alembic import command
 
+# Tests build the demo from the made-up company, never from UBC (#1657), and a TestClient does not start
+# the demo's nightly sync.
+os.environ.setdefault("DEMO_SOURCE", "made-up")
+os.environ.setdefault("DEMO_NIGHTLY_ENABLED", "false")
+
 
 @pytest.fixture(autouse=True)
 def _accounts_not_in_demo_mode(monkeypatch):

@@ -27,6 +27,7 @@ from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
 from app.services import (
+    demo_build,
     gp_job_sync,
     gp_outbox_worker,
     gp_po_sync,
@@ -245,6 +246,9 @@ async def lifespan(_app: FastAPI):
     # Inert until a relay advertising the feature connects (#679).
     if gp_sync_state.enabled():
         tasks.append(asyncio.create_task(gp_sync_state.run_forever()))
+    # The demo copy of UBC's nightly add-only sync (#1657). Asleep until 2am Toronto.
+    if demo_build.enabled():
+        tasks.append(asyncio.create_task(demo_build.run_forever()))
     try:
         yield
     finally:
@@ -647,8 +651,8 @@ def reset_data(request: Request):
         return JSONResponse(
             status_code=403,
             content={
-                "error": "You are in demo mode. Leave demo mode to reset all Nexus data; to reset the demo "
-                "data, use Reset demo data on the demo banner.",
+                "error": "You are in demo mode. Leave demo mode to reset all Nexus data. The demo itself is "
+                "rebuilt by a UC Nexus Admin, from Nexus Admin.",
                 "code": "FORBIDDEN",
             },
         )

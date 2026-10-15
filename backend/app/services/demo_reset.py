@@ -1,6 +1,8 @@
-"""Reset the demo company back to its starting state (#1608).
+"""Build the demo company from scratch (#1608, #1657).
 
-Reset is two things: delete every demo row, then run the seed (app/services/demo_seed.py).
+A build is two things: delete every demo row, then run the build (app/services/demo_seed.py). Since the
+demo became one persistent copy of UBC (#1657) it runs on the first switch-on ever and when an admin
+rebuilds it (app/services/demo_build.py), never because a user asked for a fresh start.
 
 Which rows are demo rows is worked out from the schema rather than listed by hand, so a table added
 later is covered without anybody remembering to add it here. A row is a demo row when
@@ -206,12 +208,11 @@ def _release_lock(conn) -> None:
 
 @contextmanager
 def no_reset_running():
-    """The reset lock, held around a change to what the next reset seeds from (#1638): the stored inventory
-    snapshot. A reset reads it at two moments, so a change between them would seed half of one and half of
-    another. Refused rather than waited for, as a second reset is, and two changes at once are refused too."""
+    """The build lock, held by work that must not run beside a build: the nightly sync's additions (#1657),
+    which a build starting half way would wipe. Refused rather than waited for, as a second build is."""
     lock = _acquire_lock()
     if lock is None:
-        raise ConflictError("The demo data is being reset, or the demo inventory changed. Wait a moment and retry.")
+        raise ConflictError("The demo is being built. Wait for it to finish and retry.")
     try:
         yield
     finally:
@@ -250,7 +251,7 @@ async def reset(*, only_if_empty: bool = False) -> bool:
         if only_if_empty:
             # Somebody else is seeding it right now; what they leave behind is the starting state.
             return False
-        raise ConflictError("The demo data is being reset already. Wait a moment and reload.")
+        raise ConflictError("The demo is being built already. Wait for it to finish.")
     try:
         if only_if_empty and await asyncio.to_thread(has_demo_data):
             return False

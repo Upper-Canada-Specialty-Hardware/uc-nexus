@@ -360,17 +360,15 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "resolveDeficiency": SIGNED_IN,
     "transferInventory": SIGNED_IN,
     # --- demo.py --------------------------------------------------------------------------
-    # #1608. `setMyDemoMode` is signed-in: every user turns demo mode on and off for themselves (#1629),
-    # and it only ever narrows an account to the demo company's made-up data. `resetDemoData` is
-    # tenant-owner tier, and its body refuses a caller who is not in demo mode, so a reset only ever
-    # touches the demo company. Putting any account into it is the admin's call alone.
-    "resetDemoData": TENANT_OWNERS,
+    # #1608. `setMyDemoMode` is signed-in: a user turns demo mode on and off for themselves (#1629), and it
+    # only ever narrows an account to the demo company; its body refuses turning it on outside a UBC
+    # company (#1658). Putting any account into it is the admin's call alone.
     "setMyDemoMode": SIGNED_IN,
     "updateUserDemoMode": NEXUS_ADMIN_ROLE,
-    # #1638: the legacy inventory export is the company's real data, so only an admin loads or reads it.
-    "uploadDemoInventorySnapshot": NEXUS_ADMIN_ROLE,
-    "removeDemoInventorySnapshot": NEXUS_ADMIN_ROLE,
-    "demoInventorySnapshot": NEXUS_ADMIN_ROLE,
+    # #1657: the demo is one persistent copy of UBC everybody in demo mode shares, so wiping it is the
+    # admin's call alone; and what it is built from is the company's real data.
+    "rebuildDemo": NEXUS_ADMIN_ROLE,
+    "demoMirror": NEXUS_ADMIN_ROLE,
     # --- user.py --------------------------------------------------------------------------
     # All four shipped ungated before #415. `updateUserRoles` is the one that matters most: it grants
     # the roles every other entry in this table is gated on, so an open copy is a self-service

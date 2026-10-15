@@ -10,6 +10,7 @@ from .audit_log import InventoryAuditLog  # noqa: E402, F401
 from .deficiency_review import DeficiencyReview  # noqa: E402, F401
 from .demo_gp_record import DemoGpRecord  # noqa: E402, F401
 from .demo_inventory_snapshot import DemoInventorySnapshot  # noqa: E402, F401
+from .demo_mirror_state import DemoMirrorState  # noqa: E402, F401
 from .gp_outbox import GpWriteOutbox  # noqa: E402, F401
 from .gp_po_sync_state import GpPoSyncState  # noqa: E402, F401
 from .gp_write import GpWriteIdempotency  # noqa: E402, F401

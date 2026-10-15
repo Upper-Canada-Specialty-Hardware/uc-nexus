@@ -4,15 +4,14 @@ import theme from '../../theme';
 import DemoBanner from '../DemoBanner';
 import type { DemoRun } from '../useDemoMode';
 
-// #1608: the band that says the data is made up, and holds the way out.
+// #1608: the band that says what the user is looking at, and holds the way out. Since #1657 it is a shared
+// copy of UBC, and nobody resets it from here.
 
 const demo = vi.hoisted(() => ({
   demoMode: true,
-  canReset: true,
   busy: false,
   running: null as DemoRun | null,
   leave: vi.fn(),
-  reset: vi.fn(),
 }));
 
 vi.mock('../useDemoMode', () => ({ useDemoMode: () => demo }));
@@ -27,11 +26,9 @@ function renderBanner() {
 
 beforeEach(() => {
   demo.demoMode = true;
-  demo.canReset = true;
   demo.busy = false;
   demo.running = null;
   demo.leave.mockReset();
-  demo.reset.mockReset();
 });
 
 it('renders nothing out of demo mode', () => {
@@ -40,40 +37,30 @@ it('renders nothing out of demo mode', () => {
   expect(container).toBeEmptyDOMElement();
 });
 
-it('says the data is made up and GP is simulated', () => {
+it('says it is a shared copy of UBC with GP simulated', () => {
   renderBanner();
-  expect(screen.getByText(/Everything here is made up, and GP is simulated/)).toBeInTheDocument();
+  expect(screen.getByText(/A copy of UBC shared by everybody in demo mode, with GP simulated/)).toBeInTheDocument();
 });
 
-it('lets anybody in demo mode leave it', () => {
-  demo.canReset = false;
+it('lets anybody in demo mode leave it, and offers no reset', () => {
   renderBanner();
-  expect(screen.queryByRole('button', { name: 'Reset demo data' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /reset/i })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Leave demo mode' }));
   expect(demo.leave).toHaveBeenCalledTimes(1);
 });
 
-it('resets only after the reset is confirmed', () => {
-  renderBanner();
-  fireEvent.click(screen.getByRole('button', { name: 'Reset demo data' }));
-  expect(demo.reset).not.toHaveBeenCalled();
-  const confirm = screen.getAllByRole('button', { name: 'Reset demo data' }).at(-1)!;
-  fireEvent.click(confirm);
-  expect(demo.reset).toHaveBeenCalledTimes(1);
-});
-
-// #1653: the reset reseeds for the better part of a minute; the banner shows it running, not just greyed buttons.
-it('shows a reset in progress until it ends', () => {
+// #1653: leaving is quick, but the banner shows a run in progress rather than just greying the button.
+it('shows a run in progress until it ends', () => {
   vi.useFakeTimers();
   try {
     demo.busy = true;
-    demo.running = 'reset';
+    demo.running = 'leave';
     renderBanner();
-    expect(screen.getByRole('button', { name: 'Reset demo data' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Leave demo mode' })).toBeDisabled();
     act(() => {
       vi.advanceTimersByTime(1000);
     });
-    expect(screen.getByRole('dialog', { name: 'Resetting the demo data' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Leaving demo mode' })).toBeInTheDocument();
   } finally {
     vi.useRealTimers();
   }

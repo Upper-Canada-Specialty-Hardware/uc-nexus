@@ -4,12 +4,15 @@ import DemoProgressDialog from './DemoProgressDialog';
 import { useDemoMode } from './useDemoMode';
 
 /**
- * The user menu entry that turns demo mode on or off for the signed-in account (#1608). Every user has
- * it, and needs nobody's help to use it (#1629): demo mode only ever narrows an account to the demo
- * company's made-up data. The first switch-on seeds the demo company, so it shows its progress (#1653).
+ * The user menu entry that turns demo mode on or off for the signed-in account (#1608). It needs
+ * nobody's help to use (#1629), but only an account working in a UBC company is offered it (#1658);
+ * anybody already in demo mode is always offered the way out. The first switch-on ever builds the demo,
+ * so it shows its progress (#1653).
  */
 export default function DemoModeUserButton() {
-  const { demoMode, busy, running, enter, leave } = useDemoMode();
+  const { demoMode, canEnter, busy, running, enter, leave } = useDemoMode();
+
+  if (!demoMode && !canEnter) return <UserButton />;
 
   return (
     <>

@@ -1,23 +1,25 @@
-"""The legacy inventory snapshot the demo company's warehouse is seeded from (#1638).
+"""The legacy inventory list the demo company's warehouse is built from (#1638, #1657).
 
-Demo mode simulates a company that has just adopted Nexus: it moved the hardware of every ongoing project
-into the stock pool and pulls it back to each project from there. The inventory it moved is a real one -
-the legacy inventory platform's own export - so the demo warehouse looks like the real warehouse. That
-export is the company's data and this repository is public, so it never lands in git: an admin uploads
-it, `parse_csv` keeps only what the seed needs (no POs, notes or people), and it is stored in
-`demo_inventory_snapshots`, which has no company column, so the demo reset leaves it where it is.
+Demo mode is a copy of UBC that has just adopted Nexus: it moved the hardware of its projects into the
+stock pool and pulls it back to each project from there. The inventory it moved is the real one - the
+legacy inventory platform's SharePoint list, read live (`parse_list_items`) - so the demo warehouse looks
+like the real warehouse. That list is the company's data and this repository is public, so it never
+lands in git: only what the build needs is kept (no POs, notes or people), stored in
+`demo_inventory_snapshots`, which has no company column, so a rebuild leaves it where it is.
 
-Everything here is pure: the seed (`demo_seed.py`) asks it what to create and creates it through the app's
-own mutations. Where the snapshot's rows go:
+Everything here is pure: the build (`demo_seed.py`) asks it what to create and creates it through the
+app's own mutations. Where the list's rows go (ruled on #1657):
 
-  - Specialties of an ongoing project go to that project, all of what is on hand.
-  - Everything else - door hardware, doors, frames, consumables, and specialties with no real project -
-    goes to the stock pool, all of what is on hand. On hand is Project Inventory + Stock + Non Stock;
-    Staged and Shipped have left the shelf.
-  - Every ongoing project becomes a GP job of the simulated GP, and a door hardware one gets a made-up
-    hardware schedule built from its own snapshot rows, so the import wizard offers "use last uploaded".
-    A schedule pair is (Part Category 1, schedule key) - the same pair the pool row of that hardware
-    carries - so hardware pulled back from the pool lands on the schedule.
+  - Everything tagged to a specialties job - a job the list holds specialties against - goes to that
+    job's project, door hardware included, all of what is on hand.
+  - Everything else - door hardware, doors, frames and consumables of every other job, rows tagged to
+    no job, and rows tagged to a job number that is not a demo project - goes to the stock pool as
+    stock, all of what is on hand. On hand is Project Inventory + Stock + Non Stock; Staged and Shipped
+    have left the shelf.
+  - Every demo project with door hardware on the list gets a made-up hardware schedule built from its
+    own rows, so the import wizard offers "use last uploaded". A schedule pair is (Part Category 1,
+    schedule key) - the same pair the pool row of that hardware carries - so hardware pulled back from
+    the pool lands on the schedule. A specialties job's hardware is on the project already.
 """
 
 import csv
@@ -25,6 +27,7 @@ import io
 import math
 import re
 from collections import Counter, defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 
 # The legacy export's columns, by the header the export writes.
@@ -156,6 +159,31 @@ def _qty(value) -> int:
         return 0
 
 
+# The SharePoint list's internal column names, and the export column each one is (#1657). The export is
+# the same list saved as CSV, so one reading serves both.
+_LIST_FIELDS = {
+    "HWSPartNumberEquivalent": _COL_SCHEDULE_KEY,
+    "Title": _COL_ORDER_AS,
+    "Project_x0020_Number_x0020_Temp": _COL_PROJECT_NUMBER,
+    "Project_x0020_Name_x0020_Temp": _COL_PROJECT_NAME,
+    "Locations": _COL_LOCATIONS,
+    "Project_x0020_Inventory_x0020_Qt": _COL_PROJECT_QTY,
+    "Non_x0020_Stock_x0020_Qty": _COL_NON_STOCK_QTY,
+    "Stock_x0020_Qty": _COL_STOCK_QTY,
+    "Ordered_x0020_Qty": _COL_ORDERED_QTY,
+    "Received_x0020_Qty": _COL_RECEIVED_QTY,
+    "Inventory_x0020_Type": _COL_INVENTORY_TYPE,
+    "Part_x0020_Category_x0020_1": _COL_PART_CATEGORY,
+    "Finish": _COL_FINISH,
+}
+
+
+def parse_list_items(items: list[dict]) -> list[SnapshotRow]:
+    """The SharePoint list's items (`sharepoint_inventory.fetch_inventory_items`), read as the export's
+    rows are."""
+    return _rows({column: item.get(field) for field, column in _LIST_FIELDS.items()} for item in items)
+
+
 def parse_csv(content: str) -> list[SnapshotRow]:
     """The export's rows that still have something to say: hardware on hand, or hardware an ongoing
     project is still waiting on. Nothing else is kept - not the PO, the notes, or who entered the row."""
@@ -169,7 +197,7 @@ def parse_csv(content: str) -> list[SnapshotRow]:
         raise SnapshotError(f"The export could not be read as CSV: {e}.") from e
 
 
-def _rows(reader: csv.DictReader) -> list[SnapshotRow]:
+def _rows(reader) -> list[SnapshotRow]:
     rows = []
     for raw in reader:
         # Cut to the catalog's limit, the same for every row, so a long code still names one product.
@@ -193,7 +221,7 @@ def _rows(reader: csv.DictReader) -> list[SnapshotRow]:
         if row.product_code and (row.on_hand > 0 or _outstanding(row) > 0):
             rows.append(row)
     if not rows:
-        raise SnapshotError("The export has no row with hardware on hand.")
+        raise SnapshotError("The legacy inventory list has no row with hardware on hand.")
     return rows
 
 
@@ -208,18 +236,26 @@ def is_job(project_number: str) -> bool:
     return not _NOT_A_JOB.match(project_number.strip())
 
 
-def ongoing_projects(rows: list[SnapshotRow]) -> dict[str, str]:
-    """Every ongoing project, number -> name: a real job that still held project inventory. A number the
-    export names two ways takes the name most of its rows use."""
+def holding_jobs(rows: list[SnapshotRow]) -> dict[str, str]:
+    """Every job the list holds anything against, number -> name: one of the two ways a job becomes a demo
+    project (#1657). A number the list names two ways takes the name most of its rows use."""
     names: dict[str, Counter] = defaultdict(Counter)
     for row in rows:
-        if row.project_qty > 0 and is_job(row.project_number):
+        if row.on_hand > 0 and is_job(row.project_number):
             names[row.project_number][row.project_name or row.project_number] += 1
     return {number: counts.most_common(1)[0][0] for number, counts in sorted(names.items())}
 
 
+def specialties_jobs(rows: list[SnapshotRow]) -> set[str]:
+    """The jobs the list holds specialties against (#1657): everything tagged to one goes to its project."""
+    return {
+        r.project_number for r in rows if r.inventory_type == SPECIALTIES and r.on_hand > 0 and is_job(r.project_number)
+    }
+
+
 def gp_jobs(rows: list[SnapshotRow]) -> list[dict]:
-    """The ongoing projects as jobs of the simulated GP, in the shape its fixed jobs are written in."""
+    """The jobs the list holds anything against, as jobs of the simulated GP in the shape its made-up jobs
+    are written in - the made-up build's stand-in for a company's own (`demo_mirror.fixture_source`)."""
     return [
         {
             "job_number": number,
@@ -230,7 +266,7 @@ def gp_jobs(rows: list[SnapshotRow]) -> list[dict]:
             "city": "Toronto",
             "division": "HARDWARE",
         }
-        for number, name in ongoing_projects(rows).items()
+        for number, name in holding_jobs(rows).items()
     ]
 
 
@@ -311,13 +347,15 @@ class InventoryEntry:
         return self.row.on_hand
 
 
-def inventory_entries(rows: list[SnapshotRow]) -> list[InventoryEntry]:
-    projects = ongoing_projects(rows)
+def inventory_entries(rows: list[SnapshotRow], projects: Collection[str]) -> list[InventoryEntry]:
+    """Where each row's on-hand goes, given the demo's projects: a specialties job's rows to its project,
+    every other row to the pool. A specialties job that is not a demo project has nowhere else to go."""
+    to_projects = specialties_jobs(rows) & set(projects)
     entries = []
     for row in rows:
         if row.on_hand <= 0:
             continue
-        to_project = row.inventory_type == SPECIALTIES and row.project_number in projects
+        to_project = row.project_number in to_projects
         entries.append(InventoryEntry(row, row.project_number if to_project else None, location_for(row.location)))
     return entries
 
@@ -343,15 +381,16 @@ class Schedule:
     hardware_items: list[dict]
 
 
-def schedules(rows: list[SnapshotRow]) -> list[Schedule]:
-    """A hardware schedule for every ongoing project with door hardware, made up from its snapshot rows.
+def schedules(rows: list[SnapshotRow], projects: Collection[str]) -> list[Schedule]:
+    """A hardware schedule for every one of `projects` with door hardware on the list, made up from its rows.
 
     A schedule item is a (Part Category 1, schedule key) pair of the project, needing what the project
-    held (now in the pool) plus what it still had on order. Rows with no schedule key never were on a
-    schedule and stay off it. The openings are made up: numbered 001.., as many as the project's largest
-    item needs up to thirty, and each item's quantity is dealt across them starting one opening further
-    along than the item before, so the totals are exactly the snapshot's."""
-    projects = ongoing_projects(rows)
+    held (in the pool, or on a specialties job's project already) plus what it still had on order. Rows
+    with no schedule key never were on a schedule and stay off it. The openings are made up: numbered
+    001.., as many as the project's largest item needs up to thirty, and each item's quantity is dealt
+    across them starting one opening further along than the item before, so the totals are exactly the
+    list's."""
+    projects = set(projects)
     needs: dict[str, dict[tuple[str, str], int]] = defaultdict(lambda: defaultdict(int))
     for row in rows:
         if row.project_number in projects and row.is_schedule_hardware and row.schedule_key:

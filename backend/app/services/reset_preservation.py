@@ -47,7 +47,8 @@ PRESERVED_MODELS = (
     Warehouse,
     ManufacturerVendorMap,
     PODocumentSettings,
-    # An upload, not project data (#1638): the demo is seeded from it, and nobody should have to load it again.
+    # The legacy inventory list as last read (#1638, #1657): the demo is built from it, and a read that fails
+    # next time falls back on it.
     DemoInventorySnapshot,
 )
 

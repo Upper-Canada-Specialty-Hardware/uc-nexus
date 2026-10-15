@@ -1,126 +1,137 @@
-"""Demo mode mutations (#1608): turning it on and off, and resetting the demo company.
+"""Demo mode (#1608): turning it on and off, and the demo copy of UBC behind it (#1657).
 
-Who may do what was ruled on the issue:
+Who may do what was ruled on the issues:
 
-  - every signed-in user turns demo mode on and off for themselves (`setMyDemoMode`), with no admin
-    involved (#1629, replacing #1617's tenant-owner-only rule);
-  - a UC NEXUS ADMIN turns it on or off for any account (`updateUserDemoMode`);
-  - a TENANT OWNER or UC NEXUS ADMIN who is in demo mode resets the demo company (`resetDemoData`);
-  - a UC NEXUS ADMIN loads the legacy inventory export the demo warehouse is seeded from
-    (`uploadDemoInventorySnapshot`, #1638). It is the company's real data, so only an admin handles it.
+  - an account of a UBC company - UBC or its test company TUBC - turns demo mode on and off for itself
+    (`setMyDemoMode`, #1629, narrowed to UBC by #1658). UCSH and every other company may not turn it on;
+    anybody already in it may always turn it off, so nobody is stuck;
+  - a UC NEXUS ADMIN turns it on or off for any account of a UBC company (`updateUserDemoMode`), and
+    turns it on for themselves only while working in one;
+  - a UC NEXUS ADMIN rebuilds the demo from UBC (`rebuildDemo`), wiping every demo user's role-play, and
+    sees what it is built from (`demoMirror`). Nobody else resets it: the demo is persistent and shared.
 
-Turning demo mode on seeds the demo company the first time anybody does, so there is always a starting
-state to walk into.
+Turning demo mode on builds the demo the first time anybody does, so there is always one to walk into.
 """
 
 import asyncio
+from datetime import datetime
 
 import strawberry
+from sqlalchemy import func, select
 
 from app.auth import (
+    NEXUS_ADMIN_ROLE,
     ForbiddenError,
+    admin_acting_company,
+    caller_company,
+    caller_roles,
     current_user,
     resolve_display_name,
-    tenant_scope,
 )
 from app.database import SessionLocal
-from app.demo import DEMO_COMPANY
-from app.errors import ValidationError
-from app.models.demo_inventory_snapshot import DemoInventorySnapshot
+from app.demo import DEMO_COMPANY, may_use_demo_mode
+from app.models.project import Project
+from app.repositories import demo_mirror_state_repository as state
 from app.repositories import demo_snapshot_repository, user_repository
-from app.services import demo_reset, demo_snapshot
+from app.services import demo_build, demo_mirror, demo_snapshot
 
 from .converters import clerk_user_to_type
-from .types import ClerkUser, DemoInventorySnapshotSummary
+from .types import ClerkUser, DemoMirrorStatus, DemoSourceRead
 
-# The legacy export is about 1 MB; this is room to grow, and a stop for the wrong file.
-_MAX_EXPORT_CHARS = 20_000_000
+_NOT_UBC = "Demo mode is only for UBC accounts."
 
 
-def _summary(snapshot: DemoInventorySnapshot) -> DemoInventorySnapshotSummary:
-    rows = [demo_snapshot.SnapshotRow.from_dict(r) for r in snapshot.rows]
-    entries = demo_snapshot.inventory_entries(rows)
-    return DemoInventorySnapshotSummary(
-        file_name=snapshot.file_name,
-        uploaded_by=snapshot.uploaded_by,
-        uploaded_at=snapshot.uploaded_at,
-        row_count=snapshot.row_count,
+def _when(value) -> datetime | None:
+    if not value:
+        return None
+    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
+def _read(data: dict | None, read_at) -> DemoSourceRead:
+    data = data or {}
+    return DemoSourceRead(read_at=_when(read_at), attempted_at=_when(data.get("attempted_at")), error=data.get("error"))
+
+
+def _status() -> DemoMirrorStatus:
+    with SessionLocal() as session:
+        source = demo_mirror.load_source(session)
+        entries = demo_snapshot.inventory_entries(source.rows, source.job_numbers)
+        snapshot = demo_snapshot_repository.current(session)
+        masters = state.get(session, state.GP_MASTERS) or {}
+        build = state.get(session, state.BUILD) or {}
+        nightly = state.get(session, state.NIGHTLY) or {}
+        demo_projects = session.scalar(select(func.count()).select_from(Project).where(Project.company == DEMO_COMPANY))
+        legacy = state.get(session, state.LEGACY_LIST)
+    return DemoMirrorStatus(
+        source=source.name,
+        legacy_list=_read(legacy, snapshot.uploaded_at if snapshot else None),
+        legacy_rows=snapshot.row_count if snapshot else 0,
+        gp_masters=_read(masters, masters.get("read_at")),
+        vendor_count=len(source.masters.get("vendors") or []),
+        project_count=len(source.jobs),
+        specialties_project_count=len(demo_snapshot.specialties_jobs(source.rows) & source.job_numbers),
         project_units=sum(e.quantity for e in entries if e.project_number),
         pool_units=sum(e.quantity for e in entries if not e.project_number),
-        project_count=len(demo_snapshot.ongoing_projects(rows)),
-        schedule_count=len(demo_snapshot.schedules(rows)),
+        open_po_count=len(source.open_pos),
+        demo_project_count=demo_projects or 0,
+        building=demo_build.building(),
+        build_started_at=_when(build.get("started_at")),
+        build_started_by=build.get("started_by"),
+        build_finished_at=_when(build.get("finished_at")),
+        build_error=build.get("error"),
+        nightly_ran_at=_when(nightly.get("ran_at")),
+        nightly_error=nightly.get("error") or nightly.get("skipped"),
+        nightly_projects_added=list(nightly.get("projects_added") or []),
+        nightly_schedules_added=list(nightly.get("schedules_added") or []),
     )
+
+
+def _working_company(info: strawberry.Info) -> str | None:
+    """The company the caller works in: an admin's is the one they act in, anybody else's their own."""
+    if NEXUS_ADMIN_ROLE in caller_roles(info.context):
+        return admin_acting_company(info.context)
+    return caller_company(info.context)
 
 
 @strawberry.type
 class DemoQueries:
     @strawberry.field
-    def demo_inventory_snapshot(self, info: strawberry.Info) -> DemoInventorySnapshotSummary | None:
-        """UC NEXUS ADMIN: the stored export the demo warehouse is seeded from, or null when none is."""
-        with SessionLocal() as session:
-            snapshot = demo_snapshot_repository.current(session)
-            return _summary(snapshot) if snapshot else None
+    async def demo_mirror(self, info: strawberry.Info) -> DemoMirrorStatus:
+        """UC NEXUS ADMIN: the demo copy of UBC - what it is built from, and how its last build and nightly
+        sync went (#1657)."""
+        return await asyncio.to_thread(_status)
 
 
 @strawberry.type
 class DemoMutations:
     @strawberry.mutation
     async def set_my_demo_mode(self, info: strawberry.Info, enabled: bool) -> ClerkUser:
-        """Turn demo mode on or off for the caller's own account - any signed-in account (#1629).
+        """Turn demo mode on or off for the caller's own account (#1629). On only for an account working
+        in a UBC company (#1658); off for anybody.
 
-        Safe for anybody because demo mode narrows what an account reaches rather than widening it: the
-        caller is pinned to the demo company, keeps their own roles, and GP is simulated. The demo company
-        is seeded on the way in when it never has been. The account's real company, roles and buyer
-        identity are left as they are, so turning it off puts the caller back exactly where they were."""
+        Safe for those because demo mode narrows what an account reaches rather than widening it: the
+        caller is pinned to the demo company, keeps their own roles, and GP is simulated. The demo is
+        built on the way in when it never has been. The account's real company, roles and buyer identity
+        are left as they are, so turning it off puts the caller back exactly where they were."""
         user_id = current_user(info)["user_id"]
         if enabled:
-            await demo_reset.reset(only_if_empty=True)
+            if not may_use_demo_mode(await asyncio.to_thread(_working_company, info)):
+                raise ForbiddenError(_NOT_UBC)
+            await demo_build.ensure_built(resolve_display_name(user_id))
         return clerk_user_to_type(await asyncio.to_thread(user_repository.update_user_demo_mode, user_id, enabled))
 
     @strawberry.mutation
     async def update_user_demo_mode(self, info: strawberry.Info, user_id: str, enabled: bool) -> ClerkUser:
-        """UC NEXUS ADMIN: turn demo mode on or off for any account."""
+        """UC NEXUS ADMIN: turn demo mode on or off for an account - on only for one of a UBC company."""
         if enabled:
-            await demo_reset.reset(only_if_empty=True)
+            if not may_use_demo_mode(await asyncio.to_thread(user_repository.get_user_company, user_id)):
+                raise ForbiddenError(_NOT_UBC)
+            await demo_build.ensure_built(resolve_display_name(current_user(info)["user_id"]))
         return clerk_user_to_type(await asyncio.to_thread(user_repository.update_user_demo_mode, user_id, enabled))
 
     @strawberry.mutation
-    async def reset_demo_data(self, info: strawberry.Info) -> bool:
-        """Wipe the demo company and seed it again, back to its starting state. Only from inside demo mode,
-        so a reset is always something its caller is looking at - and it only ever touches the demo
-        company."""
-        if await asyncio.to_thread(tenant_scope, info) != DEMO_COMPANY:
-            raise ForbiddenError("Turn on demo mode to reset the demo data.")
-        await demo_reset.reset()
-        return True
-
-    @strawberry.mutation
-    def upload_demo_inventory_snapshot(
-        self, info: strawberry.Info, file_name: str, csv_text: str
-    ) -> DemoInventorySnapshotSummary:
-        """UC NEXUS ADMIN: store the legacy inventory export (#1638), replacing the one stored. Only what
-        the seed reads is kept. The demo data is not touched until its next reset, which seeds from it."""
-        actor = resolve_display_name(current_user(info)["user_id"])
-        if len(csv_text) > _MAX_EXPORT_CHARS:
-            raise ValidationError(
-                f"The export is over {_MAX_EXPORT_CHARS // 1_000_000} MB; the legacy export is about one.",
-                field="csvText",
-            )
-        try:
-            rows = demo_snapshot.parse_csv(csv_text)
-        except demo_snapshot.SnapshotError as e:
-            raise ValidationError(str(e), field="csvText") from e
-        with demo_reset.no_reset_running(), SessionLocal() as session:
-            snapshot = demo_snapshot_repository.store(session, file_name=file_name, rows=rows, uploaded_by=actor)
-            session.commit()
-            session.refresh(snapshot)
-            return _summary(snapshot)
-
-    @strawberry.mutation
-    def remove_demo_inventory_snapshot(self, info: strawberry.Info) -> bool:
-        """UC NEXUS ADMIN: drop the stored export (#1638). The next demo reset seeds the made-up demo alone -
-        the way back when an export turns out to be one the seed cannot run from."""
-        with demo_reset.no_reset_running(), SessionLocal() as session:
-            removed = demo_snapshot_repository.clear(session)
-            session.commit()
-            return removed
+    async def rebuild_demo(self, info: strawberry.Info) -> DemoMirrorStatus:
+        """UC NEXUS ADMIN: read UBC again and rebuild the demo from it, in the background (#1657). Every demo
+        user's role-play is wiped. Refused while a build runs."""
+        demo_build.start_rebuild(resolve_display_name(current_user(info)["user_id"]))
+        return await asyncio.to_thread(_status)
