@@ -15,6 +15,12 @@ import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+import pyodbc
+
+from .logging_setup import get_logger
+
+logger = get_logger()
+
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # custom_db comes from trusted config, but validate before interpolating
 
 
@@ -985,10 +991,25 @@ def get_vendor_currency(conn, vendor_id: str) -> str:
     return ((row.cur if row else "") or "").strip().upper() or "CAD"
 
 
+def get_vendor_rate_type(conn, vendor_id: str) -> str | None:
+    """Read-only: the rate type on the vendor card (PM00200.RATETPID), or None when it is blank or the
+    vendor row is missing (#1659). GP prices a vendor's foreign-currency PO with this rate type and
+    falls back to the company's default purchasing rate type only when it is blank, so the relay
+    resolves it the same way: a vendor whose card names a different rate type than the company
+    default has its rate maintained under that one, and checking the default instead refuses a PO GP
+    would take."""
+    row = (
+        conn.cursor()
+        .execute("SELECT RTRIM(RATETPID) AS rate_type FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id)
+        .fetchone()
+    )
+    return ((row.rate_type if row else "") or "").strip() or None
+
+
 def get_mc_setup(conn) -> dict:
     """Read-only: the company's multicurrency setup (MC40000) - functional currency + the default
     PURCHASING rate type (issue #257). A foreign-currency PO (vendor currency != functional) is priced
-    with that rate type; eConnect then resolves the actual XCHGRATE from GP's maintained exchange rate
+    with that rate type when the vendor card names none (get_vendor_rate_type, #1659); eConnect then resolves the actual XCHGRATE from GP's maintained exchange rate
     table (DYNAMICS.MC00100) itself. Returns {'functional': <id>, 'purchase_rate_type': <id or None>};
     a company with no MC setup (single-currency) yields functional 'CAD' and no rate type."""
     row = (
@@ -1010,29 +1031,41 @@ def has_exchange_rate(conn, *, currency: str, rate_type: str, on_date: date) -> 
 
     Without this, a foreign PO against a company with no rate maintained sails through every check
     and dies inside taPoHdr with a raw eConnect error. The join mirrors how GP resolves the rate
-    itself: an exchange table (DYNAMICS..MC40100) is defined for one currency + rate type, and its
-    rates live in DYNAMICS..MC00100. "Usable" is effective on or before the date and not expired -
+    itself: the company maps each currency + rate type to one exchange table (dbo.MC40301, in the
+    company database), and that table's rates live in DYNAMICS..MC00100. (#1659: this used to join
+    DYNAMICS..MC40100, which is GP's rate type list and holds RATETPID alone, so the read failed on
+    every foreign PO in a real company.) "Usable" is effective on or before the date and not expired -
     GP stores "no expiry" as an empty date (1900-01-01), so EXPNDATE at or below that sentinel counts
-    as never-expiring. Deliberately looser than a SRCHTYPE-exact table's own resolution: a false pass
+    as never-expiring. Deliberately looser than an exact-date table's own resolution: a false pass
     just means eConnect refuses as it does today, while a false refusal would block a registerable PO.
+
+    For the same reason a read that fails outright counts as a pass: the preflight exists to give a
+    clearer message than eConnect, never to refuse a PO eConnect would take.
     """
-    row = (
-        conn.cursor()
-        .execute(
-            """
-        SELECT TOP 1 1 AS ok
-        FROM DYNAMICS.dbo.MC40100 t
-        JOIN DYNAMICS.dbo.MC00100 r ON r.EXGTBLID = t.EXGTBLID
-        WHERE RTRIM(t.CURNCYID) = ? AND RTRIM(t.RATETPID) = ?
-          AND r.EXCHDATE <= ? AND (r.EXPNDATE >= ? OR r.EXPNDATE <= '1900-01-01')
-        """,
-            currency,
-            rate_type,
-            on_date,
-            on_date,
+    try:
+        row = (
+            conn.cursor()
+            .execute(
+                """
+            SELECT TOP 1 1 AS ok
+            FROM dbo.MC40301 m
+            JOIN DYNAMICS.dbo.MC00100 r ON r.EXGTBLID = m.EXGTBLID
+            WHERE RTRIM(m.CURNCYID) = ? AND RTRIM(m.RATETPID) = ?
+              AND r.EXCHDATE <= ? AND (r.EXPNDATE >= ? OR r.EXPNDATE <= '1900-01-01')
+            """,
+                currency,
+                rate_type,
+                on_date,
+                on_date,
+            )
+            .fetchone()
         )
-        .fetchone()
-    )
+    except pyodbc.Error as e:
+        logger.warning(
+            "exchange rate preflight read failed; leaving the rate to eConnect",
+            extra={"currency": currency, "rate_type": rate_type, "error": str(e)},
+        )
+        return True
     return row is not None
 
 

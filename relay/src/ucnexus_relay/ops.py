@@ -126,7 +126,8 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
 
     # 0c. currency + exchange rate: GP-first, the vendor master dictates the PO currency (issue #257),
     #     not the client. A foreign-currency PO (vendor currency != the company's functional currency)
-    #     is priced with the company's default PURCHASING rate type; eConnect resolves the actual rate
+    #     is priced with the vendor card's rate type, or the company's default PURCHASING rate type when
+    #     the card names none - the order GP itself takes (#1659); eConnect resolves the actual rate
     #     from GP's maintained exchange rate table (DYNAMICS.MC00100) itself. It must ALSO carry no tax
     #     schedule - GP would otherwise fill the company default - so a foreign PO blanks TAXSCHID and
     #     takes no tax detail. CAD (functional) needs no rate and keeps GP's default schedule.
@@ -135,12 +136,12 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     is_foreign = currency != mc["functional"]
     rate_type = None
     if is_foreign:
-        rate_type = mc["purchase_rate_type"]
+        rate_type = econnect.get_vendor_rate_type(conn, h.vendor_id) or mc["purchase_rate_type"]
         if not rate_type:
             raise RelayOpError(
                 "rate_type_unresolved",
-                f"no default purchasing rate type (MC40000.DEFPURTP) configured for {company}; "
-                f"cannot price a {currency} PO",
+                f"vendor '{h.vendor_id}' has no rate type and no default purchasing rate type "
+                f"(MC40000.DEFPURTP) is configured for {company}; cannot price a {currency} PO",
             )
         if h.tax_detail_ids or h.tax_schedule_id:
             raise RelayOpError(
