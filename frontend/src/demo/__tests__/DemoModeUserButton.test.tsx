@@ -4,7 +4,7 @@ import DemoModeUserButton from '../DemoModeUserButton';
 
 // #1629: every user turns demo mode on and off for themselves, whatever their roles.
 
-const demo = vi.hoisted(() => ({ demoMode: false, busy: false, enter: vi.fn(), leave: vi.fn() }));
+const demo = vi.hoisted(() => ({ demoMode: false, busy: false, running: null, enter: vi.fn(), leave: vi.fn() }));
 
 vi.mock('../useDemoMode', () => ({ useDemoMode: () => demo }));
 
