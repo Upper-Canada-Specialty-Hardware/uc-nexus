@@ -723,9 +723,9 @@ export const UPDATE_USER_DEMO_MODE = gql`
 // #1657: the demo copy of UBC - what it is built from, and how its last build and nightly sync went.
 const DEMO_MIRROR_FIELDS = `
   source
-  legacyList { readAt attemptedAt error }
+  legacyList { readAt attemptedAt error reading }
   legacyRows
-  gpMasters { readAt attemptedAt error }
+  gpMasters { readAt attemptedAt error reading }
   vendorCount
   projectCount
   specialtiesProjectCount

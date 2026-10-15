@@ -326,8 +326,13 @@ def load(session: Session, *, masters: dict, jobs: list[dict], pos: list[dict]) 
         _put(session, "po", po["po_number"], po)
 
 
+def has_masters(session: Session) -> bool:
+    """Whether a build has loaded masters: there is a demo to give fresh ones to."""
+    return _get(session, "master", "masters") is not None
+
+
 def update_masters(session: Session, masters: dict) -> None:
-    """The nightly sync's fresh read of the masters (#1657). The caller commits."""
+    """A fresh read of the masters for the demo there is (#1657). The caller commits."""
     _put(session, "master", "masters", masters)
 
 

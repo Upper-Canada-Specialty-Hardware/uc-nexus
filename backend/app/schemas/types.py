@@ -2448,6 +2448,8 @@ class DemoSourceRead:
     read_at: datetime | None
     attempted_at: datetime | None
     error: str | None
+    # A read under way right now (the GP masters read runs on after a build, paced, for a while).
+    reading: bool = False
 
 
 @strawberry.type

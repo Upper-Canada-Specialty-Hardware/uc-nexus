@@ -22,6 +22,7 @@ interface SourceRead {
   readAt: string | null;
   attemptedAt: string | null;
   error: string | null;
+  reading: boolean;
 }
 
 export interface DemoMirror {
@@ -80,8 +81,9 @@ function ReadLine({ label, read }: { label: string; read: SourceRead }) {
     <Box sx={{ minWidth: 0 }}>
       <Typography variant="body2">
         {label}: read {when(read.readAt)}
+        {read.reading && ' - reading again now'}
       </Typography>
-      {read.error && (
+      {read.error && !read.reading && (
         <Typography variant="body2" color="error" sx={{ overflowWrap: 'anywhere' }}>
           Last try ({when(read.attemptedAt)}) failed: {read.error}. The build uses the last good read.
         </Typography>
@@ -106,11 +108,13 @@ export default function DemoMirrorPage() {
 
   const mirror = (data?.demoMirror as DemoMirror | undefined) ?? null;
   const running = !!mirror?.building;
+  // The GP masters read runs on after a build; the page follows it too.
+  const reading = !!mirror?.gpMasters.reading;
   // Asked again while a build runs, so the page says when it is done; quiet otherwise.
   useEffect(() => {
-    if (running) startPolling(POLL_MS);
+    if (running || reading) startPolling(POLL_MS);
     else stopPolling();
-  }, [running, startPolling, stopPolling]);
+  }, [running, reading, startPolling, stopPolling]);
 
   if (!isNexusAdmin) {
     return (
@@ -151,6 +155,12 @@ export default function DemoMirrorPage() {
               )}
               <ReadLine label="Legacy inventory list" read={mirror.legacyList} />
               <ReadLine label="UBC's GP masters" read={mirror.gpMasters} />
+              {mirror.gpMasters.reading && (
+                <Typography variant="body2" color="text.secondary">
+                  GP is read at its own pace, behind every other scheduled GP read, so this can take an hour. The
+                  demo is open meanwhile, and answers with UBC&apos;s vendors and cost codes once it lands.
+                </Typography>
+              )}
               <Figures
                 rows={[
                   ['Legacy list rows', mirror.legacyRows],

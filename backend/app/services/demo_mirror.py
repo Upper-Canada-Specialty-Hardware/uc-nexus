@@ -381,15 +381,11 @@ async def read_legacy_list() -> list[demo_snapshot.SnapshotRow]:
     return demo_snapshot.parse_list_items(await sharepoint_inventory.fetch_inventory_items())
 
 
-async def refresh_sources() -> dict:
-    """Read the legacy list and UBC's GP masters again and store what was read. Each read is on its own:
-    one that fails is recorded and the last good one kept, so a build or the nightly sync goes on from
-    what was read before. Does nothing for the made-up company. Returns {list, masters}: the error of
-    each, or None."""
+async def refresh_legacy_list() -> str | None:
+    """Read the legacy list again and store it; a failed read is recorded and the stored list stands.
+    Seconds: one Graph read. Returns the error, or None."""
     if configured() == MADE_UP:
-        return {"list": None, "masters": None}
-    errors: dict[str, str | None] = {}
-
+        return None
     attempted = datetime.utcnow().isoformat()
     try:
         rows = await read_legacy_list()
@@ -400,29 +396,50 @@ async def refresh_sources() -> dict:
             )
             state.put(session, state.LEGACY_LIST, {"attempted_at": attempted, "error": None})
             session.commit()
-        errors["list"] = None
+        return None
     except Exception as e:  # noqa: BLE001 - recorded, and the stored list stands
         logger.exception("demo mirror: could not read the legacy inventory list")
-        errors["list"] = str(e) or type(e).__name__
+        error = str(e) or type(e).__name__
         with SessionLocal() as session:
-            state.put(session, state.LEGACY_LIST, {"attempted_at": attempted, "error": errors["list"]})
+            state.put(session, state.LEGACY_LIST, {"attempted_at": attempted, "error": error})
             session.commit()
+        return error
 
+
+async def refresh_gp_masters() -> str | None:
+    """Read UBC's GP masters again, store them, and give them to the simulated GP of the demo there is. A
+    failed read is recorded and the stored masters stand. Long: the reads are paced behind every other
+    scheduled GP read, so a build does not wait on this - it runs after (`demo_build`). Returns the
+    error, or None."""
+    if configured() == MADE_UP:
+        return None
     attempted = datetime.utcnow().isoformat()
+    with SessionLocal() as session:
+        state.merge(session, state.GP_MASTERS, {"reading": True, "attempted_at": attempted})
+        session.commit()
     try:
         masters = await read_gp_masters()
         with SessionLocal() as session:
             state.put(
                 session,
                 state.GP_MASTERS,
-                {"masters": masters, "read_at": attempted, "attempted_at": attempted, "error": None},
+                {"masters": masters, "read_at": attempted, "attempted_at": attempted, "error": None, "reading": False},
             )
+            # The demo there is answers with them from now on; the vendors its copied POs name stay in.
+            if demo_gp.has_masters(session):
+                demo_gp.update_masters(session, ubc_source(session).masters)
             session.commit()
-        errors["masters"] = None
+        return None
     except Exception as e:  # noqa: BLE001 - recorded, and the stored masters stand
         logger.exception("demo mirror: could not read UBC's GP masters")
-        errors["masters"] = str(e) or type(e).__name__
+        error = str(e) or type(e).__name__
         with SessionLocal() as session:
-            state.merge(session, state.GP_MASTERS, {"attempted_at": attempted, "error": errors["masters"]})
+            state.merge(session, state.GP_MASTERS, {"attempted_at": attempted, "error": error, "reading": False})
             session.commit()
-    return {"list": errors["list"], "masters": errors["masters"]}
+        return error
+
+
+async def refresh_sources() -> dict:
+    """Both reads, one after the other: the nightly sync's. Returns {list, masters}: each one's error, or
+    None."""
+    return {"list": await refresh_legacy_list(), "masters": await refresh_gp_masters()}

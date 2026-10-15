@@ -25,6 +25,9 @@ from app.errors import RelayCallError
 from app.models.enums import GpJobState, POOrigin, POStatus
 from app.repositories import user_repository
 from app.services import demo_gp, demo_snapshot
+
+# The real read, kept before the module's fixture stands a no-op in for it.
+from app.services.demo_mirror import refresh_gp_masters as _refresh_gp_masters
 from tests.test_demo_inventory_snapshot import list_items
 
 MIRR = "MIRR"
@@ -165,8 +168,13 @@ def mirrored(_migrate_database):
         async def _no_reads():
             return {"list": None, "masters": None}
 
+        async def _no_read():
+            return None
+
         # SharePoint and the relay are not here; what they last returned is stored below.
         mp.setattr(demo_mirror, "refresh_sources", _no_reads)
+        mp.setattr(demo_mirror, "refresh_legacy_list", _no_read)
+        mp.setattr(demo_mirror, "refresh_gp_masters", _no_read)
 
         with SessionLocal() as session:
             for table in kept_tables:
@@ -377,6 +385,22 @@ def test_switching_on_again_does_not_rebuild(mirrored, monkeypatch):
 
     monkeypatch.setattr(demo_reset, "reset", _never)
     asyncio.run(demo_build.ensure_built("u_someone"))
+
+
+def test_masters_read_after_the_build_reach_the_demo_there_is(mirrored, monkeypatch):
+    # #1657: the masters read is paced behind every other GP read, so a build does not wait on it; what
+    # it brings back is answered with from then on, the copied POs' vendors kept.
+    from app.services import demo_mirror
+
+    fresh = {**_MASTERS, "vendors": _MASTERS["vendors"] + [{"vendor_id": "MNEW", "vendor_name": "New Vendor"}]}
+
+    async def _read():
+        return fresh
+
+    monkeypatch.setattr(demo_mirror, "read_gp_masters", _read)
+    assert asyncio.run(_refresh_gp_masters()) is None
+    vendors = {v["vendor_id"] for v in demo_gp.call_sync("list_vendors", {})["vendors"]}
+    assert vendors == {"MVEND", "MNEW"}
 
 
 def test_the_nightly_sync_adds_a_job_that_turned_active_and_nothing_else(mirrored):
