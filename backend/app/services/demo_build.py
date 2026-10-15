@@ -12,8 +12,10 @@ The demo is one persistent company everybody in demo mode shares, so nothing a u
     and the masters are read again. It never touches inventory, POs, requests, pulls or shipments - those
     are the role-play's.
 
-Both reads of UBC (the legacy list and GP's masters) are made again before a build and before the nightly
-sync (`demo_mirror.refresh_sources`); a read that fails is recorded and the last good one is built from.
+The legacy list is read again before a build - one Graph read, seconds - and UBC's GP masters after it,
+in the background: those reads are paced behind every other scheduled GP read, an hour on a busy day, so
+a build never waits on them. When they land the demo answers with them from then on, and nothing else
+in it changes. The nightly sync reads both. A read that fails is recorded and the last good one stands.
 """
 
 import asyncio
@@ -37,6 +39,8 @@ _TORONTO = ZoneInfo("America/Toronto")
 
 # Kept so a running build is not garbage collected half way: asyncio holds only a weak reference.
 _tasks: set[asyncio.Task] = set()
+# The GP masters read that follows a build, kept apart: it is not a build, and does not hold one up.
+_reads: set[asyncio.Task] = set()
 
 
 def _now() -> str:
@@ -63,7 +67,7 @@ async def _build(started_by: str) -> None:
     """Read UBC again, then wipe and build the demo, recording each step's outcome under `build`."""
     _record(state.BUILD, {"started_at": _now(), "started_by": started_by, "running": True}, replace=True)
     try:
-        reads = await demo_mirror.refresh_sources()
+        list_error = await demo_mirror.refresh_legacy_list()
         await demo_reset.reset()
         _record(
             state.BUILD,
@@ -71,14 +75,24 @@ async def _build(started_by: str) -> None:
                 "finished_at": _now(),
                 "running": False,
                 "error": None,
-                "read_errors": reads,
+                "read_errors": {"list": list_error},
                 **await asyncio.to_thread(_counts),
             },
         )
         logger.info("demo build: done (%s)", started_by)
+        _read_masters_after()
     except Exception as e:  # noqa: BLE001 - recorded for the admin page; the next build starts afresh
         logger.exception("demo build: failed")
         _record(state.BUILD, {"finished_at": _now(), "running": False, "error": str(e) or type(e).__name__})
+
+
+def _read_masters_after() -> None:
+    """Read UBC's GP masters in the background, unless a read is under way already."""
+    if any(not t.done() for t in _reads):
+        return
+    task = asyncio.create_task(demo_mirror.refresh_gp_masters())
+    _reads.add(task)
+    task.add_done_callback(_reads.discard)
 
 
 def building() -> bool:
@@ -104,11 +118,12 @@ async def ensure_built(started_by: str) -> None:
     _record(state.BUILD, {"started_at": _now(), "started_by": started_by, "running": True}, replace=True)
     try:
         with SessionLocal() as session:
-            never_read = state.get(session, state.GP_MASTERS) is None
+            never_read = state.get(session, state.LEGACY_LIST) is None
         if never_read:
-            await demo_mirror.refresh_sources()
+            await demo_mirror.refresh_legacy_list()
         if await demo_reset.reset(only_if_empty=True):
             _record(state.BUILD, {"finished_at": _now(), "running": False, **await asyncio.to_thread(_counts)})
+            _read_masters_after()
         else:
             _record(state.BUILD, {"running": False})
     except Exception as e:

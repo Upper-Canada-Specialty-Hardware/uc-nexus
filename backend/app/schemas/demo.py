@@ -49,7 +49,12 @@ def _when(value) -> datetime | None:
 
 def _read(data: dict | None, read_at) -> DemoSourceRead:
     data = data or {}
-    return DemoSourceRead(read_at=_when(read_at), attempted_at=_when(data.get("attempted_at")), error=data.get("error"))
+    return DemoSourceRead(
+        read_at=_when(read_at),
+        attempted_at=_when(data.get("attempted_at")),
+        error=data.get("error"),
+        reading=bool(data.get("reading")),
+    )
 
 
 def _status() -> DemoMirrorStatus:

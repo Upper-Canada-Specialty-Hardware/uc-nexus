@@ -29,7 +29,13 @@ vi.mock('../../../hooks/useIdentity', () => ({
   }),
 }));
 
-const READ = { __typename: 'DemoSourceRead', readAt: '2026-10-15T06:00:00', attemptedAt: '2026-10-15T06:00:00', error: null };
+const READ = {
+  __typename: 'DemoSourceRead',
+  readAt: '2026-10-15T06:00:00',
+  attemptedAt: '2026-10-15T06:00:00',
+  error: null,
+  reading: false,
+};
 
 const MIRROR: DemoMirror & { __typename: string } = {
   __typename: 'DemoMirrorStatus',
@@ -116,6 +122,13 @@ test('a rebuild goes only once it is confirmed', async () => {
   fireEvent.click(within(dialog).getByRole('button', { name: 'Rebuild' }));
   await screen.findByText(/being rebuilt from UBC/);
   expect(rebuilt).toBe(1);
+});
+
+test('a GP read under way says so rather than showing the last one failed', async () => {
+  renderPage([status({ ...MIRROR, gpMasters: { ...MIRROR.gpMasters, reading: true } })]);
+  expect(await screen.findByText(/reading again now/)).toBeInTheDocument();
+  expect(screen.queryByText(/failed: The relay is not connected/)).not.toBeInTheDocument();
+  expect(screen.getByText(/The demo is open meanwhile/)).toBeInTheDocument();
 });
 
 test('a build under way is shown and cannot be started twice', async () => {
