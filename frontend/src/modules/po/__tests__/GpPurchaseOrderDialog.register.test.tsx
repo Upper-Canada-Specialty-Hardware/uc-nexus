@@ -473,6 +473,11 @@ describe('GpPurchaseOrderDialog', () => {
 
     // Foreign currency: the tax detail is not applicable and not required to register.
     expect(screen.getByLabelText('Currency')).toHaveValue('USD');
+    // #1659: the banner says where the rate comes from, never that the PO will be refused - nothing
+    // has checked GP yet, and Register stays available.
+    expect(screen.getByText(/GP prices the purchase order from its own USD exchange rate/)).toBeInTheDocument();
+    expect(screen.queryByText(/will be refused/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Register in GP' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     // No tax detail sent; the relay resolves the GP exchange rate + blanks TAXSCHID server-side.
