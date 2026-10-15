@@ -1009,8 +1009,8 @@ def get_vendor_rate_type(conn, vendor_id: str) -> str | None:
 def get_mc_setup(conn) -> dict:
     """Read-only: the company's multicurrency setup (MC40000) - functional currency + the default
     PURCHASING rate type (issue #257). A foreign-currency PO (vendor currency != functional) is priced
-    with that rate type when the vendor card names none (get_vendor_rate_type, #1659); eConnect then resolves the actual XCHGRATE from GP's maintained exchange rate
-    table (DYNAMICS.MC00100) itself. Returns {'functional': <id>, 'purchase_rate_type': <id or None>};
+    with that rate type when the vendor card names none (get_vendor_rate_type, #1659); eConnect then
+    resolves the actual XCHGRATE from GP's maintained exchange rate table (DYNAMICS.MC00100) itself. Returns {'functional': <id>, 'purchase_rate_type': <id or None>};
     a company with no MC setup (single-currency) yields functional 'CAD' and no rate type."""
     row = (
         conn.cursor()
