@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@mui/material';
 import { FlaskConical } from 'lucide-react';
+import DemoProgressDialog from './DemoProgressDialog';
 import { useDemoMode } from './useDemoMode';
 
 /**
@@ -20,7 +21,7 @@ import { useDemoMode } from './useDemoMode';
  * Tenant Owner or UC Nexus Admin can also put the demo data back to its starting state.
  */
 export default function DemoBanner() {
-  const { demoMode, canReset, busy, leave, reset } = useDemoMode();
+  const { demoMode, canReset, busy, running, leave, reset } = useDemoMode();
   const [confirming, setConfirming] = useState(false);
 
   if (!demoMode) return null;
@@ -80,6 +81,8 @@ export default function DemoBanner() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <DemoProgressDialog running={running} />
     </>
   );
 }
