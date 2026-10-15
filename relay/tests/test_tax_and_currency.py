@@ -18,6 +18,7 @@ from ucnexus_relay.econnect import (
     get_mc_setup,
     get_tax_detail_percent,
     get_vendor_currency,
+    get_vendor_rate_type,
     has_exchange_rate,
     list_tax_details,
     list_vendors,
@@ -75,6 +76,24 @@ def test_vendor_currency_blank_falls_back_to_cad():
 
 def test_vendor_currency_missing_row_falls_back_to_cad():
     assert get_vendor_currency(_FakeConn(one=None), "GHOST") == "CAD"
+
+
+# --- get_vendor_rate_type (PM00200.RATETPID, the rate type GP prices a vendor's PO with, #1659) ---
+
+_RateTypeRow = namedtuple("_RateTypeRow", "rate_type")
+
+
+def test_vendor_rate_type_reads_the_vendor_card():
+    conn = _FakeConn(one=_RateTypeRow("SELL  "))
+    assert get_vendor_rate_type(conn, "SEL101") == "SELL"
+    assert "PM00200" in conn.cursor_obj.sql and "RATETPID" in conn.cursor_obj.sql
+    assert conn.cursor_obj.params == ("SEL101",)
+
+
+def test_vendor_rate_type_blank_or_missing_is_none():
+    # None sends the op to the company default, as GP does
+    assert get_vendor_rate_type(_FakeConn(one=_RateTypeRow("   ")), "V1") is None
+    assert get_vendor_rate_type(_FakeConn(one=None), "GHOST") is None
 
 
 # --- get_mc_setup (MC40000: functional currency + default purchasing rate type) ---
@@ -162,7 +181,7 @@ def test_list_vendors_includes_currency_blank_defaults_to_cad():
     assert out[1]["currency"] == "CAD"
 
 
-# --- has_exchange_rate (#632 preflight: MC40100 table header -> MC00100 maintained rates) ---
+# --- has_exchange_rate (#632 preflight: MC40301 company currency + rate type map -> MC00100 rates) ---
 
 _RateRow = namedtuple("_RateRow", "ok")
 
@@ -171,18 +190,31 @@ def test_has_exchange_rate_true_when_a_row_matches():
     conn = _FakeConn(one=_RateRow(1))
     assert has_exchange_rate(conn, currency="USD", rate_type="AVERAGE", on_date=date(2026, 8, 26)) is True
     sql = conn.cursor_obj.sql
-    # the join GP itself resolves through: exchange table header (currency + rate type) -> rates
-    assert "MC40100" in sql
-    assert "MC00100" in sql
+    # the join GP itself resolves through: the company's currency + rate type -> exchange table map,
+    # then that table's rates. MC40100 is GP's rate type list (RATETPID alone) and has neither
+    # CURNCYID nor EXGTBLID to join on (#1659).
+    assert "dbo.MC40301" in sql
+    assert "DYNAMICS.dbo.MC00100" in sql
     assert "EXGTBLID" in sql
+    assert "MC40100" not in sql
     assert conn.cursor_obj.params == ("USD", "AVERAGE", date(2026, 8, 26), date(2026, 8, 26))
 
 
 def test_has_exchange_rate_false_when_no_row():
-    # TUBC's live state for USD: no exchange table maintained at all
     assert (
         has_exchange_rate(_FakeConn(one=None), currency="USD", rate_type="AVERAGE", on_date=date(2026, 8, 26)) is False
     )
+
+
+def test_has_exchange_rate_passes_when_the_read_itself_fails():
+    # a preflight that cannot read GP leaves the rate to eConnect rather than refusing the PO (#1659)
+    import pyodbc
+
+    class _FailingConn:
+        def cursor(self):
+            raise pyodbc.ProgrammingError("42S22", "Invalid column name 'EXGTBLID'.")
+
+    assert has_exchange_rate(_FailingConn(), currency="USD", rate_type="AVERAGE", on_date=date(2026, 8, 26)) is True
 
 
 # --- create_po_op currency preflight ordering (#632) ---
@@ -222,6 +254,7 @@ def test_create_po_raises_no_exchange_rate_before_taPoHdr(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: None)
     monkeypatch.setattr(
         ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"}
     )
@@ -239,6 +272,7 @@ def test_create_po_no_rate_type_still_raises_rate_type_unresolved(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: None)
     monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": None})
 
     def _boom(conn, **kw):
@@ -256,6 +290,7 @@ def test_create_po_rate_present_clears_the_preflight(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: None)
     monkeypatch.setattr(
         ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"}
     )
@@ -270,6 +305,37 @@ def test_create_po_rate_present_clears_the_preflight(monkeypatch):
     monkeypatch.setattr(ops.econnect, "get_next_po_number", _stop)
     with pytest.raises(_Stop):
         ops.create_po_op(object(), company="TUBC", request=_usd_po_request())
+
+
+def test_create_po_checks_the_rate_under_the_vendor_rate_type(monkeypatch):
+    # #1659: a vendor card naming a rate type wins over the company default, as in GP
+    _stub_header_lists(monkeypatch)
+    monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
+    monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: "SELL")
+    monkeypatch.setattr(
+        ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"}
+    )
+    checked = []
+    monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: checked.append(kw) or False)
+    with pytest.raises(ops.RelayOpError) as exc:
+        ops.create_po_op(object(), company="TUBC", request=_usd_po_request())
+    assert exc.value.code == "no_exchange_rate"
+    assert checked[0]["rate_type"] == "SELL"
+    assert "SELL" in exc.value.message
+
+
+def test_create_po_vendor_rate_type_covers_a_company_with_no_default(monkeypatch):
+    # no company default is no obstacle when the vendor card names the rate type
+    _stub_header_lists(monkeypatch)
+    monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
+    monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: "SELL")
+    monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": None})
+    monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: False)
+    with pytest.raises(ops.RelayOpError) as exc:
+        ops.create_po_op(object(), company="TUBC", request=_usd_po_request())
+    assert exc.value.code == "no_exchange_rate"
 
 
 # =====================================================================================================
@@ -466,6 +532,7 @@ def gp(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "CAD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: None)
     monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"})
     monkeypatch.setattr(ops.econnect, "get_tax_detail_percent", lambda conn, tid: _PERCENTS.get(tid))
     monkeypatch.setattr(ops.econnect, "get_charge_tax_schedules", lambda conn, vendor_id: dict(schedules))
@@ -602,6 +669,20 @@ def test_a_usd_po_is_unchanged_no_details_no_rows_blank_schedule(gp, monkeypatch
     assert create["TAXSCHID"] == "" and final["TAXSCHID"] == ""
     assert final["RATETPID"] == "BUY"
     assert final["Purchase_Freight_Taxable"] == 2
+
+
+def test_a_usd_po_sends_the_vendor_rate_type_to_gp(gp, monkeypatch):
+    # #1659: the rate type on taPoHdr is the vendor card's when it names one, so the PO is priced
+    # from the table GP itself would use, not the company default's
+    monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    monkeypatch.setattr(ops.econnect, "get_vendor_rate_type", lambda conn, vid: "SELL")
+    monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: True)
+    conn = _RecordingConn()
+
+    ops.create_po_op(conn, company="TUCSH", request=_po_request())
+
+    create, final = [_bound(sql, params) for sql, params in conn.matching("taPoHdr")]
+    assert create["RATETPID"] == "SELL" and final["RATETPID"] == "SELL"
 
 
 def test_a_usd_po_still_refuses_a_tax_detail(gp, monkeypatch):
