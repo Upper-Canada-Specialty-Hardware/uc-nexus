@@ -52,7 +52,23 @@ from .types import (
     ShipReadyLooseItem,
     StagedLooseItem,
     StagingPool,
+    StagingProjectSummary,
 )
+
+
+def _staged_lines(pool: dict) -> list[StagedLooseItem]:
+    """A staged pool as the workspace and the overview both show it, by opening then product."""
+    return [
+        StagedLooseItem(
+            opening_number=key[0],
+            hardware_category=key[1],
+            product_code=key[2],
+            staged_quantity=counts["staged"],
+            placed_quantity=counts["placed"],
+            unplaced_quantity=max(0, counts["staged"] - counts["placed"]),
+        )
+        for key, counts in sorted(pool.items(), key=lambda pair: tuple(str(part) for part in pair[0]))
+    ]
 
 
 def _container_items_input(items) -> list[dict]:
@@ -277,19 +293,26 @@ class ShippingQueries:
             containers = shipment_containers.get_containers(session, pid, open_only=True)
             pool = shipment_containers.build_staged_pool(session, pid, ready=ready, containers=containers)
             return StagingPool(
-                loose_items=[
-                    StagedLooseItem(
-                        opening_number=key[0],
-                        hardware_category=key[1],
-                        product_code=key[2],
-                        staged_quantity=counts["staged"],
-                        placed_quantity=counts["placed"],
-                        unplaced_quantity=max(0, counts["staged"] - counts["placed"]),
-                    )
-                    for key, counts in sorted(pool.items(), key=lambda pair: tuple(str(part) for part in pair[0]))
-                ],
+                loose_items=_staged_lines(pool),
                 containers=[container_to_type(c) for c in containers],
             )
+
+    @strawberry.field
+    def staging_overview(self, info: strawberry.Info) -> list[StagingProjectSummary]:
+        """Every project with something staged, grouped by project (#1698): what the staging page shows
+        before anyone picks a project, so nobody has to know which job to search for."""
+        with SessionLocal() as session:
+            summaries = shipment_containers.build_staging_overview(session, company=tenant_scope(info))
+            return [
+                StagingProjectSummary(
+                    project_id=strawberry.ID(str(s["project"].id)),
+                    project_number=s["project"].project_id,
+                    project_description=s["project"].description,
+                    loose_items=_staged_lines(s["pool"]),
+                    open_container_count=s["open_containers"],
+                )
+                for s in summaries
+            ]
 
     @strawberry.field
     def shipment_methods(self, info: strawberry.Info, active_only: bool = False) -> list[ShipmentMethod]:

@@ -684,3 +684,82 @@ def test_two_saves_racing_to_one_open_name_get_the_readable_conflict(db_session)
             containers.rename_container(db_session, skid.id, "Skid 9")
     finally:
         containers._check_name_free = original
+
+
+# --- the staging overview (#1698) ----------------------------------------------------------------
+
+
+def _overview(session, company="TUBC"):
+    return {s["project"].id: s for s in containers.build_staging_overview(session, company=company)}
+
+
+def _ship(session, project, *, qty, code="HG-100", cat="HINGE", opening="101"):
+    from datetime import datetime
+
+    from app.models.enums import ShipmentStatus
+    from app.models.shipping import PackingSlip, PackingSlipItem
+
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        shipped_by="tester",
+        shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.SCHEDULED,
+    )
+    session.add(slip)
+    session.flush()
+    session.add(
+        PackingSlipItem(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            opening_number=opening,
+            hardware_category=cat,
+            product_code=code,
+            quantity=qty,
+        )
+    )
+    session.flush()
+
+
+def test_the_overview_lists_every_project_with_something_staged(db_session):
+    first, second, idle = _project(db_session), _project(db_session), _project(db_session)
+    _staged_loose(db_session, first, qty=4)
+    _staged_loose(db_session, second, code="CL-200", cat="CLOSER", qty=2, opening="205")
+
+    overview = _overview(db_session)
+
+    assert overview[first.id]["pool"] == {("101", "HINGE", "HG-100"): {"staged": 4, "placed": 0}}
+    assert overview[second.id]["pool"] == {("205", "CLOSER", "CL-200"): {"staged": 2, "placed": 0}}
+    assert idle.id not in overview
+
+
+def test_the_overview_agrees_with_the_project_workspace(db_session):
+    """Shipped units net out and placed units count, exactly as the project's own pool reads them."""
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=6)
+    _staged_loose(db_session, project, code="CL-200", cat="CLOSER", qty=1, opening="102")
+    _ship(db_session, project, qty=2)
+    containers.set_container_items(db_session, _container(db_session, project).id, [_loose_item(3)])
+
+    summary = _overview(db_session)[project.id]
+
+    assert summary["pool"] == containers.build_staged_pool(db_session, project.id)
+    assert summary["pool"][("101", "HINGE", "HG-100")] == {"staged": 4, "placed": 3}
+    assert summary["open_containers"] == 1
+
+
+def test_a_project_whose_staged_hardware_all_shipped_leaves_the_overview(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=2)
+    _ship(db_session, project, qty=2)
+
+    assert project.id not in _overview(db_session)
+
+
+def test_the_overview_shows_only_the_callers_company(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=2)
+
+    assert project.id in _overview(db_session, company="TUBC")
+    assert project.id not in _overview(db_session, company="UBC")

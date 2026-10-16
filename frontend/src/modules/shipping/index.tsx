@@ -1,17 +1,20 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { useQuery } from '@apollo/client/react';
 import { Box, Button } from '@mui/material';
-import { Settings2 } from 'lucide-react';
+import { ArrowLeft, Settings2 } from 'lucide-react';
 import ShipmentsList from './ShipmentsList';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import StagingWorkspace from './StagingWorkspace';
+import StagingOverview from './StagingOverview';
 import ShippingLanding from './ShippingLanding';
 import RequestWorkspace from './request-workspace/RequestWorkspace';
 import ProjectPicker from '../../components/ProjectPicker';
 import { useScopedProject } from '../../hooks/useScopedProject';
 import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 
 /**
@@ -51,6 +54,9 @@ export default function ShippingModule() {
  * is handed to the workspace, and the same #425 GP-setup verdict rides along so the Ship button can
  * gate on it. Shipment methods sit beside the picker too (#589): the person loading a skid is the one
  * choosing how it travels.
+ *
+ * With no project picked the page shows every project's staged floor (#1698), and opening one of
+ * them is the same as picking it.
  */
 function StagingRoute() {
   const [picked, setProject] = useState<Project | null>(null);
@@ -61,6 +67,11 @@ function StagingRoute() {
   // MANAGER's, with the TENANT OWNER beside them.
   const { ownsTenant, hasRole } = useIdentity();
   const canManage = ownsTenant || hasRole('Shipping Manager');
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const openProject = useCallback(
+    (projectId: string) => setProject(projectsData?.projects.find((p) => p.id === projectId) ?? null),
+    [projectsData],
+  );
   return (
     <Box>
       <PageHeader title="Staging" parent={{ label: 'Shipping', to: '/app/shipping' }} />
@@ -74,11 +85,23 @@ function StagingRoute() {
           mb: 2,
         }}
       >
-        <ProjectPicker
-          value={project}
-          onChange={setProject}
-          sx={{ flex: 1, minWidth: 240, maxWidth: 420 }}
-        />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
+          {project && (
+            <Button
+              size="small"
+              startIcon={<ArrowLeft size={16} strokeWidth={1.75} />}
+              onClick={() => setProject(null)}
+              sx={{ flexShrink: 0 }}
+            >
+              All projects
+            </Button>
+          )}
+          <ProjectPicker
+            value={project}
+            onChange={setProject}
+            sx={{ flex: 1, minWidth: 240, maxWidth: 420 }}
+          />
+        </Box>
         {canManage && (
           <Button
             variant="outlined"
@@ -90,7 +113,11 @@ function StagingRoute() {
           </Button>
         )}
       </Box>
-      <StagingWorkspace projectId={project?.id} project={project} />
+      {project ? (
+        <StagingWorkspace projectId={project.id} project={project} />
+      ) : (
+        <StagingOverview onOpen={openProject} />
+      )}
       {canManage && (
         <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
       )}

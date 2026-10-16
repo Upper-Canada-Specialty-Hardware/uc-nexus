@@ -22,6 +22,17 @@ const CONTAINER_FIELDS = `
   }
 `;
 
+// #1698: every project's staged floor, for the staging page before a project is picked. The lines
+// only - each project's containers are its workspace's to load.
+export const GET_STAGING_OVERVIEW = gql`
+  query GetStagingOverview {
+    stagingOverview {
+      projectId projectNumber projectDescription openContainerCount
+      looseItems { openingNumber hardwareCategory productCode stagedQuantity placedQuantity unplacedQuantity }
+    }
+  }
+`;
+
 export const GET_STAGING_POOL = gql`
   query GetStagingPool($projectId: ID!) {
     stagingPool(projectId: $projectId) {
