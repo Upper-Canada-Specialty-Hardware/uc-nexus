@@ -135,10 +135,7 @@ export default function ReportBubble() {
   };
 
   const onClick = () => {
-    if (dragged.current) {
-      dragged.current = false;
-      return;
-    }
+    if (dragged.current) return;
     // The panel grows out of the bubble: its offset from the middle of the screen, where the panel sits.
     setOrigin({
       x: x.get() + BUBBLE_SIZE / 2 - window.innerWidth / 2,
@@ -171,6 +168,11 @@ export default function ReportBubble() {
             top: TOP_LIMIT,
             right: Math.max(0, viewport.width - BUBBLE_SIZE),
             bottom: Math.max(TOP_LIMIT, viewport.height - BUBBLE_SIZE),
+          }}
+          // Every press starts as a tap. Touch browsers send no click after a drag at all, so the flag
+          // is cleared here rather than by the click, or the next real tap would be swallowed.
+          onPointerDown={() => {
+            dragged.current = false;
           }}
           onDragStart={() => {
             dragged.current = true;
