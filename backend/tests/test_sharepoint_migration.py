@@ -421,6 +421,8 @@ def test_clone_origin_fields_carries_unit_cost():
         "stock_item_id",
         "shipment_return_item_id",
         "unit_cost",
+        # #1699: how a stock-origin row came in travels with it too.
+        "entry_source",
     }
 
 

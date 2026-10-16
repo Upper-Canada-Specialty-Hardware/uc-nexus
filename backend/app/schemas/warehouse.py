@@ -566,6 +566,8 @@ class WarehouseQueries:
                     warehouse_name=r["warehouse_name"],
                     project_number=r["project_number"],
                     project_name=r["project_name"],
+                    origin_kind=r["origin_kind"],
+                    origin_reference=r["origin_reference"],
                     matches_schedule=_matches(
                         r["inventory_location"].hardware_category, r["inventory_location"].product_code
                     ),

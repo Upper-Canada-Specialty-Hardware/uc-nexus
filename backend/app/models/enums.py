@@ -328,6 +328,38 @@ class PoolKind(str, enum.Enum):
     OVERHEAD = "OVERHEAD"
 
 
+class InventoryEntrySource(str, enum.Enum):
+    """How a project inventory row with no PO line and no shipment return entered (#1699).
+
+    Such a row's only origin is a stock_items row, and that says nothing about the path: stock rows
+    merge units of every source, and a transfer or split copies the origin onto a new row. So the path
+    is recorded on the row when it is made, and travels with the other origin fields. A PO-origin or
+    return-origin row leaves it null - its foreign key already says where it came from.
+    """
+
+    # Allocate on the stock pool: units taken out of the pool for a project.
+    STOCK_ALLOCATION = "STOCK_ALLOCATION"
+    # The legacy inventory list brought across by the migration wizard (#1638), or the demo's build.
+    LEGACY_MIGRATION = "LEGACY_MIGRATION"
+    # A cancelled pull put its units back with no row left to put them on (#343).
+    PULL_RESTOCK = "PULL_RESTOCK"
+
+
+class InventoryOriginKind(str, enum.Enum):
+    """Where a project inventory row came from, as the inventory table shows it (#1699).
+
+    Derived on read, never stored: a PO line or a shipment return is the row's own foreign key, and
+    the three no-PO paths are its `entry_source`. UNKNOWN is a stock-origin row nothing recorded.
+    """
+
+    PURCHASE_ORDER = "PURCHASE_ORDER"
+    SHIPMENT_RETURN = "SHIPMENT_RETURN"
+    STOCK_ALLOCATION = "STOCK_ALLOCATION"
+    LEGACY_MIGRATION = "LEGACY_MIGRATION"
+    PULL_RESTOCK = "PULL_RESTOCK"
+    UNKNOWN = "UNKNOWN"
+
+
 class DestockSource(str, enum.Enum):
     CANCELLATION = "CANCELLATION"
     DEFICIENT_SWAP = "DEFICIENT_SWAP"

@@ -8,7 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, DestockCost, DestockSource, PoolKind
+from app.models.enums import (
+    AuditAction,
+    AuditEntityType,
+    DestockCost,
+    DestockSource,
+    InventoryEntrySource,
+    PoolKind,
+)
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
@@ -201,8 +208,12 @@ def allocate_stock_to_project(
     target_row: str | None,
     target_bay: str | None,
     performed_by: str,
+    entry_source: InventoryEntrySource = InventoryEntrySource.STOCK_ALLOCATION,
 ) -> InventoryLocationModel:
     """Transfer `quantity` units from a stock row into a project's inventory.
+
+    `entry_source` (#1699) is what the row says brought it in: an allocate off the pool unless the
+    caller is the legacy migration, which lands its project rows through here too.
 
     Creates an InventoryLocation whose origin is the stock_items row (stock_item_id set,
     po_line_item_id / receive_line_item_id NULL). The CHECK constraint ck_inventory_locations_has_origin
@@ -248,6 +259,7 @@ def allocate_stock_to_project(
         po_line_item_id=None,
         receive_line_item_id=None,
         stock_item_id=stock_item_id,
+        entry_source=entry_source,
         warehouse_id=si.warehouse_id,
         hardware_category=target_hardware_category,
         product_code=target_product_code,

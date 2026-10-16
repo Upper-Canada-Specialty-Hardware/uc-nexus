@@ -48,6 +48,8 @@ function row(id: string, productCode: string, quantity: number, lineValue: numbe
     lineValue,
     poNumber: 'PO-1',
     vendorName: 'Vendor',
+    originKind: 'PURCHASE_ORDER',
+    originReference: 'PO-1',
     warehouseCode: 'W1',
     warehouseName: 'Main',
     projectNumber: 'J-1',

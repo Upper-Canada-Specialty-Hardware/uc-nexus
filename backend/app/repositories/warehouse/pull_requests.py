@@ -19,6 +19,7 @@ from app.errors import (
 from app.models.enums import (
     AuditAction,
     AuditEntityType,
+    InventoryEntrySource,
     NotificationType,
     PullPickLineState,
     PullRequestSource,
@@ -1378,6 +1379,7 @@ def _return_units_to_project_inventory(
         il = InventoryLocationModel(
             project_id=project_id,
             stock_item_id=stock_row.id,
+            entry_source=InventoryEntrySource.PULL_RESTOCK,
             warehouse_id=warehouse_id,
             hardware_category=hardware_category,
             product_code=product_code,
