@@ -20,6 +20,7 @@ from .demo import DemoMutations
 from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
 from .inventory_value import InventoryValueMutations
+from .issue_report import IssueReportMutations
 from .notification import NotificationMutations
 from .po import POMutations
 from .project import ProjectMutations
@@ -41,6 +42,7 @@ class Mutation(
     GpOutboxMutations,
     ImportMutations,
     InventoryValueMutations,
+    IssueReportMutations,
     NotificationMutations,
     POMutations,
     ProjectMutations,

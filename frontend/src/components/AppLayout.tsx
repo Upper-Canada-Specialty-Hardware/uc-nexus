@@ -18,6 +18,7 @@ import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
 import CompanyGate from './CompanyGate';
 import DemoBanner from '../demo/DemoBanner';
+import ReportBubble from '../report/ReportBubble';
 import DemoModeUserButton from '../demo/DemoModeUserButton';
 import companyLogo from '../assets/brand/ucsh-logo-mark.png';
 
@@ -135,6 +136,9 @@ export default function AppLayout() {
       {/* Renders nothing; watches for a background GP-outbox drain and evicts what it invalidates,
           which is the browser's only signal that a queued write posted itself (#353 PR E). */}
       <GpOutboxWatcher />
+
+      {/* #1677: the report bubble, on every signed-in screen for everybody, demo mode included. */}
+      <ReportBubble />
 
       <Box sx={{ display: 'flex', flexGrow: 1, alignItems: 'stretch' }}>
         <NavRail collapsed={railCollapsed} />

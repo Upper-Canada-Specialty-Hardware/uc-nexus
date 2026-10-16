@@ -7,6 +7,7 @@ from .enums import (
     DeficiencyResolution,
     DestockCost,
     DestockSource,
+    IssueReportKind,
     MigrationDestination,
     PoolKind,
     ReturnDisposition,
@@ -1076,3 +1077,38 @@ class SaveDoorsOnHandInput:
     company: str
     quantity: int
     project_id: strawberry.ID | None = None
+
+
+@strawberry.input
+class IssueReportRecordInput:
+    """One record the page was showing, read off the route: {name: "project", id: "…"}."""
+
+    name: str
+    id: str
+
+
+@strawberry.input
+class IssueReportContextInput:
+    """What only the browser knows about where the user was (#1677). Every field is optional and capped
+    on the server; who the user is never comes from here."""
+
+    url: str = ""
+    route: str = ""
+    module: str = ""
+    page_title: str = ""
+    records: list[IssueReportRecordInput] | None = None
+    viewport: str = ""
+    screen: str = ""
+    color_scheme: str = ""
+    user_agent: str = ""
+    timezone: str = ""
+    client_time: str = ""
+    build: str = ""
+    recent_errors: list[str] | None = None
+
+
+@strawberry.input
+class SubmitIssueReportInput:
+    kind: IssueReportKind
+    description: str
+    context: IssueReportContextInput

@@ -11,6 +11,7 @@ import { AuthRecoveryProvider } from './contexts/AuthRecoveryContext';
 import { ActingCompanyProvider } from './company/ActingCompanyContext';
 import { ToastProvider } from './components/Toast';
 import { MotionProvider } from './motion';
+import { installErrorCapture } from './report/reportContext';
 import App from './App';
 // @ts-expect-error fontsource CSS-only import has no type declarations
 import '@fontsource-variable/source-sans-3';
@@ -24,6 +25,9 @@ const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 if (!CLERK_PUBLISHABLE_KEY) {
   throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY environment variable');
 }
+
+// #1677: from the first line of the app, so a report carries what went wrong in this tab before it.
+installErrorCapture();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

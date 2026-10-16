@@ -13,6 +13,11 @@ ENV VITE_GRAPHQL_URL=$VITE_GRAPHQL_URL
 ARG VITE_CLERK_PUBLISHABLE_KEY
 ENV VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY
 
+# #1677: the commit this bundle is built from, for the report bubble. Railway passes its own
+# RAILWAY_GIT_COMMIT_SHA to a build that declares it; a local build has none and reports "dev".
+ARG RAILWAY_GIT_COMMIT_SHA
+ENV VITE_BUILD_SHA=$RAILWAY_GIT_COMMIT_SHA
+
 RUN npm run build
 
 FROM nginx:alpine
