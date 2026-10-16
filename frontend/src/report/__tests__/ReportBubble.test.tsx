@@ -110,9 +110,9 @@ it('keeps a half-written report when the dialog is closed and reopened', async (
   fireEvent.click(screen.getByRole('button', { name: 'Report an issue' }));
   fireEvent.change(await screen.findByLabelText('What happened?'), { target: { value: 'Half a thought' } });
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-
-  fireEvent.click(screen.getByRole('button', { name: 'Report an issue' }));
+  // The panel goes a beat before the modal clears the aria-hidden it put on the page, so wait for the
+  // bubble itself to be reachable again.
+  fireEvent.click(await screen.findByRole('button', { name: 'Report an issue' }));
 
   expect(await screen.findByLabelText('What happened?')).toHaveValue('Half a thought');
 });
