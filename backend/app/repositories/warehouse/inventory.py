@@ -8,7 +8,15 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, NotificationType
+from app.models.enums import (
+    AuditAction,
+    AuditEntityType,
+    Classification,
+    HardwareItemState,
+    InventoryEntrySource,
+    InventoryOriginKind,
+    NotificationType,
+)
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
@@ -646,8 +654,10 @@ def get_inventory_rows(
     it like the spreadsheet it replaces; a product-level rollup is one sort away.
 
     One query, no N+1: the vendor name and PO number come off the originating PO line by outer join,
-    and a stock-origin row (no po_line_item_id) simply carries nulls.
+    and a stock-origin row (no po_line_item_id) simply carries nulls. A returned row's packing slip
+    comes the same way, for its origin (#1699).
     """
+    from app.models.shipping import PackingSlip, ShipmentReturn, ShipmentReturnItem
     from app.models.warehouse import Warehouse as WarehouseModel
 
     stmt = (
@@ -660,9 +670,13 @@ def get_inventory_rows(
             WarehouseModel.name,
             ProjectModel.project_id,
             ProjectModel.description,
+            PackingSlip.packing_slip_number,
         )
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
+        .outerjoin(ShipmentReturnItem, InventoryLocationModel.shipment_return_item_id == ShipmentReturnItem.id)
+        .outerjoin(ShipmentReturn, ShipmentReturnItem.shipment_return_id == ShipmentReturn.id)
+        .outerjoin(PackingSlip, ShipmentReturn.packing_slip_id == PackingSlip.id)
         .join(WarehouseModel, InventoryLocationModel.warehouse_id == WarehouseModel.id)
         .join(ProjectModel, InventoryLocationModel.project_id == ProjectModel.id)
         # Rows emptied by destock or allocation are kept for FK integrity but hold nothing.
@@ -683,9 +697,20 @@ def get_inventory_rows(
     )
 
     rows = []
-    for il, unit_cost, po_number, vendor_name, wh_code, wh_name, proj_number, proj_desc in session.execute(stmt).all():
+    for (
+        il,
+        unit_cost,
+        po_number,
+        vendor_name,
+        wh_code,
+        wh_name,
+        proj_number,
+        proj_desc,
+        slip_number,
+    ) in session.execute(stmt).all():
         # PO line cost first, then the row's own off-PO cost (the SharePoint migration), then 0.
         cost = float(unit_cost if unit_cost is not None else (il.unit_cost or 0))
+        origin_kind, origin_reference = inventory_origin(il, po_number=po_number, packing_slip_number=slip_number)
         rows.append(
             {
                 "inventory_location": il,
@@ -697,6 +722,30 @@ def get_inventory_rows(
                 "warehouse_name": wh_name,
                 "project_number": proj_number,
                 "project_name": proj_desc or proj_number,
+                "origin_kind": origin_kind,
+                "origin_reference": origin_reference,
             }
         )
     return rows
+
+
+_ENTRY_ORIGIN = {
+    InventoryEntrySource.STOCK_ALLOCATION: InventoryOriginKind.STOCK_ALLOCATION,
+    InventoryEntrySource.LEGACY_MIGRATION: InventoryOriginKind.LEGACY_MIGRATION,
+    InventoryEntrySource.PULL_RESTOCK: InventoryOriginKind.PULL_RESTOCK,
+}
+
+
+def inventory_origin(
+    il: InventoryLocationModel, *, po_number: str | None, packing_slip_number: str | None
+) -> tuple[InventoryOriginKind, str | None]:
+    """Where a project inventory row came from, and the number that names it (#1699).
+
+    A PO line wins: a migrated row that was matched to its PO line was received against that PO.
+    Then a shipment return (named by the slip it came back on), then how a stock-origin row came in.
+    """
+    if il.po_line_item_id is not None:
+        return InventoryOriginKind.PURCHASE_ORDER, po_number
+    if il.shipment_return_item_id is not None:
+        return InventoryOriginKind.SHIPMENT_RETURN, packing_slip_number
+    return _ENTRY_ORIGIN.get(il.entry_source, InventoryOriginKind.UNKNOWN), None

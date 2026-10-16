@@ -32,7 +32,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.demo import DEMO_COMPANY
 from app.errors import ConflictError, NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, POOrigin
+from app.models.enums import (
+    AuditAction,
+    AuditEntityType,
+    Classification,
+    HardwareItemState,
+    InventoryEntrySource,
+    POOrigin,
+)
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
@@ -369,6 +376,7 @@ def migrate_inventory(
                     target_row=row,
                     target_bay=bay,
                     performed_by=performed_by,
+                    entry_source=InventoryEntrySource.LEGACY_MIGRATION,
                 )
                 project_locations += 1
                 key = (entry["project_id"], category, code, None)

@@ -11,6 +11,7 @@ from .enums import (
     GpJobState,
     GpOutboxStatus,
     HardwareItemState,
+    InventoryOriginKind,
     NotificationType,
     PickOutcome,
     PODocumentType,
@@ -1618,6 +1619,10 @@ class InventoryRow:
     warehouse_name: str
     project_number: str
     project_name: str
+    # #1699: where the row came from - the PO it was received on, the slip it came back on, or how a
+    # row with neither got here - and the number that names it (PO number, packing slip number).
+    origin_kind: InventoryOriginKind
+    origin_reference: str | None
     # False when this row's (category, code) appears nowhere in the project's imported hardware
     # schedule, so no pull request can ever claim it: both request builders start from the schedule,
     # and they match on the exact pair. Stock that entered outside an import - the SharePoint
