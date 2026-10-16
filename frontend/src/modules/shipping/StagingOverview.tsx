@@ -8,15 +8,16 @@ import { GET_STAGING_OVERVIEW } from '../../graphql/shipping';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import type { StagingProjectSummary } from './staging';
 
-// Minimums hold an opening number, a category, a product code and three counts whole; the product
-// takes the slack and ellipsizes with the full value on hover.
+// Minimums hold an opening number, a category, a product code and the three count headers whole (the
+// headers are wider than their numbers, #1715); the product takes the slack and ellipsizes with the full
+// value on hover.
 const LINE_COLUMNS: FitTableColumn[] = [
-  { id: 'opening', label: 'Opening', min: 80, weight: 0.6 },
-  { id: 'category', label: 'Category', min: 90, weight: 0.8 },
-  { id: 'product', label: 'Product', min: 110, weight: 1.6 },
-  { id: 'staged', label: 'Staged', min: 64, weight: 0.4, align: 'right' },
-  { id: 'placed', label: 'In containers', min: 104, weight: 0.5, align: 'right' },
-  { id: 'loose', label: 'Loose', min: 60, weight: 0.4, align: 'right' },
+  { id: 'opening', label: 'Opening', min: 88, weight: 0.6 },
+  { id: 'category', label: 'Category', min: 100, weight: 0.8 },
+  { id: 'product', label: 'Product', min: 120, weight: 1.6 },
+  { id: 'staged', label: 'Staged', min: 84, weight: 0.4, align: 'right' },
+  { id: 'placed', label: 'In containers', min: 132, weight: 0.5, align: 'right' },
+  { id: 'loose', label: 'Loose', min: 76, weight: 0.4, align: 'right' },
 ];
 
 function plural(n: number, noun: string): string {
@@ -119,10 +120,12 @@ export default function StagingOverview({ onOpen }: { onOpen: (projectId: string
       <Typography component="div" sx={{ ...microLabelSx, mb: 1.5 }}>
         Staged across {plural(summaries.length, 'project')} - open one to load its containers
       </Typography>
+      {/* #1715: auto-fit, so a lone project spans the row instead of leaving half of it empty, and
+          several share it once there is room for two groups' minimums side by side. */}
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' },
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 640px), 1fr))',
           gap: 2,
           alignItems: 'start',
         }}
