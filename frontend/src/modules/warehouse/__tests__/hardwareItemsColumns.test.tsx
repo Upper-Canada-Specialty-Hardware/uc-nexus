@@ -38,9 +38,9 @@ it('exports the origin PO and the vendor as separate values (#1445, #1699)', () 
 });
 
 it.each([
-  ['STOCK_ALLOCATION', null, 'Allocated from stock'],
-  ['LEGACY_MIGRATION', null, 'Legacy inventory list'],
-  ['PULL_RESTOCK', null, 'Cancelled pull restock'],
+  ['STOCK_ALLOCATION', null, 'Stock pool'],
+  ['LEGACY_MIGRATION', null, 'Legacy list'],
+  ['PULL_RESTOCK', null, 'Restock'],
   ['SHIPMENT_RETURN', 'PS-0042', 'Return PS-0042'],
   ['UNKNOWN', null, 'Unknown'],
 ])('says how a row with no PO came in (%s, #1699)', (originKind, originReference, expected) => {

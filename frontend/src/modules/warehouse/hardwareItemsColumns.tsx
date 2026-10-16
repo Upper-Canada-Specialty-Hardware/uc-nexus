@@ -62,11 +62,13 @@ export interface GridRow extends InventoryRow {
   notOnSchedule: boolean;
 }
 
+// Short enough to sit whole in the column's minimum once the chip uppercases them (#1718); the hint
+// below carries the full wording on hover.
 const ORIGIN_LABEL: Record<Exclude<InventoryOriginKind, 'PURCHASE_ORDER'>, string> = {
   SHIPMENT_RETURN: 'Return',
-  STOCK_ALLOCATION: 'Allocated from stock',
-  LEGACY_MIGRATION: 'Legacy inventory list',
-  PULL_RESTOCK: 'Cancelled pull restock',
+  STOCK_ALLOCATION: 'Stock pool',
+  LEGACY_MIGRATION: 'Legacy list',
+  PULL_RESTOCK: 'Restock',
   UNKNOWN: 'Unknown',
 };
 
@@ -201,6 +203,8 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       field: 'origin',
       headerName: 'Origin',
       flex: 1,
+      // The labels fit this whole (#1718); a long return slip number ellipsizes, full on hover. The grid's
+      // floors leave no room to widen it at 1366.
       minWidth: 130,
       valueGetter: (_value, row) => originLabel(row),
       renderCell: (params) => {
@@ -208,7 +212,7 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
         if (originKind !== 'PURCHASE_ORDER') {
           const kind = (originKind in ORIGIN_HINT ? originKind : 'UNKNOWN') as keyof typeof ORIGIN_HINT;
           return (
-            <Tooltip title={ORIGIN_HINT[kind]}>
+            <Tooltip title={`${params.value as string}: ${ORIGIN_HINT[kind]}`}>
               <Chip
                 size="small"
                 variant="outlined"
