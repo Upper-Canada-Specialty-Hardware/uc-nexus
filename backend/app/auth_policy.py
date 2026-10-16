@@ -373,6 +373,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # admin's call alone; and what it is built from is the company's real data.
     "rebuildDemo": NEXUS_ADMIN_ROLE,
     "demoMirror": NEXUS_ADMIN_ROLE,
+    # #1697: anybody in demo mode resets the demo and reads its resets; the bodies refuse anybody who is
+    # not, because "in demo mode" is the account's flag rather than a role.
+    "resetDemo": SIGNED_IN,
+    "demoResetStatus": SIGNED_IN,
+    "acknowledgeDemoReset": SIGNED_IN,
     # --- user.py --------------------------------------------------------------------------
     # All four shipped ungated before #415. `updateUserRoles` is the one that matters most: it grants
     # the roles every other entry in this table is gated on, so an open copy is a self-service
