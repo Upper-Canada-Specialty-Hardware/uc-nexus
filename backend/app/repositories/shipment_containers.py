@@ -365,6 +365,61 @@ def build_staged_pool(
     return pool
 
 
+def build_staging_overview(session: Session, *, company: str | None) -> list[dict]:
+    """Every project's staged pool at once, for the staging page before a project is picked (#1698).
+
+    `[{"project": Project, "pool": {key: {"staged", "placed"}}, "open_containers": n}]`, by job number.
+
+    The same two aggregates `get_ship_ready_items` nets - read once each with the project in the key,
+    as INVENTORY VALUE (#662) reads them - and the same placement rule as `build_staged_pool`, so the
+    overview and a project's own workspace agree on every line. Four statements for the whole
+    company, however many projects have something staged.
+    """
+    from app.repositories import shipping_repository, tenancy
+
+    staged: dict[uuid.UUID, dict] = {}
+    for row in session.execute(shipping_repository.staged_fulfilled_stmt(company=company, by_project=True)):
+        key = loose_key(row.opening_number, row.hardware_category, row.product_code)
+        staged.setdefault(row.project_id, {})[key] = int(row.total_requested)
+    for row in session.execute(shipping_repository.staged_shipped_stmt(company=company, by_project=True)):
+        key = loose_key(row.opening_number, row.hardware_category, row.product_code)
+        lines = staged.get(row.project_id)
+        if lines is not None and key in lines:
+            lines[key] -= int(row.total_shipped)
+
+    pools: dict[uuid.UUID, dict] = {}
+    for project_id, lines in staged.items():
+        for key, quantity in lines.items():
+            if quantity > 0:
+                pools.setdefault(project_id, {})[key] = {"staged": quantity, "placed": 0}
+
+    stmt = (
+        select(ShipmentContainer)
+        .options(selectinload(ShipmentContainer.items))
+        .where(ShipmentContainer.packing_slip_id.is_(None))
+    )
+    if company is not None:
+        stmt = stmt.where(ShipmentContainer.project_id.in_(tenancy.project_ids_for(company)))
+    open_containers: dict[uuid.UUID, int] = {}
+    for container in session.scalars(stmt).unique().all():
+        open_containers[container.project_id] = open_containers.get(container.project_id, 0) + 1
+        pool = pools.setdefault(container.project_id, {})
+        for item in container.items:
+            # As in build_staged_pool: a manual line never came off the staged pool.
+            if item.is_manual:
+                continue
+            key = loose_key(item.opening_number, item.hardware_category, item.product_code)
+            pool.setdefault(key, {"staged": 0, "placed": 0})["placed"] += item.quantity
+
+    if not pools:
+        return []
+    projects = session.scalars(select(Project).where(Project.id.in_(pools.keys()))).all()
+    return [
+        {"project": p, "pool": pools[p.id], "open_containers": open_containers.get(p.id, 0)}
+        for p in sorted(projects, key=lambda p: p.project_id or "")
+    ]
+
+
 def _check_available(
     session: Session,
     container: ShipmentContainer,

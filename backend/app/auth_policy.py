@@ -287,6 +287,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.
     "stagingPool": SIGNED_IN,
+    "stagingOverview": SIGNED_IN,
     "createShipmentContainer": SIGNED_IN,
     "renameShipmentContainer": SIGNED_IN,
     "deleteShipmentContainer": SIGNED_IN,
