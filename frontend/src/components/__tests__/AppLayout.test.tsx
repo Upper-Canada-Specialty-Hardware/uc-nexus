@@ -15,6 +15,7 @@ vi.mock('../Sidebar', () => ({ default: () => null, NavRail: () => null }));
 vi.mock('../../relay/GpQueueChip', () => ({ default: () => null }));
 vi.mock('../../relay/GpOutboxWatcher', () => ({ default: () => null }));
 vi.mock('../../demo/DemoBanner', () => ({ default: () => null }));
+vi.mock('../../report/ReportBubble', () => ({ default: () => null }));
 vi.mock('../../demo/DemoModeUserButton', () => ({ default: () => null }));
 
 // This runner exposes no web storage at all (see src/test/setup.ts), and the bar reads the nav
