@@ -55,6 +55,15 @@ export interface StagingPool {
   containers: Container[];
 }
 
+/** One project's staged floor on the staging page's overview (#1698). */
+export interface StagingProjectSummary {
+  projectId: string;
+  projectNumber: string;
+  projectDescription: string | null;
+  looseItems: StagedLooseItem[];
+  openContainerCount: number;
+}
+
 /**
  * Whether a container line and a staged pool row are the same stock.
  *

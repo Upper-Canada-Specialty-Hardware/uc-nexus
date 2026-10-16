@@ -287,3 +287,30 @@ def test_complete_pull_request_executes_through_the_schema(signed_in, db_session
     )
     assert result.errors is None, result.errors
     assert result.data["completePullRequest"]["status"] == "COMPLETED"
+
+
+def test_staging_overview_groups_the_staged_floor_by_project(signed_in, db_session):
+    """#1698: the staging page's first read - every project with something staged, no project picked."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    _req, pr = _accept_and_pick_shipping(db_session, project, qty=2)
+    warehouse_repository.complete_pull_request(db_session, pr.id, completed_by="picker")
+    db_session.flush()
+
+    result = _execute(
+        """{ stagingOverview { projectId projectNumber openContainerCount
+               looseItems { openingNumber productCode stagedQuantity unplacedQuantity } } }""",
+        {},
+    )
+    assert result.errors is None, result.errors
+    mine = [s for s in result.data["stagingOverview"] if s["projectId"] == str(project.id)]
+    assert mine == [
+        {
+            "projectId": str(project.id),
+            "projectNumber": project.project_id,
+            "openContainerCount": 0,
+            "looseItems": [
+                {"openingNumber": "A01", "productCode": "HG-100", "stagedQuantity": 2, "unplacedQuantity": 2}
+            ],
+        }
+    ]

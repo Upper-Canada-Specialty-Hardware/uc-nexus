@@ -1501,6 +1501,18 @@ class StagingPool:
 
 
 @strawberry.type
+class StagingProjectSummary:
+    """One project's staged hardware on the staging page's overview (#1698): every line, and how many
+    open containers it is being loaded into. The containers themselves stay on the project's workspace."""
+
+    project_id: strawberry.ID
+    project_number: str
+    project_description: str | None
+    loose_items: list[StagedLooseItem]
+    open_container_count: int
+
+
+@strawberry.type
 class ShipmentMethod:
     """How a load can travel, as the shipping department maintains it (#451).
 
