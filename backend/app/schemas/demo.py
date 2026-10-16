@@ -8,7 +8,10 @@ Who may do what was ruled on the issues:
   - a UC NEXUS ADMIN turns it on or off for any account of a UBC company (`updateUserDemoMode`), and
     turns it on for themselves only while working in one;
   - a UC NEXUS ADMIN rebuilds the demo from UBC (`rebuildDemo`), wiping every demo user's role-play, and
-    sees what it is built from (`demoMirror`). Nobody else resets it: the demo is persistent and shared.
+    sees what it is built from (`demoMirror`);
+  - anybody in demo mode resets it the same way from its banner (`resetDemo`, #1697), and everybody else
+    is told it was reset, by whom and when, the next time they are in demo mode (`demoResetStatus`,
+    `acknowledgeDemoReset`).
 
 Turning demo mode on builds the demo the first time anybody does, so there is always one to walk into.
 """
@@ -24,6 +27,7 @@ from app.auth import (
     ForbiddenError,
     admin_acting_company,
     caller_company,
+    caller_demo_mode,
     caller_roles,
     current_user,
     resolve_display_name,
@@ -36,9 +40,10 @@ from app.repositories import demo_snapshot_repository, user_repository
 from app.services import demo_build, demo_mirror, demo_snapshot
 
 from .converters import clerk_user_to_type
-from .types import ClerkUser, DemoMirrorStatus, DemoSourceRead
+from .types import ClerkUser, DemoMirrorStatus, DemoResetNotice, DemoResetStatus, DemoSourceRead
 
 _NOT_UBC = "Demo mode is only for UBC accounts."
+_NOT_IN_DEMO = "Only someone in demo mode can reset the demo or read its resets."
 
 
 def _when(value) -> datetime | None:
@@ -91,6 +96,28 @@ def _status() -> DemoMirrorStatus:
     )
 
 
+def _reset_status(user_id: str) -> DemoResetStatus:
+    with SessionLocal() as session:
+        build = state.get(session, state.BUILD) or {}
+    building = demo_build.building()
+    notice = demo_build.reset_notice(user_id)
+    return DemoResetStatus(
+        building=building,
+        build_started_at=_when(build.get("started_at")) if building else None,
+        build_started_by=build.get("started_by") if building else None,
+        notice=DemoResetNotice(reset_at=_when(notice["reset_at"]), reset_by=notice["reset_by"]) if notice else None,
+    )
+
+
+def _in_demo_mode(info: strawberry.Info) -> str:
+    """The caller's user id, refused unless their account is in demo mode. Not `tenant_scope`: these fields
+    must answer while a reset runs, when every demo-scoped read is refused (#1635)."""
+    user_id = current_user(info)["user_id"]
+    if not caller_demo_mode(info.context):
+        raise ForbiddenError(_NOT_IN_DEMO)
+    return user_id
+
+
 def _working_company(info: strawberry.Info) -> str | None:
     """The company the caller works in: an admin's is the one they act in, anybody else's their own."""
     if NEXUS_ADMIN_ROLE in caller_roles(info.context):
@@ -105,6 +132,13 @@ class DemoQueries:
         """UC NEXUS ADMIN: the demo copy of UBC - what it is built from, and how its last build and nightly
         sync went (#1657)."""
         return await asyncio.to_thread(_status)
+
+    @strawberry.field
+    async def demo_reset_status(self, info: strawberry.Info) -> DemoResetStatus:
+        """Anybody in demo mode (#1697): whether a reset is running, and the last one they have not been
+        told of. Answered while a reset runs, so a tab can wait it out."""
+        user_id = _in_demo_mode(info)
+        return await asyncio.to_thread(_reset_status, user_id)
 
 
 @strawberry.type
@@ -138,5 +172,23 @@ class DemoMutations:
     async def rebuild_demo(self, info: strawberry.Info) -> DemoMirrorStatus:
         """UC NEXUS ADMIN: read UBC again and rebuild the demo from it, in the background (#1657). Every demo
         user's role-play is wiped. Refused while a build runs."""
-        demo_build.start_rebuild(resolve_display_name(current_user(info)["user_id"]))
+        user_id = current_user(info)["user_id"]
+        # #1697: the admin who rebuilt it is the one person not told of it, as for a reset from the banner.
+        demo_build.start_rebuild(resolve_display_name(user_id), started_by_id=user_id, kind=demo_build.ADMIN_REBUILD)
         return await asyncio.to_thread(_status)
+
+    @strawberry.mutation
+    async def reset_demo(self, info: strawberry.Info) -> DemoResetStatus:
+        """Anybody in demo mode (#1697): rebuild the demo from UBC, as the admin rebuild does, wiping every
+        demo user's role-play. Everybody else is told the next time they are in demo mode. Refused while a
+        build runs."""
+        user_id = _in_demo_mode(info)
+        demo_build.start_rebuild(resolve_display_name(user_id), started_by_id=user_id, kind=demo_build.DEMO_RESET)
+        return await asyncio.to_thread(_reset_status, user_id)
+
+    @strawberry.mutation
+    async def acknowledge_demo_reset(self, info: strawberry.Info) -> DemoResetStatus:
+        """Anybody in demo mode (#1697): they have seen the last reset's notice."""
+        user_id = _in_demo_mode(info)
+        await asyncio.to_thread(demo_build.acknowledge_reset, user_id)
+        return await asyncio.to_thread(_reset_status, user_id)

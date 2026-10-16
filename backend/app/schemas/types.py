@@ -2470,6 +2470,25 @@ class DemoSourceRead:
 
 
 @strawberry.type
+class DemoResetNotice:
+    """A reset of the demo the caller has not been told of yet (#1697)."""
+
+    reset_at: datetime
+    reset_by: str | None
+
+
+@strawberry.type
+class DemoResetStatus:
+    """What a demo tab needs to know about resets (#1697): whether one is running - and who started it -
+    and the last one the caller has not been told of."""
+
+    building: bool
+    build_started_at: datetime | None
+    build_started_by: str | None
+    notice: DemoResetNotice | None
+
+
+@strawberry.type
 class DemoMirrorStatus:
     """The demo copy of UBC (#1657) for the admin page: what it is built from, and how its last build and
     nightly sync went."""

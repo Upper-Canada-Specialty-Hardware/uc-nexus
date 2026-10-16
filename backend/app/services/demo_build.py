@@ -1,12 +1,16 @@
 """Building the demo copy of UBC and keeping it current (#1657).
 
-The demo is one persistent company everybody in demo mode shares, so nothing a user does resets it:
+The demo is one persistent company everybody in demo mode shares, so it only starts over when somebody
+says so:
 
   - `ensure_built`: the first time anybody turns demo mode on and there is no demo yet, it is built.
     Every later switch-on walks into the demo as the role-play left it.
-  - `start_rebuild`: a UC NEXUS ADMIN rebuilds it from UBC on purpose, wiping every demo user's role-play.
-    It runs in the background - a build of every UBC project, the legacy list and UBC's open POs is
-    minutes, not a request - and its progress and outcome are recorded under `build` for the admin page.
+  - `start_rebuild`: the demo is rebuilt from UBC on purpose, wiping every demo user's role-play - by a
+    UC NEXUS ADMIN from Nexus Admin, or by anybody in demo mode from its banner (#1697). It runs in the
+    background - a build of every UBC project, the legacy list and UBC's open POs is minutes, not a
+    request - and its progress and outcome are recorded under `build`, with who started it and why.
+  - `reset_notice` / `acknowledge_reset`: everybody but the person who reset it is told, once, that the
+    demo was reset and when (#1697).
   - `run_forever`: the nightly sync, at 2am Toronto. Add-only: UBC jobs that now meet the rule become
     demo projects (with a schedule), a UBC schedule lands on a demo project nobody has imported one into,
     and the masters are read again. It never touches inventory, POs, requests, pulls or shipments - those
@@ -63,9 +67,26 @@ def _counts() -> dict:
     return {"projects": projects or 0}
 
 
-async def _build(started_by: str) -> None:
+# Why a build ran, on its record (#1697). The first build is nobody's reset; the other two wipe a demo
+# people were working in, so everybody but its starter is told.
+FIRST_BUILD = "first"
+ADMIN_REBUILD = "rebuild"
+DEMO_RESET = "reset"
+
+
+def _started(started_by: str, started_by_id: str | None, kind: str) -> dict:
+    return {
+        "started_at": _now(),
+        "started_by": started_by,
+        "started_by_id": started_by_id,
+        "kind": kind,
+        "running": True,
+    }
+
+
+async def _build(started_by: str, started_by_id: str | None = None, kind: str = ADMIN_REBUILD) -> None:
     """Read UBC again, then wipe and build the demo, recording each step's outcome under `build`."""
-    _record(state.BUILD, {"started_at": _now(), "started_by": started_by, "running": True}, replace=True)
+    _record(state.BUILD, _started(started_by, started_by_id, kind), replace=True)
     try:
         list_error = await demo_mirror.refresh_legacy_list()
         await demo_reset.reset()
@@ -100,13 +121,43 @@ def building() -> bool:
     return demo_reset_running() or any(not t.done() for t in _tasks)
 
 
-def start_rebuild(started_by: str) -> None:
-    """Start a full rebuild in the background. Refused while one runs."""
+def start_rebuild(started_by: str, *, started_by_id: str | None = None, kind: str = ADMIN_REBUILD) -> None:
+    """Start a full rebuild in the background. Refused while one runs. `kind` says who asked: an admin's
+    rebuild or a demo user's reset; either way the starter is the one person not told of it."""
     if building():
         raise ConflictError("The demo is being built already. Wait for it to finish.")
-    task = asyncio.create_task(_build(started_by))
+    task = asyncio.create_task(_build(started_by, started_by_id, kind))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+
+
+def reset_notice(user_id: str) -> dict | None:
+    """The last reset `user_id` has yet to be told of (#1697), as `{"reset_at", "reset_by"}`, or None.
+
+    None while a build runs or after one that failed (there is nothing settled to report), for the first
+    build (it reset nobody's work), for the person who started it, and once they have been told. A build
+    recorded before #1697 carries no kind and counts as a reset, since only a rebuild wrote one."""
+    with SessionLocal() as session:
+        build = state.get(session, state.BUILD) or {}
+        seen = state.get(session, state.RESET_SEEN) or {}
+    if build.get("running") or not build.get("finished_at") or build.get("error"):
+        return None
+    if build.get("kind") == FIRST_BUILD:
+        return None
+    if build.get("started_by_id") and build.get("started_by_id") == user_id:
+        return None
+    if seen.get(user_id) == build.get("started_at"):
+        return None
+    return {"reset_at": build["finished_at"], "reset_by": build.get("started_by")}
+
+
+def acknowledge_reset(user_id: str) -> None:
+    """`user_id` has been told of the last build (#1697); `reset_notice` stays quiet for them until the next."""
+    with SessionLocal() as session:
+        build = state.get(session, state.BUILD) or {}
+        if build.get("started_at"):
+            state.merge_locked(session, state.RESET_SEEN, {user_id: build["started_at"]})
+            session.commit()
 
 
 async def ensure_built(started_by: str) -> None:
@@ -115,7 +166,7 @@ async def ensure_built(started_by: str) -> None:
     a demo is never rebuilt by switching on."""
     if await asyncio.to_thread(demo_reset.has_demo_data) or building():
         return
-    _record(state.BUILD, {"started_at": _now(), "started_by": started_by, "running": True}, replace=True)
+    _record(state.BUILD, _started(started_by, None, FIRST_BUILD), replace=True)
     try:
         with SessionLocal() as session:
             never_read = state.get(session, state.LEGACY_LIST) is None

@@ -18,8 +18,8 @@ export type DemoRun = 'enter' | 'leave';
  * the acting company to or from the demo one, and the acting company's own switch empties the cache, so
  * no row from the other side is left on screen.
  *
- * The demo is one persistent copy of UBC everybody in it shares (#1657), so nobody resets it from here -
- * a UC Nexus Admin rebuilds it from Nexus Admin. The first switch-on ever builds it inside the mutation,
+ * The demo is one persistent copy of UBC everybody in it shares (#1657); resetting it is useDemoReset's
+ * (#1697), not a side effect of switching on. The first switch-on ever builds it inside the mutation,
  * which takes minutes, so the hook says which run is in flight and the callers show it (#1653).
  */
 export function useDemoMode() {
