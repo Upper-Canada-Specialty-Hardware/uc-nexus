@@ -105,6 +105,18 @@ it('keeps the dialog open with the reason when the report is not filed', async (
   expect(screen.getByRole('dialog')).toBeInTheDocument();
 });
 
+it('keeps a half-written report when the dialog is closed and reopened', async () => {
+  renderBubble([filed()]);
+  fireEvent.click(screen.getByRole('button', { name: 'Report an issue' }));
+  fireEvent.change(await screen.findByLabelText('What happened?'), { target: { value: 'Half a thought' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Report an issue' }));
+
+  expect(await screen.findByLabelText('What happened?')).toHaveValue('Half a thought');
+});
+
 it('closes again from Cancel', async () => {
   renderBubble([filed()]);
   fireEvent.click(screen.getByRole('button', { name: 'Report an issue' }));

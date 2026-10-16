@@ -6,7 +6,10 @@ report came from demo mode.
 """
 
 import asyncio
+from collections.abc import Callable
+from typing import TypeVar
 
+import httpx
 import strawberry
 
 from app.auth import (
@@ -19,38 +22,40 @@ from app.auth import (
 )
 from app.errors import AppError
 from app.repositories import user_repository
-from app.services import issue_report
+from app.services import github_app, issue_report
 
 from .inputs import SubmitIssueReportInput
 from .types import IssueReportResult
+
+T = TypeVar("T")
+
+
+def _or(fallback: T, read: Callable[[], T]) -> T:
+    """A detail about the reporter, or the fallback when Clerk cannot say. Clerk down must not stop a
+    report about Clerk being down: the verified user id alone still says who sent it. A tab on a stale
+    acting company is the same - exactly when somebody reports something."""
+    try:
+        return read()
+    except (AppError, httpx.HTTPError):
+        return fallback
 
 
 def _reporter(info: strawberry.Info) -> issue_report.Reporter:
     """Who is reporting, from the verified session. Blocking (Clerk), so it runs off the event loop."""
     context = info.context
     user_id = current_user(info)["user_id"]
-    roles = list(caller_roles(context))
-    try:
-        profile = user_repository.get_user(user_id)
-    except AppError:
-        # Clerk down must not stop a report about Clerk being down; the user id still says who.
-        profile = {"first_name": "", "last_name": "", "email": ""}
+    roles = _or([], lambda: list(caller_roles(context)))
+    profile = _or({"first_name": "", "last_name": "", "email": ""}, lambda: user_repository.get_user(user_id))
     name = f"{profile['first_name']} {profile['last_name']}".strip() or profile["email"] or user_id
-    acting = None
-    if NEXUS_ADMIN_ROLE in roles:
-        try:
-            acting = admin_acting_company(context)
-        except AppError:
-            # A tab on a stale company is exactly when somebody reports something. Report it anyway.
-            acting = None
+    acting = _or(None, lambda: admin_acting_company(context)) if NEXUS_ADMIN_ROLE in roles else None
     return issue_report.Reporter(
         user_id=user_id,
         name=name,
         email=profile["email"],
         roles=roles,
-        company=caller_company(context),
+        company=_or(None, lambda: caller_company(context)),
         acting_company=acting,
-        demo_mode=caller_demo_mode(context),
+        demo_mode=_or(False, lambda: caller_demo_mode(context)),
     )
 
 
@@ -87,6 +92,9 @@ class IssueReportMutations:
         (#1277): a slow GitHub must not hold up every other request on the event loop.
         """
         report = _report(input)
+        # Before any Clerk call: a deployment that cannot file (every PR environment) says so at once.
+        if not github_app.is_configured():
+            raise issue_report.ReportNotFiledError(issue_report.NOT_SET_UP)
 
         def run() -> issue_report.FiledReport:
             return issue_report.submit(report, _reporter(info))

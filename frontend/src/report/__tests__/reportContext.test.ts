@@ -21,10 +21,18 @@ describe('recent errors', () => {
     expect(kept[9]).toContain('error 12');
   });
 
-  it('describes an Error by its stack and an object as json', () => {
-    recordError('[GraphQL error]: boom', { code: 'FORBIDDEN' });
+  it('describes an object briefly, keeping an Error nested inside it', () => {
+    recordError('[GraphQL error]: boom', { code: 'FORBIDDEN', cause: new Error('denied') });
 
-    expect(readRecentErrors()[0]).toContain('[GraphQL error]: boom {"code":"FORBIDDEN"}');
+    expect(readRecentErrors()[0]).toContain('[GraphQL error]: boom {code: "FORBIDDEN", cause: denied}');
+  });
+
+  it('never walks a large object whole', () => {
+    const huge = { rows: Array.from({ length: 100_000 }, (_, i) => ({ id: i, nested: { deep: { deeper: i } } })) };
+
+    recordError(huge);
+
+    expect(readRecentErrors()[0]).toContain('{rows: [{…}, {…}, {…}, {…}, {…}, …]}');
   });
 
   it('cuts a very long error', () => {
@@ -46,6 +54,11 @@ describe('records read off the url', () => {
       { name: 'po', id: 'PO-REQ-1234' },
       { name: 'project', id: '42' },
     ]);
+  });
+
+  it('survives a malformed escape in the path', () => {
+    expect(recordsFromLocation('/app/po/50%', '')).toEqual([]);
+    expect(() => recordsFromLocation('/app/x/%E0%A4%A/12', '')).not.toThrow();
   });
 
   it('finds nothing on a plain page', () => {

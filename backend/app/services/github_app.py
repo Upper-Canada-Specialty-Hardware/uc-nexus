@@ -106,7 +106,21 @@ def _request(method: str, path: str, *, bearer: str, json: dict | None = None) -
         except ValueError:
             message = resp.text
         raise GitHubError(f"GitHub refused {method} {path}: {resp.status_code} {message}")
-    return resp.json()
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        # A proxy or an outage page answering 200 with HTML is GitHub not answering.
+        raise GitHubError(f"GitHub answered {method} {path} with something that is not JSON") from exc
+    if not isinstance(data, dict):
+        raise GitHubError(f"GitHub answered {method} {path} with an unexpected shape")
+    return data
+
+
+def _field(data: dict, key: str, what: str):
+    try:
+        return data[key]
+    except KeyError as exc:
+        raise GitHubError(f"GitHub's {what} carried no {key}") from exc
 
 
 def installation_token(config: GitHubAppConfig) -> str:
@@ -119,8 +133,15 @@ def installation_token(config: GitHubAppConfig) -> str:
         app_token = app_jwt(config, now=now)
         # The repository names its own installation, so there is no installation id to configure.
         installation = _request("GET", f"/repos/{config.repo}/installation", bearer=app_token)
-        minted = _request("POST", f"/app/installations/{installation['id']}/access_tokens", bearer=app_token)
-        _cached = _CachedToken(token=minted["token"], expires_at=_parse_expiry(minted["expires_at"]), repo=config.repo)
+        installation_id = _field(installation, "id", "installation")
+        minted = _request("POST", f"/app/installations/{installation_id}/access_tokens", bearer=app_token)
+        try:
+            expires_at = _parse_expiry(_field(minted, "expires_at", "installation token"))
+        except ValueError as exc:
+            raise GitHubError("GitHub's installation token carried an unreadable expiry") from exc
+        _cached = _CachedToken(
+            token=_field(minted, "token", "installation token"), expires_at=expires_at, repo=config.repo
+        )
         return _cached.token
 
 
@@ -145,9 +166,10 @@ def create_issue(*, title: str, body: str) -> FiledIssue:
     token = installation_token(config)
     try:
         issue = _request("POST", f"/repos/{config.repo}/issues", bearer=token, json={"title": title, "body": body})
+        filed = FiledIssue(number=_field(issue, "number", "issue"), url=_field(issue, "html_url", "issue"))
     except GitHubError:
         # A token revoked or rotated under the cache: the next report mints a fresh one.
         forget_token()
         raise
-    logger.info("Filed issue #%s on %s", issue["number"], config.repo)
-    return FiledIssue(number=issue["number"], url=issue["html_url"])
+    logger.info("Filed issue #%s on %s", filed.number, config.repo)
+    return filed

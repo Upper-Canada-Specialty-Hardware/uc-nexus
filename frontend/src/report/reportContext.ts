@@ -17,13 +17,31 @@ function clip(text: string): string {
   return text.length > ERROR_LENGTH ? `${text.slice(0, ERROR_LENGTH - 1)}…` : text;
 }
 
+/**
+ * A short, bounded picture of a value. This runs on every console.error in the app, so it never
+ * serializes a large object whole only to keep its first thousand characters: it stops at two levels,
+ * a few keys and short strings, and an Error anywhere inside keeps its message.
+ */
+function brief(value: unknown, depth = 0): string {
+  if (value instanceof Error) return depth === 0 ? value.stack || `${value.name}: ${value.message}` : value.message;
+  if (typeof value === 'string') return depth === 0 ? value : JSON.stringify(value.slice(0, 200));
+  if (value === null || typeof value !== 'object') return String(value);
+  if (depth >= 2) return Array.isArray(value) ? '[…]' : '{…}';
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 5).map((item) => brief(item, depth + 1));
+    return `[${items.join(', ')}${value.length > 5 ? ', …' : ''}]`;
+  }
+  const keys = Object.keys(value);
+  const shown = keys.slice(0, 8).map((key) => `${key}: ${brief((value as Record<string, unknown>)[key], depth + 1)}`);
+  return `{${shown.join(', ')}${keys.length > 8 ? ', …' : ''}}`;
+}
+
 function describe(value: unknown): string {
-  if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`;
-  if (typeof value === 'string') return value;
   try {
-    return JSON.stringify(value);
+    return brief(value);
   } catch {
-    return String(value);
+    // A getter that throws, a revoked proxy: say what it is and move on.
+    return Object.prototype.toString.call(value);
   }
 }
 
@@ -70,6 +88,15 @@ export interface ReportRecord {
 // A uuid, a number, or a document number like PO-REQ-1234 / PS-D17 / P001234.
 const ID_SEGMENT = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d+|[A-Z]{1,4}(-[A-Z]{1,4})*-?\d+)$/i;
 
+/** A path segment decoded, or as it is: a stray `%` must not stop the report dialog opening. */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /**
  * The records the page was showing, read off the url: each id-looking path segment named by the one
  * before it (`/app/warehouse/pull-requests/<id>/pick` → pull-requests <id>), and every query
@@ -79,7 +106,7 @@ export function recordsFromLocation(pathname: string, search: string): ReportRec
   const records: ReportRecord[] = [];
   const segments = pathname.split('/').filter(Boolean);
   for (let i = 1; i < segments.length; i++) {
-    const segment = decodeURIComponent(segments[i]);
+    const segment = decodeSegment(segments[i]);
     if (ID_SEGMENT.test(segment)) records.push({ name: segments[i - 1], id: segment });
   }
   new URLSearchParams(search).forEach((value, key) => {

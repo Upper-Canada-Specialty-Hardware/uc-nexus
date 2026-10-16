@@ -3,6 +3,7 @@
 Nothing reaches GitHub, the mailer or Clerk: every outside call is stubbed."""
 
 import asyncio
+import re
 import time
 
 import httpx
@@ -193,13 +194,62 @@ def test_the_hourly_limit_holds_after_the_gap():
     issue_report.reset_throttle()
     start = 1000.0
     for i in range(10):
-        issue_report._check_throttle("u", now=start + i * 30)
-        issue_report._record_sent("u", now=start + i * 30)
+        issue_report._take_slot("u", now=start + i * 30)
     with pytest.raises(issue_report.ReportThrottledError):
-        issue_report._check_throttle("u", now=start + 10 * 30)
+        issue_report._take_slot("u", now=start + 10 * 30)
     # An hour after the first, there is room again.
-    issue_report._check_throttle("u", now=start + 3601 + 9 * 30)
+    issue_report._take_slot("u", now=start + 3601 + 9 * 30)
     issue_report.reset_throttle()
+
+
+def test_two_reports_at_once_cannot_both_pass():
+    """The slot is claimed in the same lock as the check, before GitHub is called."""
+    issue_report.reset_throttle()
+    issue_report._take_slot("u", now=5000.0)
+    with pytest.raises(issue_report.ReportThrottledError):
+        issue_report._take_slot("u", now=5000.5)
+    issue_report.reset_throttle()
+
+
+def test_a_report_github_refused_does_not_count(world, monkeypatch):
+    def _refuse(**kwargs):
+        raise github_app.GitHubError("502")
+
+    monkeypatch.setattr(github_app, "create_issue", _refuse)
+    assert _submit().errors[0].extensions["code"] == "REPORT_NOT_FILED"
+    monkeypatch.setattr(github_app, "create_issue", lambda **kw: github_app.FiledIssue(number=1, url="u"))
+
+    result = _submit()
+
+    assert result.errors is None, result.errors
+
+
+def test_clerk_down_still_files_the_report(world, monkeypatch):
+    def _down(user_id):
+        raise httpx.HTTPStatusError("503", request=httpx.Request("GET", "x"), response=httpx.Response(503))
+
+    monkeypatch.setattr(user_repository, "get_user_roles", _down)
+    monkeypatch.setattr(user_repository, "get_user", _down)
+    context = _context()
+    del context["_auth_roles"]
+
+    result = _submit(context)
+
+    assert result.errors is None, result.errors
+    body = world["issues"][0]["body"]
+    assert "| user | u_test |" in body
+    assert "| roles | none |" in body
+
+
+def test_not_configured_answers_before_asking_clerk(world, monkeypatch):
+    monkeypatch.setattr(github_app, "is_configured", lambda: False)
+
+    def _never(user_id):
+        raise AssertionError("Clerk was asked")
+
+    monkeypatch.setattr(user_repository, "get_user", _never)
+
+    assert _submit().errors[0].extensions["code"] == "REPORT_NOT_FILED"
 
 
 # --- the body ---------------------------------------------------------------------------------------
@@ -244,7 +294,48 @@ def test_an_error_with_backticks_cannot_close_its_code_block():
 
     body = _body(report)
 
-    assert "````\na ``` b\n````" in body
+    assert "> ````\n> a ``` b\n> ````" in body
+
+
+# The org's own reader, as clock/points.js and the board job have it: raw lines, no idea of fences.
+_SAME_LINE = re.compile(r"^\s*(?:#+\s*)?points\s*:\s*([0-9]+)\s*$", re.I)
+_HEADING = re.compile(r"^\s*(?:#+\s*)?points\s*:?\s*$", re.I)
+
+
+def _filed_points(body):
+    lines = body.split("\n")
+    for i, line in enumerate(lines):
+        if _SAME_LINE.match(line):
+            return int(_SAME_LINE.match(line).group(1))
+        if _HEADING.match(line):
+            following = next((rest for rest in lines[i + 1 :] if rest.strip()), "")
+            if re.match(r"^\s*([0-9]+)\s*$", following):
+                return int(following)
+    return None
+
+
+@pytest.mark.parametrize("text", ["Points: 3", "### points\n\n40", "points\n5"])
+def test_nothing_the_user_types_can_set_the_points(text):
+    report = issue_report.Report(
+        kind="problem",
+        description=f"it broke\n{text}",
+        context=issue_report.ClientContext(recent_errors=[text]),
+    )
+
+    assert _filed_points(_body(report)) is None
+
+
+def test_mentions_in_the_report_do_not_notify():
+    report = issue_report.Report(
+        kind="problem",
+        description="ask @someone or @Upper-Canada-Specialty-Hardware/devs",
+        context=issue_report.ClientContext(),
+    )
+
+    body = _body(report)
+
+    assert "@someone" not in body
+    assert "@​someone" in body
 
 
 def test_an_admin_working_in_another_company_is_named_with_both():
@@ -323,6 +414,15 @@ def test_a_token_near_expiry_is_replaced(app_config, monkeypatch):
 
     assert github_app.installation_token(config) == "ghs_1"
     assert github_app.installation_token(config) == "ghs_2"
+
+
+def test_a_200_that_is_not_json_is_github_not_answering(monkeypatch):
+    monkeypatch.setattr(
+        github_app._client, "request", lambda *a, **kw: httpx.Response(200, text="<html>maintenance</html>")
+    )
+
+    with pytest.raises(github_app.GitHubError, match="not JSON"):
+        github_app._request("GET", "/x", bearer="t")
 
 
 def test_escaped_line_breaks_in_the_key_are_restored(monkeypatch):

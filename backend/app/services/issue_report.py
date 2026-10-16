@@ -36,6 +36,9 @@ _MIN_GAP_SECONDS = 20
 _HOURLY_LIMIT = 10
 
 
+NOT_SET_UP = "Reporting is not set up on this deployment yet."
+
+
 class ReportThrottledError(AppError):
     def __init__(self, message: str):
         super().__init__(message, "REPORT_THROTTLED")
@@ -100,7 +103,9 @@ _throttle_lock = threading.Lock()
 _sent: dict[str, deque[float]] = {}
 
 
-def _check_throttle(user_id: str, *, now: float | None = None) -> None:
+def _take_slot(user_id: str, *, now: float | None = None) -> float:
+    """Claim one report for this user, or refuse. Checked and claimed under one lock, so two reports
+    sent at once (two tabs, a retry) cannot both pass while neither has been counted yet."""
     now = time.monotonic() if now is None else now
     with _throttle_lock:
         times = _sent.setdefault(user_id, deque())
@@ -110,11 +115,16 @@ def _check_throttle(user_id: str, *, now: float | None = None) -> None:
             raise ReportThrottledError("Your last report was just sent. Wait a few seconds before sending another.")
         if len(times) >= _HOURLY_LIMIT:
             raise ReportThrottledError("That is a lot of reports in an hour. Try again later, or email instead.")
+        times.append(now)
+        return now
 
 
-def _record_sent(user_id: str, *, now: float | None = None) -> None:
+def _give_back_slot(user_id: str, claimed: float) -> None:
+    """A report that was not filed does not count against the user."""
     with _throttle_lock:
-        _sent.setdefault(user_id, deque()).append(time.monotonic() if now is None else now)
+        times = _sent.get(user_id)
+        if times and claimed in times:
+            times.remove(claimed)
 
 
 def reset_throttle() -> None:
@@ -137,12 +147,25 @@ def _cell(value: str | None) -> str:
     return value or "-"
 
 
-def _fence(lines: list[str]) -> str:
+def _defuse(text: str) -> str:
+    """@mentions in client text do not notify: a zero-width space after the @ looks the same and is not
+    a mention, so a report cannot ping a person or an org team from a public issue."""
+    return re.sub(r"@(?=[\w-])", "@​", text)
+
+
+def _quoted(lines: list[str]) -> str:
+    """Client text as a blockquote. Every line then starts with `>`, which is what keeps it from being
+    read as this issue's own: the board job and the clock take Points from any line shaped `points: 5`
+    or a `points` heading with a number under it, and they read raw lines, fences and all."""
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in lines)
+
+
+def _fence(lines: list[str]) -> list[str]:
     """A code block no line inside it can close early."""
     text = "\n".join(lines)
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     ticks = "`" * max(3, longest + 1)
-    return f"{ticks}\n{text}\n{ticks}"
+    return [ticks, *text.splitlines(), ticks]
 
 
 def title_for(report: Report) -> str:
@@ -188,7 +211,7 @@ def body_for(report: Report, reporter: Reporter, *, reported_at: datetime, backe
         "",
         "### what the user wrote",
         "",
-        _clip(report.description, DESCRIPTION_LIMIT),
+        _quoted(_defuse(_clip(report.description, DESCRIPTION_LIMIT)).splitlines()),
         "",
         "### context",
         "",
@@ -200,7 +223,8 @@ def body_for(report: Report, reporter: Reporter, *, reported_at: datetime, backe
         "",
     ]
     errors = [_clip(e, ERROR_LIMIT) for e in c.recent_errors[-ERRORS_LIMIT:] if e and e.strip()]
-    parts.append(_fence(errors) if errors else "none in this tab before the report.")
+    # Quoted as well as fenced: the Points reader does not know what a fence is.
+    parts.append(_quoted(_fence(errors)) if errors else "none in this tab before the report.")
     return "\n".join(parts) + "\n"
 
 
@@ -255,8 +279,8 @@ def submit(report: Report, reporter: Reporter) -> FiledReport:
     if not report.description.strip():
         raise ValidationError("Say what happened or what you want changed.", field="description")
     if not github_app.is_configured():
-        raise ReportNotFiledError("Reporting is not set up on this deployment yet.")
-    _check_throttle(reporter.user_id)
+        raise ReportNotFiledError(NOT_SET_UP)
+    claimed = _take_slot(reporter.user_id)
 
     title = title_for(report)
     body = body_for(
@@ -268,7 +292,7 @@ def submit(report: Report, reporter: Reporter) -> FiledReport:
     try:
         issue = github_app.create_issue(title=title, body=body)
     except github_app.GitHubError as exc:
+        _give_back_slot(reporter.user_id, claimed)
         logger.warning("Report not filed: %s", exc)
         raise ReportNotFiledError("The report could not be filed. Try again in a minute.") from exc
-    _record_sent(reporter.user_id)
     return FiledReport(issue_number=issue.number, issue_url=issue.url, emailed=_email(report, reporter, issue, title))

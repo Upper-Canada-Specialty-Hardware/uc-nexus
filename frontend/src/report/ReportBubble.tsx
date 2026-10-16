@@ -24,6 +24,7 @@ import { userMessage } from '../graphql/userMessage';
 import { collectReportContext, type ReportContextInput } from './reportContext';
 import {
   BUBBLE_SIZE,
+  DEFAULT_SPOT,
   TOP_LIMIT,
   loadSpot,
   pointToSpot,
@@ -33,6 +34,13 @@ import {
 } from './bubblePosition';
 
 type Kind = 'PROBLEM' | 'CHANGE';
+
+interface Draft {
+  kind: Kind;
+  description: string;
+}
+
+const EMPTY_DRAFT: Draft = { kind: 'PROBLEM', description: '' };
 
 interface SubmitResult {
   submitIssueReport: { issueNumber: number; issueUrl: string; emailed: boolean };
@@ -82,7 +90,11 @@ export default function ReportBubble() {
   const { userId } = useIdentity();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
-  const spot = useRef<BubbleSpot>(loadSpot(userId));
+  // Read from storage by the layout effect below, once per person, not on every render.
+  const spot = useRef<BubbleSpot>(DEFAULT_SPOT);
+  // The report being written outlives the dialog: a stray click outside or an Escape closes it, and
+  // reopening finds the text still there. Cleared once the report is filed.
+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   // A drag ends in a click on the same element; this is how that click is told apart from a tap.
   const dragged = useRef(false);
@@ -135,7 +147,12 @@ export default function ReportBubble() {
   };
 
   const onClick = () => {
-    if (dragged.current) return;
+    // The click a mouse drag ends in. Cleared as it is swallowed, so a keyboard press next - which sends
+    // no pointerdown - is a tap again.
+    if (dragged.current) {
+      dragged.current = false;
+      return;
+    }
     // The panel grows out of the bubble: its offset from the middle of the screen, where the panel sits.
     setOrigin({
       x: x.get() + BUBBLE_SIZE / 2 - window.innerWidth / 2,
@@ -231,7 +248,12 @@ export default function ReportBubble() {
                 transition={springs.base}
                 style={{ position: 'relative', width: '100%', maxWidth: 560, minWidth: 0 }}
               >
-                <ReportPanel onClose={() => setOpen(false)} />
+                <ReportPanel
+                  draft={draft}
+                  onDraftChange={setDraft}
+                  onFiled={() => setDraft(EMPTY_DRAFT)}
+                  onClose={() => setOpen(false)}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -241,11 +263,19 @@ export default function ReportBubble() {
   );
 }
 
-function ReportPanel({ onClose }: { onClose: () => void }) {
+interface ReportPanelProps {
+  draft: Draft;
+  onDraftChange: (draft: Draft) => void;
+  onFiled: () => void;
+  onClose: () => void;
+}
+
+function ReportPanel({ draft, onDraftChange, onFiled, onClose }: ReportPanelProps) {
   const { mode, systemMode } = useColorScheme();
   const { displayName, company, demoMode } = useIdentity();
-  const [kind, setKind] = useState<Kind>('PROBLEM');
-  const [description, setDescription] = useState('');
+  const { kind, description } = draft;
+  const setKind = (next: Kind) => onDraftChange({ ...draft, kind: next });
+  const setDescription = (next: string) => onDraftChange({ ...draft, description: next });
   const [showSent, setShowSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filed, setFiled] = useState<SubmitResult['submitIssueReport'] | null>(null);
@@ -259,7 +289,10 @@ function ReportPanel({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const res = await submit({ variables: { input: { kind, description: description.trim(), context } } });
-      if (res.data) setFiled(res.data.submitIssueReport);
+      if (res.data) {
+        setFiled(res.data.submitIssueReport);
+        onFiled();
+      }
     } catch (err) {
       setError(userMessage(err));
     }
