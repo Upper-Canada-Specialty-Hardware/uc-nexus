@@ -2554,3 +2554,13 @@ class InventoryValue:
     ossa_door_count: int
     non_ossa_door_count: int
     total_door_count: int
+
+
+@strawberry.type
+class IssueReportResult:
+    """A report filed from the report bubble (#1677). `emailed` is false when the issue was filed but the
+    email to the product owner was not sent - the issue stands either way."""
+
+    issue_number: int
+    issue_url: str
+    emailed: bool

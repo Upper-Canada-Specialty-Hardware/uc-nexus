@@ -202,3 +202,12 @@ class MigrationDestination(enum.Enum):
 
     PROJECT = "PROJECT"
     STOCK = "STOCK"
+
+
+@strawberry.enum
+class IssueReportKind(enum.Enum):
+    """What a report from the report bubble is (#1677). GraphQL-only: a report is filed on GitHub, not
+    stored."""
+
+    PROBLEM = "problem"
+    CHANGE = "change"

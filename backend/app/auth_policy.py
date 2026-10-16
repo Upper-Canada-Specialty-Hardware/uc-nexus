@@ -155,6 +155,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "saveDoorsOnHand": SHOP_ASSEMBLY_MANAGERS,
     "removeDoorsOnHand": SHOP_ASSEMBLY_MANAGERS,
     "setAverageDoorCost": SHOP_ASSEMBLY_MANAGERS,
+    # --- issue_report.py ------------------------------------------------------------------
+    # The report bubble is on every screen for everybody (#1677); who reported comes from the session.
+    "submitIssueReport": SIGNED_IN,
     # --- notification.py ------------------------------------------------------------------
     # Scoped in the body to the caller's company, audiences and own read state (#1111).
     "notifications": SIGNED_IN,
