@@ -77,7 +77,7 @@ function ProjectGroup({ summary, onOpen }: { summary: StagingProjectSummary; onO
         </FitTable>
       ) : (
         <Typography variant="body2" color="text.secondary">
-          Nothing staged is left loose; its open containers hold only manual lines.
+          Nothing staged right now - only its open containers.
         </Typography>
       )}
     </Paper>
