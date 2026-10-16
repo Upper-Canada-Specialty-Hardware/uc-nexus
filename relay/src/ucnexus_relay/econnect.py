@@ -856,11 +856,15 @@ def get_vendor_contact(conn, vendor_id: str) -> dict | None:
     it, and a vendor with neither comes back with email None so the caller can say so by name.
 
     The contact name comes off PM00200.VNDCNTCT, which is the person the PO is addressed to.
+
+    EmailToAddress is a `text` column on some GPs (UBC's), and RTRIM refuses text (SQL 8116) when the
+    statement is prepared, which fails the read for every vendor, so it is cast to varchar(max) before
+    the trim (#1685). INET1 is char and trims as it is.
     """
     row = (
         conn.cursor()
         .execute(
-            "SELECT RTRIM(ISNULL(i.EmailToAddress, '')) AS email_to, "
+            "SELECT RTRIM(ISNULL(CAST(i.EmailToAddress AS varchar(max)), '')) AS email_to, "
             "RTRIM(ISNULL(i.INET1, '')) AS inet1, "
             "RTRIM(ISNULL(v.VNDCNTCT, '')) AS contact_name, "
             "RTRIM(v.VENDNAME) AS vendor_name "
