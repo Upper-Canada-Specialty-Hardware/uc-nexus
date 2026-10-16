@@ -172,7 +172,9 @@ class DemoMutations:
     async def rebuild_demo(self, info: strawberry.Info) -> DemoMirrorStatus:
         """UC NEXUS ADMIN: read UBC again and rebuild the demo from it, in the background (#1657). Every demo
         user's role-play is wiped. Refused while a build runs."""
-        demo_build.start_rebuild(resolve_display_name(current_user(info)["user_id"]))
+        user_id = current_user(info)["user_id"]
+        # #1697: the admin who rebuilt it is the one person not told of it, as for a reset from the banner.
+        demo_build.start_rebuild(resolve_display_name(user_id), started_by_id=user_id, kind=demo_build.ADMIN_REBUILD)
         return await asyncio.to_thread(_status)
 
     @strawberry.mutation

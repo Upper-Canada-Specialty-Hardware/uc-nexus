@@ -152,3 +152,14 @@ def test_reading_resets_needs_demo_mode(stored):
     stored(_finished())
 
     assert _run(_STATUS, _as("u_other", demo=False)).errors
+
+
+def test_an_admin_rebuild_records_who_started_it(stored, monkeypatch):
+    started = []
+    monkeypatch.setattr(demo_build, "start_rebuild", lambda name, **kw: started.append(kw))
+    admin = {"request": None, "_auth_user_id": "u_admin", "_auth_roles": ["UC Nexus Admin"], "_auth_company": None}
+    remember_display_name("u_admin", "Ada Admin")
+
+    _run("mutation { rebuildDemo { building } }", admin)
+
+    assert started == [{"started_by_id": "u_admin", "kind": demo_build.ADMIN_REBUILD}]
