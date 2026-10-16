@@ -38,6 +38,8 @@ export const GET_INVENTORY_ROWS = gql`
       lineValue
       poNumber
       vendorName
+      originKind
+      originReference
       warehouseCode
       warehouseName
       projectNumber

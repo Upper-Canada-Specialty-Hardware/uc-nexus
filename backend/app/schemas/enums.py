@@ -33,6 +33,9 @@ from app.models.enums import (
     HardwareItemState as HardwareItemStateDB,
 )
 from app.models.enums import (
+    InventoryOriginKind as InventoryOriginKindDB,
+)
+from app.models.enums import (
     NotificationType as NotificationTypeDB,
 )
 from app.models.enums import (
@@ -93,6 +96,7 @@ HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
 POOrigin = strawberry.enum(POOriginDB)
 PoolKind = strawberry.enum(PoolKindDB)
+InventoryOriginKind = strawberry.enum(InventoryOriginKindDB)
 PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullPickLineState = strawberry.enum(PullPickLineStateDB)

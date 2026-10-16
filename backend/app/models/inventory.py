@@ -2,10 +2,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
+from .enums import InventoryEntrySource
 
 
 class InventoryLocation(Base):
@@ -55,6 +56,11 @@ class InventoryLocation(Base):
     )
     shipment_return_item_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("shipment_return_items.id", ondelete="SET NULL"), nullable=True
+    )
+    # #1699: how a row whose only origin is a stock_items row got here - allocated, migrated, or
+    # restocked. Null on PO-origin and return-origin rows, whose foreign key already says.
+    entry_source: Mapped[InventoryEntrySource | None] = mapped_column(
+        Enum(InventoryEntrySource, name="inventory_entry_source", create_constraint=True), nullable=True
     )
     warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
