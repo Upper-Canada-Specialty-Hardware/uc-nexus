@@ -28,14 +28,25 @@ it('keeps the deficient count and the vendor as columns, hidden at first', () =>
   expect(hidden.vendorName).toBe(false);
 });
 
-it('exports PO # and Vendor as separate values, blanks empty (#1445)', () => {
+it('exports the origin PO and the vendor as separate values (#1445, #1699)', () => {
   const columns = buildHardwareItemColumns(undefined) as GridColDef[];
   const value = (field: string, row: object) =>
     (columns.find((c) => c.field === field)?.valueGetter as unknown as Getter)(null, row);
-  const row = { poNumber: 'PO-1001', vendorName: 'Acme Hardware' };
-  expect(value('poNumber', row)).toBe('PO-1001');
+  const row = { poNumber: 'PO-1001', vendorName: 'Acme Hardware', originKind: 'PURCHASE_ORDER', originReference: 'PO-1001' };
+  expect(value('origin', row)).toBe('PO-1001');
   expect(value('vendorName', row)).toBe('Acme Hardware');
-  expect(value('poNumber', { poNumber: null, vendorName: null })).toBe('');
+});
+
+it.each([
+  ['STOCK_ALLOCATION', null, 'Allocated from stock'],
+  ['LEGACY_MIGRATION', null, 'Legacy inventory list'],
+  ['PULL_RESTOCK', null, 'Cancelled pull restock'],
+  ['SHIPMENT_RETURN', 'PS-0042', 'Return PS-0042'],
+  ['UNKNOWN', null, 'Unknown'],
+])('says how a row with no PO came in (%s, #1699)', (originKind, originReference, expected) => {
+  const columns = buildHardwareItemColumns(undefined) as GridColDef[];
+  const getter = columns.find((c) => c.field === 'origin')?.valueGetter as unknown as Getter;
+  expect(getter(null, { poNumber: null, vendorName: null, originKind, originReference })).toBe(expected);
 });
 
 it('exports cost, value and received as data, not display text (#1457)', () => {

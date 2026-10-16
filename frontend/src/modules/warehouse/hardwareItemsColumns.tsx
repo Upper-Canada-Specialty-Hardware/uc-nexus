@@ -25,12 +25,24 @@ export interface InventoryItem {
   updatedAt: string;
 }
 
+/** #1699: where a row came from. A PO or a return is the row's own link; the rest came off the pool. */
+export type InventoryOriginKind =
+  | 'PURCHASE_ORDER'
+  | 'SHIPMENT_RETURN'
+  | 'STOCK_ALLOCATION'
+  | 'LEGACY_MIGRATION'
+  | 'PULL_RESTOCK'
+  | 'UNKNOWN';
+
 export interface InventoryRow {
   inventoryLocation: InventoryItem;
   unitCost: number;
   lineValue: number;
   poNumber: string | null;
   vendorName: string | null;
+  originKind: InventoryOriginKind;
+  /** The PO number, or the packing slip a return came back on. */
+  originReference: string | null;
   warehouseCode: string;
   warehouseName: string;
   projectNumber: string;
@@ -48,6 +60,30 @@ export interface GridRow extends InventoryRow {
   location: string;
   receivedAt: string | null;
   notOnSchedule: boolean;
+}
+
+const ORIGIN_LABEL: Record<Exclude<InventoryOriginKind, 'PURCHASE_ORDER'>, string> = {
+  SHIPMENT_RETURN: 'Return',
+  STOCK_ALLOCATION: 'Allocated from stock',
+  LEGACY_MIGRATION: 'Legacy inventory list',
+  PULL_RESTOCK: 'Cancelled pull restock',
+  UNKNOWN: 'Unknown',
+};
+
+const ORIGIN_HINT: Record<Exclude<InventoryOriginKind, 'PURCHASE_ORDER'>, string> = {
+  SHIPMENT_RETURN: 'Came back from site on a shipment return.',
+  STOCK_ALLOCATION: 'Allocated to this project from the stock pool; the pool keeps no PO of its own.',
+  LEGACY_MIGRATION: 'Brought across from the legacy inventory list, with no PO behind it.',
+  PULL_RESTOCK: 'Put back by a cancelled pull when the row it came off was gone.',
+  UNKNOWN: 'Came out of the stock pool before Nexus recorded how.',
+};
+
+/** #1699: the Origin column's value as text - what it sorts, filters and exports on. A PO row is its
+ *  PO number; a return names the slip it came back on; anything else says how it came in. */
+export function originLabel(row: Pick<InventoryRow, 'originKind' | 'originReference' | 'poNumber'>): string {
+  if (row.originKind === 'PURCHASE_ORDER') return row.originReference ?? row.poNumber ?? '';
+  const label = ORIGIN_LABEL[row.originKind] ?? ORIGIN_LABEL.UNKNOWN;
+  return row.originKind === 'SHIPMENT_RETURN' && row.originReference ? `${label} ${row.originReference}` : label;
 }
 
 export function formatCurrency(value: number | null | undefined): string {
@@ -158,16 +194,30 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       renderCell: (params) => formatCurrency(params.value as number | null),
     },
     {
-      // The cell shows the PO number with its vendor after it. The value is the PO number alone (#1445),
-      // so it sorts and exports as a PO # column, blanks together; the vendor has its own hidden column,
-      // which the CSV exports and the quick filter still searches.
-      field: 'poNumber',
-      headerName: 'PO #',
+      // #1699: where the row came from. A PO row shows its PO number with the vendor after it, and its
+      // value is the PO number alone (#1445), so it sorts and exports apart from the vendor's own hidden
+      // column. Any other row says how it came in - the value is that label, so it filters and exports
+      // as text too.
+      field: 'origin',
+      headerName: 'Origin',
       flex: 1,
       minWidth: 130,
-      valueGetter: (_value, row) => row.poNumber ?? '',
+      valueGetter: (_value, row) => originLabel(row),
       renderCell: (params) => {
-        const { poNumber, vendorName } = params.row;
+        const { poNumber, vendorName, originKind } = params.row;
+        if (originKind !== 'PURCHASE_ORDER') {
+          const kind = (originKind in ORIGIN_HINT ? originKind : 'UNKNOWN') as keyof typeof ORIGIN_HINT;
+          return (
+            <Tooltip title={ORIGIN_HINT[kind]}>
+              <Chip
+                size="small"
+                variant="outlined"
+                label={params.value as string}
+                sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+              />
+            </Tooltip>
+          );
+        }
         if (!poNumber && !vendorName) return <span>—</span>;
         return (
           <Tooltip title={[poNumber, vendorName].filter(Boolean).join(' · ')}>
