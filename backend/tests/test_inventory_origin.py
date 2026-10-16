@@ -8,6 +8,7 @@ import uuid
 
 from app.models.enums import InventoryEntrySource, InventoryOriginKind
 from app.models.inventory import InventoryLocation
+from app.models.shipping import PackingSlip
 from app.repositories import stock as stock_repository
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
@@ -155,6 +156,6 @@ def test_inventory_rows_carry_each_rows_origin(db_session):
 
     assert rows[allocated.id]["origin_kind"] is InventoryOriginKind.STOCK_ALLOCATION
     assert rows[allocated.id]["origin_reference"] is None
-    slip = db_session.get(type(returned_item), returned_item.id).shipment_return.packing_slip.packing_slip_number
+    slip = db_session.get(PackingSlip, returned_item.shipment_return.packing_slip_id).packing_slip_number
     assert rows[returned.id]["origin_kind"] is InventoryOriginKind.SHIPMENT_RETURN
     assert rows[returned.id]["origin_reference"] == slip
