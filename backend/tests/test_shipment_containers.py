@@ -696,6 +696,7 @@ def _overview(session, company="TUBC"):
 def _ship(session, project, *, qty, code="HG-100", cat="HINGE", opening="101"):
     from datetime import datetime
 
+    from app.models.enums import ShipmentStatus
     from app.models.shipping import PackingSlip, PackingSlipItem
 
     slip = PackingSlip(
@@ -704,6 +705,7 @@ def _ship(session, project, *, qty, code="HG-100", cat="HINGE", opening="101"):
         project_id=project.id,
         shipped_by="tester",
         shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.SCHEDULED,
     )
     session.add(slip)
     session.flush()
