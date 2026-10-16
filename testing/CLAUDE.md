@@ -320,12 +320,13 @@ caught two failures that all three stacked PRs were reporting as clean:
 
 ### Demo mode (#1608)
 
-Demo mode puts an account in the reserved company `DEMO`: one persistent copy of UBC that everybody in demo mode shares (#1657), with GP simulated in-process, so a demo walk needs no relay and writes nothing to GP or UBC. Only a UBC or TUBC account turns it on, from the user menu (#1658); anybody leaves from the menu or the banner. There is no reset on the banner: a UC Nexus Admin rebuilds it from Nexus Admin → Demo.
+Demo mode puts an account in the reserved company `DEMO`: one persistent copy of UBC that everybody in demo mode shares (#1657), with GP simulated in-process, so a demo walk needs no relay and writes nothing to GP or UBC. Only a UBC or TUBC account turns it on, from the user menu (#1658); anybody leaves from the menu or the banner. Anybody in demo mode resets it with Reset demo on the banner, and a UC Nexus Admin rebuilds it from Nexus Admin → Demo (#1697).
 
 - **Turning it on moves the tab, not the switcher.** The banner appears, every request carries `X-Nexus-Company: DEMO`, and the company switcher is gone. Scripted reads send `DEMO` the same way; a request on the wrong side of the account's flag is refused with `DEMO_MODE_CHANGED` and the tab reloads its user (#1633).
 - **Other tabs follow.** Turning demo mode on or off tells every open tab of the browser to reload its user. A tab the broadcast missed catches up on its next request.
 - **Other people's role-play is real here.** Two demo users see each other's changes; nothing a walk does is undone for the next one. Leave things as a walk found them where it matters, or say what changed.
-- **A rebuild wipes everybody's demo.** It reads UBC again and builds from scratch, in the background, for minutes; requests for DEMO meanwhile get a `DEMO_RESETTING` conflict. The full Reset data page is refused from demo mode.
+- **A reset wipes everybody's demo.** It reads UBC again and builds from scratch, in the background, for minutes; requests for DEMO meanwhile get a `DEMO_RESETTING` conflict, and every demo tab shows "The demo is being reset" and reloads itself when it is done (`demoResetStatus` is the one demo read answered throughout). The full Reset data page is refused from demo mode.
+- **Everybody else is told, once.** The next time another account is in demo mode it gets "The demo was reset" naming who and when, until Got it. The person who reset it is not told; the first build ever is nobody's reset. Testing it needs a second account in demo mode.
 - **What the build leaves to try:** UBC's projects (active in GP, or holding stock in the legacy list) with a made-up schedule each where the list has door hardware for it, the legacy warehouse as the stock pool to pull back from, specialties jobs holding their own inventory, and UBC's open POs to receive. A project with no schedule gets the import wizard's made-up sample schedule in demo mode.
 - **An admin request with no company header is unscoped and includes DEMO rows** (the `None` scope contract, #845). The app always sends the header, so this only shows in a script that forgets it.
 
