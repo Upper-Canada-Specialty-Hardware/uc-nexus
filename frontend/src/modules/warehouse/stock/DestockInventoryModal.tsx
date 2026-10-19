@@ -11,7 +11,7 @@ import {
   MenuItem,
   Typography,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import { useToast } from '../../../components/Toast';
@@ -22,6 +22,7 @@ import { ReservationNotice, useComboReservation } from '../reservationNotice';
 import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
 import { useDefinedLocationPick } from '../useDefinedLocationPick';
 import { userMessage } from '../../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../../graphql/staleRow';
 
 export interface DestockSource {
   id: string;
@@ -60,6 +61,7 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
   const { showToast } = useToast();
+  const client = useApolloClient();
   // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
   const inFlight = useRef(false);
 
@@ -74,6 +76,12 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
     onError: (err) => {
       inFlight.current = false;
       showToast(userMessage(err), 'error');
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened - or this very move landed and only its reply was lost
+        // (#1552). Close: the refetch redraws the grid, and reopening starts from the fresh count.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 
@@ -141,6 +149,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           targetAisle: overrideLoc ? aisle.trim() : null,
           targetRow: overrideLoc ? row.trim() : null,
           targetBay: overrideLoc ? bay.trim() : null,
+          // The row's count as shown, so a resend after a lost reply is refused, not applied twice (#1552).
+          expectedQuantity: inventoryLocation.quantity,
         },
       },
     });

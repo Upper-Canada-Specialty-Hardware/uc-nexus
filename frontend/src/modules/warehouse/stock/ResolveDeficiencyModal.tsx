@@ -11,7 +11,7 @@ import {
   MenuItem,
   Typography,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
@@ -19,6 +19,7 @@ import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
 import { userMessage } from '../../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../../graphql/staleRow';
 
 export interface DeficientRow {
   source: 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -52,6 +53,7 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
   // pool row's units are already in the pool at their own price, so it never asks.
   const [destockCost, setDestockCost] = useState<DestockCost | null>(null);
   const { showToast } = useToast();
+  const client = useApolloClient();
   // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
   const inFlight = useRef(false);
 
@@ -66,6 +68,12 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
     onError: (err) => {
       inFlight.current = false;
       showToast(userMessage(err), 'error');
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened - or this very move landed and only its reply was lost
+        // (#1552). Close: the refetch redraws the grid, and reopening starts from the fresh count.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 
@@ -102,6 +110,8 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
           rmaReference: needsRma ? rma.trim() : null,
           destockSource: resolution === 'SEND_TO_STOCK' ? 'DEFICIENT_SWAP' : null,
           destockCost: needsCost ? destockCost : null,
+          // The flagged count as shown, so a resend after a lost reply is refused, not applied twice (#1552).
+          expectedDeficientQuantity: row.deficientQuantity,
         },
       },
     });

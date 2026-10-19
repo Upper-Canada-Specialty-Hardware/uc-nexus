@@ -155,6 +155,7 @@ describe('DestockInventoryModal', () => {
         targetAisle: null,
         targetRow: null,
         targetBay: null,
+        expectedQuantity: 10,
       },
     };
     const result = vi.fn(() => ({
