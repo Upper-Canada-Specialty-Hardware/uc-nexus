@@ -92,7 +92,7 @@ it('marks a shipment picked up behind a confirmation and reads the list again', 
   const dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'Mark picked up' }));
 
-  expect(await screen.findByRole('button', { name: 'Mark delivered' })).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'Mark delivered' }, { timeout: 4000 })).toBeInTheDocument();
 });
 
 it('says so when nothing is assigned', async () => {

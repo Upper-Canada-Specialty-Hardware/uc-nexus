@@ -55,13 +55,14 @@ export default function DeliveriesPage() {
         `${step.slip.packingSlipNumber} marked ${step.action === 'PICKED_UP' ? 'picked up' : 'delivered'}`,
         'success',
       );
-      // A delivered shipment leaves this list, so it is read again rather than patched in the cache.
-      await refetch();
     } catch (e) {
       showToast(userMessage(e), 'error');
     } finally {
       setStep(null);
     }
+    // A delivered shipment leaves this list, so it is read again rather than patched in the cache - after
+    // the dialog has closed, so a slow signal in the cab does not hold the driver on it.
+    void refetch();
   };
 
   const slips = data?.myDeliveries ?? [];

@@ -9,6 +9,7 @@ import base64
 import uuid
 
 import pytest
+from sqlalchemy import func, select
 
 from app.errors import InvalidStateTransitionError, ValidationError
 from app.models.enums import PullRequestSource, PullRequestStatus, ShipmentPhotoKind
@@ -130,7 +131,8 @@ def test_breaking_a_container_down_takes_its_photos_with_it(db_session, stored):
     project = _project(db_session)
     skid = _loaded_skid(db_session, project)
     photo = _add(db_session, kind=ShipmentPhotoKind.LOADING, container_id=skid.id)
+    photo_id, key = photo.id, photo.s3_key
     keys = containers.delete_container(db_session, skid.id)
-    assert keys == [photo.s3_key]
-    db_session.expire_all()
-    assert db_session.get(ShipmentPhoto, photo.id) is None
+    assert keys == [key]
+    # Gone by the foreign key's cascade, so asked of the table rather than of the session's copy.
+    assert db_session.scalar(select(func.count(ShipmentPhoto.id)).where(ShipmentPhoto.id == photo_id)) == 0
