@@ -147,10 +147,11 @@ Both laws are read every session and weighed on review.
 
 ## Ruled Business Logic
 
-Some behaviour that looks like a gap has been ruled intentional by the product owner. Each such spot carries an `INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE` comment at the code, naming the ruling and its issue. Before reporting or changing behaviour in an audit or review, search for that marker; a marked behaviour is not a finding. Current rulings (#1107 / #1142):
+Some behaviour that looks like a gap has been ruled intentional by the product owner. Each such spot carries an `INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE` comment at the code, naming the ruling and its issue. Before reporting or changing behaviour in an audit or review, search for that marker; a marked behaviour is not a finding. Current rulings (#1107 / #1142, and #1756):
 
 - Shipment returns are allowed from a picked-up (in-transit) shipment (`create_shipment_return` in `backend/app/repositories/shipping_repository.py`).
 - PO document settings are one row shared by every GP company (`backend/app/repositories/po_document_settings_repository.py`).
+- Stock pool hardware allocated to a project with no hardware schedule imported yet is allowed, and lands as floating inventory: on the project, tied to no schedule line item, claimed by nothing until it is tied to one (#1756; `_refuse_a_pair_off_the_schedule` in `backend/app/repositories/stock/movements.py`). A project that has a schedule only takes a pair on it.
 
 ## Demo Mode
 

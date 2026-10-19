@@ -1,0 +1,212 @@
+"""Allocating pool stock to a project names a pair on the project's schedule (#1647).
+
+Units allocated under a pair the schedule does not use land on the project, but no shop assembly or
+shipping out request can claim them. The server now refuses that pair; a non-schedule type code is
+exempt, and a project with no schedule yet takes the units as floating inventory (ruled on #1756).
+"""
+
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+import pytest
+
+from app.errors import ValidationError
+from app.models.enums import HardwareItemState, POStatus
+from app.models.hardware import HardwareItem
+from app.models.inventory import InventoryLocation
+from app.models.inventory_item_type import InventoryItemType
+from app.models.project import Opening
+from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.repositories import stock as stock_repository
+
+from .inventory_fixtures import make_project, make_stock_item, wh_id
+
+
+def _schedule(session, project, *pairs: tuple[str, str, int]) -> None:
+    """A schedule of one opening holding each (category, code, quantity)."""
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"O-{uuid.uuid4().hex[:4]}")
+    session.add(opening)
+    session.flush()
+    for category, code, quantity in pairs:
+        session.add(
+            HardwareItem(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                opening_id=opening.id,
+                hardware_category=category,
+                product_code=code,
+                item_quantity=quantity,
+                state=HardwareItemState.AVAILABLE,
+            )
+        )
+    session.flush()
+
+
+def _allocate(session, si, project, category, code, quantity=2):
+    return stock_repository.allocate_stock_to_project(
+        session,
+        stock_item_id=si.id,
+        project_id=project.id,
+        target_hardware_category=category,
+        target_product_code=code,
+        quantity=quantity,
+        target_aisle=None,
+        target_row=None,
+        target_bay=None,
+        performed_by="warehouse",
+    )
+
+
+# --- the server rule ---------------------------------------------------------------------------
+
+
+def test_a_pair_off_the_schedule_is_refused(db_session):
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-999")
+
+    with pytest.raises(ValidationError) as exc:
+        _allocate(db_session, si, project, "HINGE", "HG-999")
+
+    assert exc.value.field == "target_product_code"
+    assert "not on this project's hardware schedule" in exc.value.message
+    db_session.refresh(si)
+    assert si.quantity == 10
+
+
+def test_the_right_code_under_the_wrong_category_is_refused(db_session):
+    """The pool row's own pair is the dialog's old default; the schedule has the code as a LOCK."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("LOCK", "HG-100", 4))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    with pytest.raises(ValidationError):
+        _allocate(db_session, si, project, "HINGE", "HG-100")
+
+
+def test_a_pair_on_the_schedule_is_allocated(db_session):
+    project = make_project(db_session)
+    _schedule(db_session, project, ("LOCK", "HG-100", 4))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    row = _allocate(db_session, si, project, "LOCK", "HG-100")
+
+    assert (row.hardware_category, row.product_code, row.quantity) == ("LOCK", "HG-100", 2)
+
+
+def test_a_non_schedule_type_code_is_exempt(db_session):
+    """Frames, specialties and consumables are on no schedule by design."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4))
+    code = f"T{uuid.uuid4().hex[:6].upper()}"
+    db_session.add(InventoryItemType(id=uuid.uuid4(), company=project.company, code=code, name=f"Frames {code}"))
+    db_session.flush()
+    si = make_stock_item(db_session, quantity=10, category=code, code="FR-3070")
+
+    row = _allocate(db_session, si, project, code, "FR-3070")
+
+    assert row.hardware_category == code
+
+
+def test_another_companys_type_code_is_not_exempt(db_session):
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4))
+    code = f"T{uuid.uuid4().hex[:6].upper()}"
+    db_session.add(InventoryItemType(id=uuid.uuid4(), company="UCSH", code=code, name=f"Specs {code}"))
+    db_session.flush()
+    si = make_stock_item(db_session, quantity=10, category=code, code="SP-1")
+
+    with pytest.raises(ValidationError):
+        _allocate(db_session, si, project, code, "SP-1")
+
+
+def test_a_project_with_no_schedule_takes_floating_inventory(db_session):
+    """Ruled on #1756: allowed, the units are tied to no schedule line until somebody ties them."""
+    project = make_project(db_session)
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-999")
+
+    row = _allocate(db_session, si, project, "HINGE", "HG-999")
+
+    assert row.quantity == 2
+
+
+# --- the targets the dialog picks from ---------------------------------------------------------
+
+
+def _held(session, project, category, code, quantity, deficient=0):
+    session.add(
+        InventoryLocation(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            stock_item_id=make_stock_item(session, quantity=quantity, category=category, code=code).id,
+            warehouse_id=wh_id(session),
+            hardware_category=category,
+            product_code=code,
+            quantity=quantity,
+            deficient_quantity=deficient,
+            received_at=datetime.utcnow(),
+        )
+    )
+    session.flush()
+
+
+def _on_order(session, project, category, code, ordered, received=0):
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+        company=project.company,
+    )
+    session.add(po)
+    session.flush()
+    session.add(
+        POLineItem(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            hardware_category=category,
+            product_code=code,
+            ordered_quantity=ordered,
+            received_quantity=received,
+            unit_cost=Decimal("10.00"),
+        )
+    )
+    session.flush()
+
+
+def test_targets_say_what_each_pair_still_needs(db_session):
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 10), ("LOCK", "HG-100", 3), ("CLOSER", "CL-1", 2))
+    _held(db_session, project, "HINGE", "HG-100", 4, deficient=1)  # 3 sound
+    _on_order(db_session, project, "HINGE", "HG-100", ordered=5, received=0)
+    _held(db_session, project, "CLOSER", "CL-1", 5)  # more than required
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
+
+    assert targets["schedule_hardware"] is True
+    assert targets["has_schedule"] is True
+    needed = {(p["hardware_category"], p["product_code"]): p["still_needed_quantity"] for p in targets["pairs"]}
+    assert needed == {("HINGE", "HG-100"): 10 - 3 - 5, ("LOCK", "HG-100"): 3, ("CLOSER", "CL-1"): 0}
+
+
+def test_targets_on_a_project_with_no_schedule(db_session):
+    project = make_project(db_session)
+    si = make_stock_item(db_session, quantity=10)
+
+    targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
+
+    assert (targets["has_schedule"], targets["pairs"]) == (False, [])
+
+
+def test_targets_for_a_type_code_pool_row(db_session):
+    project = make_project(db_session)
+    code = f"T{uuid.uuid4().hex[:6].upper()}"
+    db_session.add(InventoryItemType(id=uuid.uuid4(), company=project.company, code=code, name=f"Frames {code}"))
+    db_session.flush()
+    si = make_stock_item(db_session, quantity=10, category=code, code="FR-3070")
+
+    targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
+
+    assert targets["schedule_hardware"] is False

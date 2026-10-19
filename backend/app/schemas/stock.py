@@ -39,6 +39,8 @@ from .inputs import (
     TransferInventoryInput,
 )
 from .types import (
+    AllocationPair,
+    AllocationTargets,
     DeficiencyReview,
     DeficientItemRow,
     InventoryLocation,
@@ -51,6 +53,25 @@ from .types import (
 
 @strawberry.type
 class StockQueries:
+    @strawberry.field
+    def allocation_targets(
+        self, info: strawberry.Info, stock_item_id: strawberry.ID, project_id: strawberry.ID
+    ) -> AllocationTargets:
+        """Where a pool row's units can go on a project, for the allocate dialog's pair picker (#1647):
+        the schedule's pairs with what each still needs, and whether either side is exempt."""
+        with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(stock_item_id)), scope)
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), scope)
+            targets = stock_repository.get_allocation_targets(
+                session, stock_item_id=uuid.UUID(str(stock_item_id)), project_id=uuid.UUID(str(project_id))
+            )
+            return AllocationTargets(
+                schedule_hardware=targets["schedule_hardware"],
+                has_schedule=targets["has_schedule"],
+                pairs=[AllocationPair(**pair) for pair in targets["pairs"]],
+            )
+
     @strawberry.field
     def stock_items(
         self,

@@ -17,12 +17,16 @@ from app.models.enums import (
     PoolKind,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.inventory_item_type import InventoryItemType
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
     clone_origin_fields,
     ensure_registered_location,
     get_available_quantities,
+    get_project_availability,
+    get_project_progress_by_product,
     get_reserved_quantities,
+    get_scheduled_pairs,
     location_detail,
 )
 from app.services.locking import lock_inventory_combo
@@ -196,6 +200,80 @@ def _project_company(session: Session, project_id: uuid.UUID | None) -> str | No
     return session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
 
 
+def _non_schedule_type_codes(session: Session, company: str | None) -> set[str]:
+    """The company's item type codes (#454): frames, specialties, consumables and the like, which carry
+    their type code as `hardware_category` and are on no hardware schedule by design. Retired types
+    included (#1340) - stock already on a shelf under a retired code is still non-schedule inventory.
+    The same set the inventory view's on-schedule flag exempts."""
+    return set(session.scalars(select(InventoryItemType.code).where(InventoryItemType.company == company)).all())
+
+
+def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, code: str) -> None:
+    """Schedule hardware allocated to a project must name a pair on its schedule (#1647).
+
+    Units allocated under a pair the schedule does not use land on the project, but no shop assembly or
+    shipping out request can claim them, and the only signal was the Not on schedule chip, after the
+    fact. Checked here, in the one write every caller goes through (the dialog, the legacy migration),
+    with the inventory view's own rule: a non-schedule type code is exempt, any other pair must be one
+    the project's schedule has.
+    """
+    if category in _non_schedule_type_codes(session, project.company):
+        return
+    scheduled = get_scheduled_pairs(session, project.id)
+    if not scheduled:
+        # INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1647 / #1756, 2026-10-19): a
+        # project with no hardware schedule imported yet takes the allocation. The units land as floating
+        # inventory - on the project, tied to no schedule line item, so nothing claims them until they
+        # are tied to one. Do not refuse it, and do not report it as a gap in later audits.
+        return
+    if (category, code) not in scheduled:
+        raise ValidationError(
+            f"{category} / {code} is not on this project's hardware schedule. Pick one of the schedule's products.",
+            field="target_product_code",
+        )
+
+
+def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, project_id: uuid.UUID) -> dict:
+    """Where a pool row's units can go on a project (#1647), for the allocate dialog's pair picker.
+
+    `schedule_hardware` is False for a pool row whose category is one of the company's type codes: it
+    is exempt and goes under its own pair. `has_schedule` is False for a project with no schedule yet,
+    whose allocation lands as floating inventory. `pairs` is every pair on the schedule with what it
+    still needs: required, less what the project holds sound, what is on order and not yet received,
+    and what has already shipped out. Two grouped reads that already exist, joined in Python by pair.
+    """
+    from app.models.project import Project as ProjectModel
+
+    si = session.get(StockItem, stock_item_id)
+    if si is None:
+        raise NotFoundError(f"Stock item {stock_item_id} not found")
+    project = session.get(ProjectModel, project_id)
+    if project is None:
+        raise NotFoundError(f"Project {project_id} not found")
+
+    on_hand = {
+        (r["hardware_category"], r["product_code"]): r["on_hand_quantity"] - r["deficient_quantity"]
+        for r in get_project_availability(session, project_id)
+    }
+    pairs = []
+    for row in get_project_progress_by_product(session, project_id):
+        pair = (row["hardware_category"], row["product_code"])
+        covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"]
+        pairs.append(
+            {
+                "hardware_category": row["hardware_category"],
+                "product_code": row["product_code"],
+                "required_quantity": row["required_quantity"],
+                "still_needed_quantity": max(0, row["required_quantity"] - covered),
+            }
+        )
+    return {
+        "schedule_hardware": si.hardware_category not in _non_schedule_type_codes(session, project.company),
+        "has_schedule": bool(pairs),
+        "pairs": pairs,
+    }
+
+
 def allocate_stock_to_project(
     session: Session,
     *,
@@ -251,6 +329,7 @@ def allocate_stock_to_project(
         raise ValidationError(
             "This stock sits in another GP company's warehouse than the project's.", field="project_id"
         )
+    _refuse_a_pair_off_the_schedule(session, project, target_hardware_category, target_product_code)
 
     now = datetime.utcnow()
 
