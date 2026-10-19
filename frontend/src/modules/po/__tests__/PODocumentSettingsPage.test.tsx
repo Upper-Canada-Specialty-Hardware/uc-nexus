@@ -1,9 +1,14 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import { GET_COMPANY_LETTERHEAD, GET_PO_DOCUMENT_SETTINGS, SET_COMPANY_ADDRESS } from '../../../graphql/po';
+
+// The address section reads the settings and then the letterhead; under the full parallel suite that
+// chain is slow, so lift the per-test budget and the async-util default (mirrors the other PO dialogs).
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({ ownsTenant: true, hasRole: () => true }),
