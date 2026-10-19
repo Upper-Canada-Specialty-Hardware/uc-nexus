@@ -3,13 +3,11 @@ import {
   siteFormInput,
   EMPTY_SITE_FORM,
   isWeightInvalid,
-  primaryWarehouse,
   returnableUnits,
   slipMaterialLines,
   slipNetOfReturns,
   reprintContents,
   slipOpeningSummary,
-  warehouseAddressLines,
   type PackingSlipItem,
   type SlipContainer,
 } from '../shipmentSiteForm';
@@ -242,46 +240,6 @@ describe('isWeightInvalid', () => {
     expect(isWeightInvalid('99999999.99')).toBe(false);
     expect(isWeightInvalid('100000000')).toBe(true);
     expect(isWeightInvalid('-1')).toBe(true);
-  });
-});
-
-describe('warehouseAddressLines', () => {
-  it('composes the snapshot the way the paper form is written', () => {
-    expect(
-      warehouseAddressLines({
-        name: 'Coast Meridian',
-        address: '1120 1725 Coast Meridian Road',
-        city: 'Port Coquitlam',
-        province: 'BC',
-        postalCode: 'V3C 3T7',
-      }),
-    ).toBe('Coast Meridian\n1120 1725 Coast Meridian Road\nPort Coquitlam BC V3C 3T7');
-  });
-
-  it('drops the lines a warehouse record has no answer for', () => {
-    expect(
-      warehouseAddressLines({
-        name: 'Annex',
-        address: null,
-        city: null,
-        province: null,
-        postalCode: null,
-      }),
-    ).toBe('Annex');
-  });
-
-  it('is blank when there is no warehouse to snapshot', () => {
-    expect(warehouseAddressLines(undefined)).toBe('');
-  });
-});
-
-describe('primaryWarehouse', () => {
-  it('prefers the flagged one and falls back to the first', () => {
-    const a: { id: string; isPrimary?: boolean } = { id: 'a' };
-    const b = { id: 'b', isPrimary: true };
-    expect(primaryWarehouse([a, b])).toBe(b);
-    expect(primaryWarehouse([a])).toBe(a);
-    expect(primaryWarehouse([])).toBeUndefined();
   });
 });
 

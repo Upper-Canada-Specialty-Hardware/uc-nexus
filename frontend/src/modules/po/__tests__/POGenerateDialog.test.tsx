@@ -5,6 +5,7 @@ import { ToastProvider } from '../../../components/Toast';
 import POGenerateDialog from '../POGenerateDialog';
 import type { PurchaseOrder } from '../index';
 import {
+  GET_COMPANY_LETTERHEAD,
   GET_PO_DOCUMENT_SETTINGS,
   GET_GP_BUYERS,
   GET_GP_PO_TOTALS,
@@ -184,10 +185,21 @@ function saveMock(calls: Record<string, unknown>[]): MockedResponse {
   };
 }
 
+// #1689: the from-address is the PO's company as it prints itself - GP's name, then its address.
+const letterheadMock: MockedResponse = {
+  request: { query: GET_COMPANY_LETTERHEAD, variables: { company: 'TUBC' } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      companyLetterhead: { __typename: 'CompanyLetterhead', company: 'TUBC', name: 'Test UBC', address: '1 Main St' },
+    },
+  },
+};
+
 function renderDialog(mocks: MockedResponse[], override: Partial<PurchaseOrder> = {}) {
   const onRefetch = vi.fn();
   render(
-    <MockedProvider mocks={mocks}>
+    <MockedProvider mocks={[...mocks, letterheadMock]}>
       <ToastProvider>
         <POGenerateDialog open po={{ ...po, ...override }} onClose={vi.fn()} onRefetch={onRefetch} />
       </ToastProvider>
@@ -247,6 +259,8 @@ describe('POGenerateDialog shipping method', () => {
 
     await waitFor(() => expect(tab.location.href).toBe('blob:generated-po'));
     expect(open).toHaveBeenCalledTimes(1);
+    // #1689: the from-address is the PO's own company - GP's name, then its address.
+    expect(printed.props?.companyFromAddress).toBe('Test UBC\n1 Main St');
   });
 
   it('saves an empty shipping method as null (issue #703)', async () => {

@@ -21,6 +21,7 @@ import DemoBanner from '../demo/DemoBanner';
 import ReportBubble from '../report/ReportBubble';
 import DemoModeUserButton from '../demo/DemoModeUserButton';
 import companyLogo from '../assets/brand/ucsh-logo-mark.png';
+import CompanyWordmark from './CompanyWordmark';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
@@ -100,7 +101,7 @@ export default function AppLayout() {
             {/* The company logo. Its white keyline ring is what carries it on the ink bar. alt is
                 empty because the wordmark beside it already names the link. */}
             <Box component="img" src={companyLogo} alt="" sx={{ height: { xs: 28, sm: 32 }, display: 'block' }} />
-            UC Nexus
+            <CompanyWordmark />
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />

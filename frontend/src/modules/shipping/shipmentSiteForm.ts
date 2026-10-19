@@ -411,36 +411,3 @@ export function slipOpeningSummary(
   }
   return [...openings].sort((a, b) => a.localeCompare(b)).join(', ');
 }
-
-// ---- Pickup location ------------------------------------------------------
-
-export interface WarehouseAddress {
-  name: string;
-  address: string | null;
-  city: string | null;
-  province: string | null;
-  postalCode: string | null;
-  isPrimary?: boolean;
-}
-
-/**
- * The multi-line PICKUP LOCATION snapshot, composed the way the paper form is written: the division
- * name, the street line, then city/province/postal on one line.
- *
- * It is a snapshot on purpose. The warehouse record can be edited or retired years after a shipment
- * left, and the Shipment Site Form has to keep printing the address the truck was actually sent to.
- */
-export function warehouseAddressLines(warehouse: WarehouseAddress | undefined): string {
-  if (!warehouse) return '';
-  const region = [warehouse.city, warehouse.province, warehouse.postalCode]
-    .filter(Boolean)
-    .join(' ');
-  return [warehouse.name, warehouse.address, region].filter(Boolean).join('\n');
-}
-
-/** The primary warehouse, or the first one when none is flagged. */
-export function primaryWarehouse<T extends { isPrimary?: boolean }>(
-  warehouses: T[],
-): T | undefined {
-  return warehouses.find((w) => w.isPrimary) ?? warehouses[0];
-}

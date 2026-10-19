@@ -40,9 +40,11 @@ import {
   Truck,
   XCircle,
 } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_COMPANY_LETTERHEAD } from '../../graphql/po';
+import { letterheadBlock, type CompanyLetterhead } from '../../company/letterhead';
 import {
   GET_PACKING_SLIPS,
   GET_SLIP_PO_TRACE,
@@ -56,7 +58,6 @@ import EditShipmentDialog from './EditShipmentDialog';
 import ShipmentSiteFormDocument from './ShipmentSiteFormDocument';
 import {
   netQuantity,
-  primaryWarehouse,
   returnableUnits,
   SHIPMENT_SLIP_PARAM,
   SHIPMENT_STATUS_DISPLAY,
@@ -65,10 +66,8 @@ import {
   reprintContents,
   slipOpeningSummary,
   valuesFromSlip,
-  warehouseAddressLines,
   type PackingSlip,
   type ShipmentStatus,
-  type WarehouseAddress,
 } from './shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
 import { fmtShipDate, ridingWith } from './loads';
@@ -289,16 +288,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // list leaves archived projects out, and their shipments still have to say whose they are.
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isGlobal });
 
-  // The letterhead's Division Address, which is UC Hardware's own address rather than anything the
-  // shipment stores - a reprint years later still has to carry it, and the slip only remembers where
-  // the truck was sent from.
-  const { data: warehousesData } = useQuery<{ warehouses: WarehouseAddress[] }>(GET_WAREHOUSES, {
-    variables: { includeInactive: false },
-  });
-  const divisionAddress = useMemo(
-    () => warehouseAddressLines(primaryWarehouse(warehousesData?.warehouses ?? [])),
-    [warehousesData],
-  );
+  // #1689: the letterhead's Division Address is the shipment's own company - GP's name for it and its
+  // own address - read when the form is printed, so a reprint carries the company as it prints now.
+  const client = useApolloClient();
 
 
   // Each mutation answers with the whole PackingSlip, so Apollo's normalised cache updates the row's
@@ -353,6 +345,11 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       const tab = openPdfWindow(showToast);
       setGeneratingFor(slip.id);
       try {
+        const { data: letterheadData } = await client.query<{ companyLetterhead: CompanyLetterhead }>({
+          query: GET_COMPANY_LETTERHEAD,
+          variables: { projectId: slip.projectId },
+        });
+        const divisionAddress = letterheadData ? letterheadBlock(letterheadData.companyLetterhead) : '';
         // #1107 / #1304: before pickup a reprint is net of returns (it is the copy the driver takes);
         // after pickup it prints what the driver was handed, with returns noted beside it.
         const net = reprintContents(slip);
@@ -381,7 +378,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         setGeneratingFor(null);
       }
     },
-    [divisionAddress, showToast],
+    [client, showToast],
   );
 
   const handleLifecycle = useCallback(async () => {

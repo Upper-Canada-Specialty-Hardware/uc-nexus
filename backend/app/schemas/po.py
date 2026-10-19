@@ -746,13 +746,20 @@ class POQueries:
             return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0))), labels=labels) for r in rows]
 
     @strawberry.field
-    def company_letterhead(self, info: strawberry.Info, company: str | None = None) -> CompanyLetterhead:
+    def company_letterhead(
+        self, info: strawberry.Info, company: str | None = None, project_id: strawberry.ID | None = None
+    ) -> CompanyLetterhead:
         """What a GP company prints as itself on a document (#1689): GP's name and its own address.
 
-        A document prints the company it belongs to - the PO's, the shipment's - so the caller names it.
-        A caller pinned to a company reads its own; only an unscoped UC NEXUS ADMIN names another."""
-        resolved = _letterhead_company(info, company)
+        A document prints the company it belongs to: the PO's names its company, a shipment its project
+        (whose company it is). A caller pinned to a company reads its own; only an unscoped UC NEXUS
+        ADMIN names another."""
         with SessionLocal() as session:
+            if project_id is not None:
+                pid = uuid.UUID(str(project_id))
+                tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+                company = project_repository.get_project(session, pid).company
+            resolved = _letterhead_company(info, company)
             letterhead = company_letterhead_repository.get_letterhead(session, resolved)
             # The shared settings row is created on first read, and the fallback may have read it.
             session.commit()
