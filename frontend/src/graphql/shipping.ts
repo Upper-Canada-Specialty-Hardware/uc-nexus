@@ -256,13 +256,20 @@ const SLIP_CONTAINER_FIELDS = `
     }
   }`;
 
-// The truck trip the slip rides (#1720), for grouping and labelling. Its other slips are not read here;
-// the load picker asks `joinableLoads` for them.
+// The truck trip the slip rides (#1720), with every slip on it (#1724): the list groups a load's slips
+// under it and the Delivery Request names the others as riding along.
 const SLIP_LOAD_FIELDS = `
   load {
     id
     loadNumber
     shipDate
+    slips {
+      id
+      packingSlipNumber
+      projectNumber
+      projectDescription
+      status
+    }
   }`;
 
 const PACKING_SLIP_FIELDS =

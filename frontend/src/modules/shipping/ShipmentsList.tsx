@@ -70,6 +70,7 @@ import {
   type WarehouseAddress,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
+import { fmtShipDate, ridingWith } from './loads';
 import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
@@ -163,6 +164,8 @@ function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
   return [
     { id: 'expand', label: 'Expand', min: 44, fixed: 44, header: null, flush: true },
     { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1 },
+    // #1724: the truck it rides, as the dock names it ("22713-10152026", up to a "-2" suffix).
+    { id: 'load', label: 'Load', min: 136, weight: 1 },
     ...(isGlobal ? [{ id: 'project', label: 'Project', min: 120, weight: 1.5 }] : []),
     { id: 'status', label: 'Status', min: 112, weight: 0.8 },
     { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },
@@ -360,6 +363,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
             returnedNote={net.returnedNote}
+            loadNumber={slip.load?.loadNumber ?? null}
+            ridingWith={ridingWith(slip)}
           />,
         ).toBlob();
         tab.show(blob);
@@ -387,9 +392,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     }
   }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast, refetch]);
 
-  // Slip #, [project], status, shipped by, created, pick-up, delivery, method, carrier. The
-  // expansion row spans all of them plus the chevron, so this has to move with the header.
-  const columnCount = isGlobal ? 9 : 8;
+  // Every column but the chevron, which the expansion row's colSpan adds back. Derived from the
+  // columns so it moves with the header (#1724 added Load).
+  const columnCount = shipmentColumns(isGlobal).length - 1;
 
   return (
     <FadeIn>
@@ -398,7 +403,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
         <TextField
           size="small"
-          label="Search packing slip #"
+          label="Search packing slip or load #"
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -468,12 +473,33 @@ export default function ShipmentsList({ projectId, heading }: Props) {
               </TableCell>
             </TableRow>
           )}
-          {visible.map((slip) => {
+          {visible.map((slip, index) => {
             const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
             const status = shipmentStatusDisplay(slip.status);
             const returnable = returnableUnits(slip.items);
+            // #1724: a truck carrying more than one slip is drawn as a group, headed once above its
+            // first row. The server orders a load's slips together, so "first" is the row before it
+            // being on another load. A load of one slip needs no header - its Load cell says it all.
+            const load = slip.load;
+            const headsLoad =
+              !!load && load.slips.length > 1 && visible[index - 1]?.load?.id !== load.id;
             return (
               <Fragment key={slip.id}>
+                {headsLoad && load && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={columnCount + 1}
+                      sx={{ ...FIT_CELL_WRAP_SX, bgcolor: 'action.hover', py: 0.75 }}
+                    >
+                      <Typography variant="body2" component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                        Load {load.loadNumber}
+                      </Typography>
+                      <Typography variant="body2" component="span" color="text.secondary" sx={{ ml: 1 }}>
+                        {fmtShipDate(load.shipDate)} · {load.slips.length} shipments on this truck
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
                 <TableRow
                   hover
                   sx={{ '& > *': { borderBottom: isOpen ? 'unset' : undefined } }}
@@ -494,6 +520,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                   </TableCell>
                   <TableCell sx={{ ...monoSx, fontWeight: 600 }}>
                     {slip.packingSlipNumber}
+                  </TableCell>
+                  <TableCell sx={monoSx} title={slip.load?.loadNumber}>
+                    {slip.load?.loadNumber ?? '-'}
                   </TableCell>
                   {isGlobal && <TableCell title={slipProjectLabel(slip)}>{slipProjectLabel(slip)}</TableCell>}
                   <TableCell>

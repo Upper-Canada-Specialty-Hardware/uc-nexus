@@ -189,3 +189,22 @@ def test_moving_onto_its_own_load_is_refused(db_session):
     first = _ship(db_session, project)
     with pytest.raises(ValidationError, match="already on that load"):
         shipment_loads.move_slip_to_load(db_session, first, first.load_id, "tester")
+
+
+# --- the shipments list (#1724) -----------------------------------------------------------------
+
+
+def test_the_list_finds_a_shipment_by_its_load_number_and_keeps_a_load_together(db_session):
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    alone = _ship(db_session, lead, pickup=date(2026, 10, 16))
+    joined = _ship(db_session, other, load_id=first.load_id)
+
+    found = shipping_repository.list_packing_slips(db_session, search=first.load.load_number, company="TUBC")
+    assert {s.id for s in found} >= {first.id, joined.id}
+    assert alone.id not in {s.id for s in found}
+
+    listed = [s.id for s in shipping_repository.list_packing_slips(db_session, company="TUBC", limit=200)]
+    together = [listed.index(first.id), listed.index(joined.id)]
+    assert abs(together[0] - together[1]) == 1

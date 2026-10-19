@@ -65,7 +65,22 @@ const HEADER = {
   deliveredAt: null,
   deliveredBy: null,
   // The truck trip it rides (#1720). Every slip read carries it now, so the fixture does too.
-  load: { __typename: 'ShipmentLoadRef', id: 'load-1', loadNumber: '23093-07202026', shipDate: '2026-07-20' },
+  load: {
+    __typename: 'ShipmentLoadRef',
+    id: 'load-1',
+    loadNumber: '23093-07202026',
+    shipDate: '2026-07-20',
+    slips: [
+      {
+        __typename: 'ShipmentLoadSlip',
+        id: 'ps-1',
+        packingSlipNumber: 'PS-0019',
+        projectNumber: '23093',
+        projectDescription: 'Cowichan District Hospital',
+        status: 'SCHEDULED',
+      },
+    ],
+  },
 };
 
 function slip(overrides: Record<string, unknown> = {}) {
@@ -204,13 +219,40 @@ describe('ShipmentsList', () => {
     renderList([packingSlipsMock([slip()], { search: 'PS-0019' })], '/app/shipping/shipments?slip=PS-0019');
 
     expect(await screen.findByText('SIL-40002-228')).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Search packing slip #' })).toHaveValue('PS-0019');
+    expect(screen.getByRole('textbox', { name: 'Search packing slip or load #' })).toHaveValue('PS-0019');
     expect(screen.queryByText('PS-0020')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Collapse PS-0019' })).toBeInTheDocument();
 
     // Collapsing it by hand is honoured - the link does not hold it open.
     fireEvent.click(screen.getByRole('button', { name: 'Collapse PS-0019' }));
     expect(await screen.findByRole('button', { name: 'Expand PS-0019' })).toBeInTheDocument();
+  });
+
+  it('heads a truck carrying two slips once, and names a lone slip by its Load cell alone (#1724)', async () => {
+    const shared = {
+      __typename: 'ShipmentLoadRef',
+      id: 'load-2',
+      loadNumber: '23093-07222026',
+      shipDate: '2026-07-22',
+      slips: [
+        { __typename: 'ShipmentLoadSlip', id: 'ps-2', packingSlipNumber: 'PS-0020', projectNumber: '23093', projectDescription: null, status: 'SCHEDULED' },
+        { __typename: 'ShipmentLoadSlip', id: 'ps-3', packingSlipNumber: 'PS-0021', projectNumber: '24117', projectDescription: null, status: 'SCHEDULED' },
+      ],
+    };
+    renderList([
+      packingSlipsMock([
+        slip({ id: 'ps-2', packingSlipNumber: 'PS-0020', load: shared }),
+        slip({ id: 'ps-3', packingSlipNumber: 'PS-0021', load: shared }),
+        slip(),
+      ]),
+    ]);
+    await screen.findByText('PS-0021');
+
+    expect(screen.getAllByText('Load 23093-07222026')).toHaveLength(1);
+    expect(screen.getByText(/2 shipments on this truck/)).toBeInTheDocument();
+    // The lone slip's load is in its cell and gets no header row of its own.
+    expect(screen.getByText('23093-07202026')).toBeInTheDocument();
+    expect(screen.queryByText('Load 23093-07202026')).not.toBeInTheDocument();
   });
 
   it('names its project filter for a screen reader (#1547)', async () => {
@@ -565,7 +607,7 @@ describe('ShipmentsList', () => {
     ]);
     await screen.findByText('PS-0019');
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search packing slip #' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search packing slip or load #' }), {
       target: { value: 'PS-0020' },
     });
 

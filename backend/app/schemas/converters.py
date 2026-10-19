@@ -1084,11 +1084,25 @@ def packing_slip_to_type(ps) -> PackingSlip:
         containers=[container_to_type(c) for c in ps.containers],
         load=(
             ShipmentLoadRef(
-                id=strawberry.ID(str(ps.load.id)), load_number=ps.load.load_number, ship_date=ps.load.ship_date
+                id=strawberry.ID(str(ps.load.id)),
+                load_number=ps.load.load_number,
+                ship_date=ps.load.ship_date,
+                slips=[_load_slip(s) for s in ps.load.slips],
             )
             if ps.load is not None
             else None
         ),
+    )
+
+
+def _load_slip(s) -> ShipmentLoadSlip:
+    """One slip on a load. The caller loads each slip's project."""
+    return ShipmentLoadSlip(
+        id=strawberry.ID(str(s.id)),
+        packing_slip_number=s.packing_slip_number,
+        project_number=s.project.project_id,
+        project_description=s.project.description,
+        status=s.status,
     )
 
 
@@ -1100,16 +1114,7 @@ def shipment_load_to_type(load) -> ShipmentLoad:
         load_number=load.load_number,
         ship_date=load.ship_date,
         lead_project_number=load.lead_project.project_id,
-        slips=[
-            ShipmentLoadSlip(
-                id=strawberry.ID(str(s.id)),
-                packing_slip_number=s.packing_slip_number,
-                project_number=s.project.project_id,
-                project_description=s.project.description,
-                status=s.status,
-            )
-            for s in load.slips
-        ],
+        slips=[_load_slip(s) for s in load.slips],
     )
 
 

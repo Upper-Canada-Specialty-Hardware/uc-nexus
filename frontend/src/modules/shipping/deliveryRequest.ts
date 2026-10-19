@@ -114,6 +114,16 @@ export interface SlipLoad {
   id: string;
   loadNumber: string;
   shipDate: string;
+  /** Every slip on the load, this one included (#1724). */
+  slips: LoadSlip[];
+}
+
+export interface LoadSlip {
+  id: string;
+  packingSlipNumber: string;
+  projectNumber: string;
+  projectDescription: string | null;
+  status: ShipmentStatus;
 }
 
 export type PackingSlip = PackingSlipHeader & {

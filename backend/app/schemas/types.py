@@ -1286,11 +1286,13 @@ class PackingSlip:
 
 @strawberry.type
 class ShipmentLoadRef:
-    """A load as a slip names it (#1720): enough to group and label, without its other slips."""
+    """A load as a slip names it (#1720), with every slip on it (#1724) - the Delivery Request prints the
+    others as riding with this one, and the list counts them to draw the truck as a group."""
 
     id: strawberry.ID
     load_number: str
     ship_date: date
+    slips: list["ShipmentLoadSlip"]
 
 
 @strawberry.type

@@ -28,6 +28,7 @@ from app.models.pull_request import (
     PullRequestItem as PullRequestItemModel,
 )
 from app.models.shipment_container import ShipmentContainer
+from app.models.shipment_load import ShipmentLoad
 from app.models.shipping import (
     PackingSlip,
     PackingSlipItem,
@@ -543,7 +544,11 @@ def _packing_slip_filter(
     needle = (search or "").strip()
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        stmt = stmt.where(PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\"))
+        # #1724: the load number too - the name people say for the truck (`22713-10152026`).
+        on_load = select(ShipmentLoad.id).where(ShipmentLoad.load_number.ilike(f"%{escaped}%", escape="\\"))
+        stmt = stmt.where(
+            PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\") | PackingSlip.load_id.in_(on_load)
+        )
     # #1361: the Shipping landing's gauges link to the slips they count.
     if status is not None:
         stmt = stmt.where(PackingSlip.status == status)
@@ -558,7 +563,8 @@ def _packing_slip_loads():
         selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
         selectinload(PackingSlip.project),
-        selectinload(PackingSlip.load),
+        # #1724: the load with every slip on it, for the Delivery Request's "riding with" line.
+        selectinload(PackingSlip.load).selectinload(ShipmentLoad.slips).selectinload(PackingSlip.project),
     )
 
 
@@ -583,10 +589,19 @@ def list_packing_slips(
         raise ValidationError(f"limit must be between 1 and {PACKING_SLIP_PAGE_MAX}", field="limit")
     if offset < 0:
         raise ValidationError("offset must not be negative", field="offset")
+    # #1724: newest load first and a load's slips together, so the list can draw a truck as one group
+    # and a page boundary can only ever split the one load it falls in. A slip with no load sorts as
+    # its own, by when it shipped.
     stmt = (
         _packing_slip_filter(select(PackingSlip), project_id, company, search, status)
+        .outerjoin(ShipmentLoad, PackingSlip.load_id == ShipmentLoad.id)
         .options(*_packing_slip_loads())
-        .order_by(PackingSlip.shipped_at.desc(), PackingSlip.id)
+        .order_by(
+            func.coalesce(ShipmentLoad.created_at, PackingSlip.shipped_at).desc(),
+            PackingSlip.load_id,
+            PackingSlip.shipped_at.desc(),
+            PackingSlip.id,
+        )
         .offset(offset)
         .limit(limit)
     )

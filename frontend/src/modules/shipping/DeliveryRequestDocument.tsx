@@ -187,6 +187,10 @@ export interface DeliveryRequestDocumentProps {
    * rather than netted out of it, so the lines still match the signed paper.
    */
   returnedNote?: string[];
+  /** The load it goes out on (#1724), the name the dock and the driver use for the truck. */
+  loadNumber?: string | null;
+  /** The other slips on that load, as "PS-00413 (23001)", so the driver knows what else is aboard. */
+  ridingWith?: string[];
 }
 
 export default function DeliveryRequestDocument({
@@ -200,6 +204,8 @@ export default function DeliveryRequestDocument({
   divisionAddress,
   values,
   returnedNote = [],
+  loadNumber = null,
+  ridingWith = [],
 }: DeliveryRequestDocumentProps) {
   const divisionLines = divisionAddress.split('\n').filter((l) => l.trim() !== '');
   // The material block keeps a few spare lines: a partial ship gets items added at the dock.
@@ -216,6 +222,10 @@ export default function DeliveryRequestDocument({
             {/* The shipment this paper belongs to. Not in the SALES ORDER NUMBER box: that is a GP
                 number the office fills in, and a slip number sitting in it would be read as one. */}
             <Text style={styles.titleSlip}>Packing slip {packingSlipNumber}</Text>
+            {loadNumber && <Text style={styles.titleSlip}>Load {loadNumber}</Text>}
+            {ridingWith.length > 0 && (
+              <Text style={styles.titleSlip}>Riding with {ridingWith.join(', ')}</Text>
+            )}
           </View>
           <View style={styles.divisionBox}>
             <Text style={styles.divisionLabel}>Division Address:</Text>
