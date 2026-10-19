@@ -169,7 +169,8 @@ function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
     { id: 'expand', label: 'Expand', min: 44, fixed: 44, header: null, flush: true },
     { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1 },
     // #1724: the truck it rides, as the dock names it ("22713-10152026", up to a "-2" suffix).
-    { id: 'load', label: 'Load', min: 136, weight: 1 },
+    // #1745: wide enough for the longest number whole - a demo load with a suffix, D-23331-10192026-2.
+    { id: 'load', label: 'Load', min: 176, weight: 1 },
     ...(isGlobal ? [{ id: 'project', label: 'Project', min: 120, weight: 1.5 }] : []),
     { id: 'status', label: 'Status', min: 112, weight: 0.8 },
     { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },

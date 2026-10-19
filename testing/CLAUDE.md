@@ -1006,23 +1006,60 @@ confirmed` and carries a **View shipment** action to `/app/shipping/shipments?sl
 with an action stays until it is closed, taken or replaced. It used to be a four-second toast fired as
 the dialog closed, gone before anyone could read it.
 
-**The confirm step is the Delivery Request form since #447** (PR #450). Confirming a cart opens a
+**The confirm step is the Shipment Site Form since #447** (PR #450; named the Delivery Request until #1738). Confirming a cart opens a
 sectioned dialog (Shipment / Shipper / Pickup location / Deliver To questionnaire / Contacts), not
 the old slip-number-only form. Shipper name is read-only from the signed-in identity and the email
 prefills from it; pickup location prefills from the primary warehouse and is name-only when the
 seeded warehouse has no address fields. Everything except the slip number is optional. The success
-view's "View Delivery Request" opens the generated PDF (client-side react-pdf), which replicates the
-paper Delivery Request form; a shipment's document is reprintable later from the shipments list and
+view's site form button opens the generated PDF (client-side react-pdf), which replicates the
+paper form the site signs; a shipment's document is reprintable later from the shipments list and
 regenerates from the STORED fields, so an edit shows up on the next print.
 
 **Shipments carry a lifecycle since #447**: SCHEDULED -> PICKED_UP -> DELIVERED, strict one-way; the
 states document the truck's journey only and move no inventory. The Shipments page
 (`/app/shipping/shipments`) is expandable rows now, not a DataGrid: row = slip #, project, status
 chip, shipped by, created, pick-up, delivery, carrier; expansion = the item lines plus the actions,
-each status-gated - Delivery Request (always), Edit (SCHEDULED only, full-replace semantics, a
+each status-gated - Site Form (always), Edit (SCHEDULED only, full-replace semantics, a
 cleared field really clears), Mark Picked Up (SCHEDULED), Mark Delivered (PICKED_UP), Return
 (unchanged). Lifecycle/edit mutations return the whole header, so the row updates through the Apollo
 cache with no reload - assert on the row, do not wait for a refetch.
+
+**Loads, drivers and photos since #1720 (PR #1737).** Words first: a *shipment* is one project's
+packing slip (`PS-NNNNN`, `PS-DNNNNN` in demo); the *Shipment Site Form* is its printed form; a *load*
+is the truck it goes on.
+
+- **Every confirm puts the shipment on a load.** The confirm dialog's Load picker defaults to New load,
+  numbered `<project>-<MMDDYYYY>` off the pick-up date (today when blank), `-2` for that project's second
+  load the same day, `D-` in front in demo; it also lists the company's loads still on the dock, each
+  with the slips already on it. Numbers are unique per company. Migration 145 gave every older slip a
+  load of its own. The edit dialog moves a scheduled shipment between loads; a shipment alone on its
+  load is not offered New load.
+- **Shipments list:** a Load column, a header row over a load carrying more than one shipment ("N
+  shipments on this truck"), and the search box matches load numbers as well as slip numbers. The
+  expanded row's material table has a **Came in on** column: the POs the project's confirmed shipping
+  picks drew that product from (candidates, by ruling #1721). Legacy-list stock has none, so demo
+  lines read `-`; TUBC 80001's PS-00003 shows real PO numbers.
+- **Tracking number and driver** sit on the confirm and edit dialogs and the printed form. The driver
+  is picked from accounts holding the **Driver** role (User Management), the company's own, or the
+  UBC/TUBC accounts for a demo shipment; with nobody holding it the picker says so.
+- **My deliveries** (`/app/deliveries`) is the driver's page, in the rail only for accounts holding
+  Driver: their own scheduled and picked-up shipments, Mark picked up / Mark delivered, and Add delivery
+  photo once picked up. A delivered shipment leaves the list. An account holding only Driver lands
+  there, and the backend refuses it anything but its own shipments' pickup, delivery and photos.
+- **Photos:** a camera button on each staging container (a loading photo, which moves onto the
+  shipment when it ships), and on a picked-up or delivered shipment's row. JPEG, PNG or WebP only.
+  Upload a file from the session's scratchpad with `file_upload` on the hidden `input[type=file]`
+  (`find` names it "Add a photo").
+- **Racks:** the request workspace's extras lane shows each product's racks under its code, the accept
+  queue's lines have a Racks column, and the return dialog says where a returned product's other units
+  sit.
+- **Reading the printed form:** it opens in a `blob:` tab the extension cannot screenshot. From the app
+  tab, `fetch` the blob URL, inflate each stream by its `/Length` (`DecompressionStream('deflate')`;
+  slicing to `endstream` fails), and read the `Tj`/`TJ` strings. Runs split for kerning, so
+  `1Z-TEST-1736` arrives as `1` + `Z-TEST-1736`.
+- **The cart animates removed lines out,** so a removed line lingers in the DOM for a moment. Read the
+  cart from `sessionStorage` (`shipping-request-cart:<projectId>`) rather than from the rail when it
+  matters.
 
 **Hardware only reaches the staged pool when its SHIPPING_OUT pull is COMPLETED.** Confirming the
 pick leaves the pull IN_PROGRESS with phase "Picked - Ready to hand over" and Staging stays empty;
