@@ -208,3 +208,23 @@ def test_the_list_finds_a_shipment_by_its_load_number_and_keeps_a_load_together(
     listed = [s.id for s in shipping_repository.list_packing_slips(db_session, company="TUBC", limit=200)]
     together = [listed.index(first.id), listed.index(joined.id)]
     assert abs(together[0] - together[1]) == 1
+
+
+# --- the driver page (#1727) --------------------------------------------------------------------
+
+
+def test_a_driver_sees_their_own_shipments_still_on_the_road_next_pickup_first(db_session):
+    project = _project(db_session)
+    later = _ship(db_session, project, pickup=date(2026, 10, 20))
+    sooner = _ship(db_session, project, pickup=date(2026, 10, 16))
+    delivered = _ship(db_session, project)
+    someone_elses = _ship(db_session, project)
+    for slip in (later, sooner, delivered):
+        slip.driver_user_id, slip.driver_name = "u_dan", "Dan Driver"
+    someone_elses.driver_user_id, someone_elses.driver_name = "u_ann", "Ann Able"
+    shipping_repository.mark_shipment_picked_up(db_session, delivered.id, "Dan Driver")
+    shipping_repository.mark_shipment_delivered(db_session, delivered.id, "Dan Driver")
+    db_session.flush()
+
+    mine = shipping_repository.list_driver_shipments(db_session, "u_dan", company="TUBC")
+    assert [s.id for s in mine] == [sooner.id, later.id]

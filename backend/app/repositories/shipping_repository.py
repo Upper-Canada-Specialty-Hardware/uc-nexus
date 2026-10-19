@@ -621,6 +621,23 @@ def list_packing_slips(
     return list(session.scalars(stmt).unique().all())
 
 
+def list_driver_shipments(session: Session, driver_user_id: str, *, company: str | None = None) -> list[PackingSlip]:
+    """A driver's shipments still on the road (#1727): scheduled or picked up, the next pickup first.
+
+    What the driver page lists. A delivered or cancelled one is done with, and is on the Shipments page.
+    """
+    stmt = (
+        _packing_slip_filter(select(PackingSlip), None, company, None)
+        .where(
+            PackingSlip.driver_user_id == driver_user_id,
+            PackingSlip.status.in_((ShipmentStatus.SCHEDULED, ShipmentStatus.PICKED_UP)),
+        )
+        .options(*_packing_slip_loads())
+        .order_by(PackingSlip.pickup_date.asc().nulls_last(), PackingSlip.shipped_at, PackingSlip.id)
+    )
+    return list(session.scalars(stmt).unique().all())
+
+
 def count_packing_slips(
     session: Session,
     project_id: uuid.UUID | None = None,

@@ -305,6 +305,16 @@ export const GET_JOINABLE_LOADS = gql`
   }
 `;
 
+// The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
+// selection as every other read, so marking one picked up updates it in place.
+export const GET_MY_DELIVERIES = gql`
+  query GetMyDeliveries {
+    myDeliveries {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
 // Who can drive a shipment of this project (#1726): its company's Driver accounts.
 export const GET_SHIPMENT_DRIVERS = gql`
   query GetShipmentDrivers($projectId: ID!) {

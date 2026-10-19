@@ -289,6 +289,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Who can drive a shipment (#1726): names and ids only, of the project's company, for the same
     # dialogs that book and correct one.
     "shipmentDrivers": SIGNED_IN,
+    # The driver page (#1727): only ever the caller's own shipments, so nothing to gate beyond a session.
+    "myDeliveries": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.

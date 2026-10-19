@@ -5,7 +5,15 @@ import uuid
 import strawberry
 from sqlalchemy import func, select
 
-from app.auth import current_user, resolve_display_name, tenant_scope, user_roster
+from app.auth import (
+    DRIVER_ROLE,
+    ForbiddenError,
+    caller_roles,
+    current_user,
+    resolve_display_name,
+    tenant_scope,
+    user_roster,
+)
 from app.database import SessionLocal
 from app.errors import NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
@@ -120,6 +128,20 @@ def _resolve_driver(info: strawberry.Info, session, project_id: uuid.UUID, drive
     return drivers.resolve_driver(user_roster(info.context), company, driver_user_id)
 
 
+def _refuse_another_drivers_shipment(info: strawberry.Info, session, packing_slip_id: uuid.UUID, user_id: str) -> None:
+    """An account that is only a driver moves only the shipments it drives (#1727).
+
+    Anybody else working shipments - shipping, the warehouse, the office - still marks any of them, as
+    before; the driver page is a narrower door, not a new rule for them.
+    """
+    roles = set(caller_roles(info.context))
+    if roles != {DRIVER_ROLE}:
+        return
+    driver = session.scalar(select(PackingSlipModel.driver_user_id).where(PackingSlipModel.id == packing_slip_id))
+    if driver != user_id:
+        raise ForbiddenError("This shipment is another driver's.")
+
+
 def _requests_to_types(session, reqs) -> list[ShippingOutRequest]:
     """Requests with their derived stage and return-note, in one extra query each for the whole list.
 
@@ -191,6 +213,14 @@ class ShippingQueries:
             if project is None:
                 raise NotFoundError(f"Project {project_id} not found")
             return [shipment_load_to_type(load) for load in shipment_loads.joinable_loads(session, project.company)]
+
+    @strawberry.field
+    def my_deliveries(self, info: strawberry.Info) -> list[PackingSlip]:
+        """The caller's own shipments still on the road (#1727): what the driver page lists."""
+        user_id = current_user(info)["user_id"]
+        with SessionLocal() as session:
+            slips = shipping_repository.list_driver_shipments(session, user_id, company=tenant_scope(info))
+            return [packing_slip_to_type(ps) for ps in slips]
 
     @strawberry.field
     def shipment_drivers(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ShipmentDriver]:
@@ -729,6 +759,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_another_drivers_shipment(info, session, uuid.UUID(str(id)), auth["user_id"])
             ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -755,6 +786,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_another_drivers_shipment(info, session, uuid.UUID(str(id)), auth["user_id"])
             ps = shipping_repository.mark_shipment_delivered(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
