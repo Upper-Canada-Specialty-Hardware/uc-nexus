@@ -39,6 +39,7 @@ function slip(overrides: Record<string, unknown> = {}) {
     deliveredBy: null,
     driverUserId: 'u_dan',
     driverName: 'Dan Driver',
+    photos: [],
     containers: [{ __typename: 'ShipmentContainer', id: 'c-1', containerType: 'SKID', name: 'Skid 1', items: [] }],
     load: {
       __typename: 'ShipmentLoadRef',

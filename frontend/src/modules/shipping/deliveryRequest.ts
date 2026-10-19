@@ -13,6 +13,7 @@ import {
   WEIGHT_FIELD,
   type DeliveryRequestField,
 } from '../../types/deliveryRequestFields';
+import type { ShipmentPhoto } from './photos';
 import { CONTAINER_TYPE_LABEL, isStacked, type ContainerType } from './staging';
 
 /**
@@ -110,6 +111,8 @@ export type PackingSlipHeader = {
   driverName?: string | null;
   /** The truck trip it rides (#1720). Null only on a slip written outside the confirm path. */
   load?: SlipLoad | null;
+  /** Every photo of it (#1728): its containers as loaded, then the delivery. */
+  photos?: ShipmentPhoto[];
 } & DeliveryRequestValues;
 
 /** A load as a slip names it (#1720). `shipDate` is a calendar day, YYYY-MM-DD. */

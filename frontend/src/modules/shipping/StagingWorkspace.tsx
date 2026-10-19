@@ -59,6 +59,8 @@ import {
 import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import PhotoCapture from './PhotoCapture';
+import PhotoStrip from './PhotoStrip';
 import { userMessage } from '../../graphql/userMessage';
 
 const CONTAINER_TYPES: ContainerType[] = ['SKID', 'DOOR_CART', 'BOX', 'ENVELOPE', 'BUNDLE'];
@@ -774,10 +776,19 @@ function ContainerCard({
             <Chip size="small" variant="outlined" label={`${container.items.length} item(s)`} />
           )}
         </Box>
-        <IconButton size="small" color="error" aria-label={`Break down ${container.name}`} onClick={onDelete}>
-          <Trash2 size={16} strokeWidth={1.75} />
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+          {/* #1728: the photo the floor takes of every container before it goes on the truck. */}
+          <PhotoCapture kind="LOADING" containerId={container.id} refetchQueries={['GetStagingPool']} />
+          <IconButton size="small" color="error" aria-label={`Break down ${container.name}`} onClick={onDelete}>
+            <Trash2 size={16} strokeWidth={1.75} />
+          </IconButton>
+        </Box>
       </Box>
+      {(container.photos?.length ?? 0) > 0 && (
+        <Box sx={{ mb: 1 }}>
+          <PhotoStrip photos={container.photos ?? []} removeRefetchQueries={['GetStagingPool']} />
+        </Box>
+      )}
 
       {stacked && container.items.length > 1 && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>

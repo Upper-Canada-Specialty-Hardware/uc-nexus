@@ -73,6 +73,9 @@ import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
 import { fmtShipDate, ridingWith } from './loads';
 import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { SHIPPING_REFETCH_QUERIES } from '../../graphql/refetch';
+import PhotoCapture from './PhotoCapture';
+import PhotoStrip from './PhotoStrip';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
@@ -759,6 +762,31 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             </Button>
                           )}
                         </Stack>
+                        )}
+                        {/* #1728: the containers as loaded and the load as delivered, where a discrepancy
+                            is investigated. A delivery photo can be added once it has left the dock. */}
+                        {((slip.photos?.length ?? 0) > 0 ||
+                          slip.status === 'PICKED_UP' ||
+                          slip.status === 'DELIVERED') && (
+                          <Box sx={{ mt: 2 }}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
+                              <Typography sx={microLabelSx}>Photos</Typography>
+                              {(slip.status === 'PICKED_UP' || slip.status === 'DELIVERED') && (
+                                <PhotoCapture
+                                  kind="DELIVERY"
+                                  packingSlipId={slip.id}
+                                  refetchQueries={SHIPPING_REFETCH_QUERIES}
+                                />
+                              )}
+                            </Stack>
+                            {(slip.photos?.length ?? 0) > 0 ? (
+                              <PhotoStrip photos={slip.photos ?? []} removeRefetchQueries={SHIPPING_REFETCH_QUERIES} />
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                None yet.
+                              </Typography>
+                            )}
+                          </Box>
                         )}
                       </Box>
                     </Collapse>

@@ -49,6 +49,8 @@ const HEADER = {
   trackingNumber: null,
   driverUserId: null,
   driverName: null,
+  // Photos of it (#1728). Every slip read carries them now.
+  photos: [],
   weightLbs: 420,
   deliveryAddress: '6775 Bell McKinnon Rd., Duncan, BC',
   specialInstructions: null,

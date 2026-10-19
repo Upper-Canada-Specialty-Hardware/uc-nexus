@@ -55,6 +55,7 @@ function container(overrides: Record<string, unknown> = {}) {
     packingSlipId: null,
     createdBy: 'tester',
     items: [],
+    photos: [],
     ...overrides,
   };
 }

@@ -11,6 +11,8 @@ import { shipmentStatusDisplay, type PackingSlip } from '../shipping/deliveryReq
 import { CONTAINER_TYPE_LABEL } from '../shipping/staging';
 import { fmtShipDate } from '../shipping/loads';
 import { monoSx } from '../../theme';
+import PhotoCapture from '../shipping/PhotoCapture';
+import PhotoStrip from '../shipping/PhotoStrip';
 
 type Step = { slip: PackingSlip; action: 'PICKED_UP' | 'DELIVERED' };
 
@@ -183,7 +185,26 @@ function DeliveryCard({
         </Typography>
       )}
 
-      <Box sx={{ mt: 1.5 }}>
+      {/* #1728: photos of the load at the site, taken before it is marked delivered. */}
+      {(slip.photos ?? []).some((p) => p.kind === 'DELIVERY') && (
+        <Box sx={{ mt: 1 }}>
+          <PhotoStrip
+            photos={(slip.photos ?? []).filter((p) => p.kind === 'DELIVERY')}
+            removeRefetchQueries={['GetMyDeliveries']}
+          />
+        </Box>
+      )}
+
+      <Stack spacing={1} sx={{ mt: 1.5 }}>
+        {slip.status === 'PICKED_UP' && (
+          <PhotoCapture
+            kind="DELIVERY"
+            packingSlipId={slip.id}
+            refetchQueries={['GetMyDeliveries']}
+            label="Add delivery photo"
+            disabled={busy}
+          />
+        )}
         {slip.status === 'SCHEDULED' && (
           <Button variant="contained" fullWidth disabled={busy} onClick={() => onStep('PICKED_UP')}>
             Mark picked up
@@ -194,7 +215,7 @@ function DeliveryCard({
             Mark delivered
           </Button>
         )}
-      </Box>
+      </Stack>
     </Box>
   );
 }

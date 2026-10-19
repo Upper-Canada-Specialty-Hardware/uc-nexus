@@ -15,11 +15,16 @@ export const GET_SHIPPING_STATS = gql`
 
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
 // for both halves so they can never disagree about whether something has been loaded.
+// A photo of a container as loaded or a load as delivered (#1728). `url` is signed when read and good
+// for an hour, which is longer than anybody keeps a screen open.
+const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenAt url`;
+
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
   items {
     id shipmentContainerId openingNumber hardwareCategory productCode quantity isManual position
   }
+  photos { ${PHOTO_FIELDS} }
 `;
 
 // #1698: every project's staged floor, for the staging page before a project is picked. The lines
@@ -283,7 +288,38 @@ const SLIP_LOAD_FIELDS = `
 const PACKING_SLIP_FIELDS =
   [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
   SLIP_CONTAINER_FIELDS +
-  SLIP_LOAD_FIELDS;
+  SLIP_LOAD_FIELDS +
+  `
+  photos { ${PHOTO_FIELDS} }`;
+
+// Add a photo (#1728): LOADING of a container, DELIVERY of a shipment that has left the dock.
+export const ADD_SHIPMENT_PHOTO = gql`
+  mutation AddShipmentPhoto(
+    $kind: ShipmentPhotoKind!
+    $fileName: String!
+    $contentType: String!
+    $fileDataBase64: String!
+    $containerId: ID
+    $packingSlipId: ID
+  ) {
+    addShipmentPhoto(
+      kind: $kind
+      fileName: $fileName
+      contentType: $contentType
+      fileDataBase64: $fileDataBase64
+      containerId: $containerId
+      packingSlipId: $packingSlipId
+    ) {
+      ${PHOTO_FIELDS}
+    }
+  }
+`;
+
+export const DELETE_SHIPMENT_PHOTO = gql`
+  mutation DeleteShipmentPhoto($id: ID!) {
+    deleteShipmentPhoto(id: $id)
+  }
+`;
 
 // The loads a shipment of this project can join (#1720): its company's still on the dock, soonest
 // first. Read fresh each time a picker opens - a load somebody else just picked up must not be offered.

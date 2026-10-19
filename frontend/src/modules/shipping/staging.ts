@@ -1,3 +1,4 @@
+import type { ShipmentPhoto } from './photos';
 // The staging workspace's shapes and the two rules that are easier to read as functions than as
 // conditions buried in JSX (#451).
 
@@ -39,6 +40,8 @@ export interface Container {
   packingSlipId: string | null;
   createdBy: string;
   items: ContainerItem[];
+  /** Photos of it as it was loaded (#1728). */
+  photos?: ShipmentPhoto[];
 }
 
 export interface StagedLooseItem {
