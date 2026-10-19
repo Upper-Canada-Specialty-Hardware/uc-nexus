@@ -32,6 +32,7 @@ FULL_DETAILS = {
     "pickup_location": "UC Hardware\n12 Depot Rd\nToronto ON M1M 1M1",
     "shipment_method": "Our truck",
     "carrier_tag_bol": "BOL-4471",
+    "tracking_number": "1Z999AA10123456784",
     "weight_lbs": 812.5,
     "delivery_address": "40 Site Blvd\nMississauga ON",
     "special_instructions": "Call ahead.\nNo weekend deliveries.",
