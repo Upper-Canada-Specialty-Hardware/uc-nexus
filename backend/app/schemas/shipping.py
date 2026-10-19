@@ -5,15 +5,31 @@ import uuid
 import strawberry
 from sqlalchemy import func, select
 
-from app.auth import current_user, resolve_display_name, tenant_scope
+from app.auth import (
+    DRIVER_ROLE,
+    ForbiddenError,
+    caller_roles,
+    current_user,
+    resolve_display_name,
+    tenant_scope,
+    user_roster,
+)
 from app.database import SessionLocal
+from app.errors import NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
+from app.models.shipment_photo import ShipmentPhoto as ShipmentPhotoModel
+from app.models.shipping import PackingSlip as PackingSlipModel
 from app.repositories import (
+    drivers,
+    po_trace,
+    rack_locations,
     request_composer,
     shipment_containers,
+    shipment_loads,
     shipment_method_repository,
+    shipment_photos,
     shipping_repository,
     shipping_requests,
     tenancy,
@@ -23,10 +39,13 @@ from .converters import (
     container_to_type,
     packing_slip_to_type,
     project_to_type,
+    shipment_load_to_type,
+    shipment_photo_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
 from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
+from .enums import ShipmentPhotoKind as ShipmentPhotoKindEnum
 from .enums import ShipmentStatus as ShipmentStatusEnum
 from .enums import ShippingOutRequestStatus
 from .inputs import (
@@ -41,15 +60,21 @@ from .inputs import (
 )
 from .types import (
     PackingSlip,
+    ProductRackLocations,
+    RackLocation,
     RequestCoverageLine,
     ReturnableLine,
     ShipmentContainer,
+    ShipmentDriver,
+    ShipmentLoad,
     ShipmentMethod,
+    ShipmentPhoto,
     ShipmentReturn,
     ShippingOutRequest,
     ShippingOutRequestReservedProduct,
     ShipReadyItems,
     ShipReadyLooseItem,
+    SlipLinePoTrace,
     StagedLooseItem,
     StagingPool,
     StagingProjectSummary,
@@ -95,13 +120,48 @@ def _shipment_method_to_type(m) -> ShipmentMethod:
     )
 
 
-def _delivery_details(input) -> dict:
-    """The Delivery Request header off a mutation input, keyed the way the repository writes it.
+def _site_form_details(input) -> dict:
+    """The Shipment Site Form header off a mutation input, keyed the way the repository writes it.
 
-    Read off `DELIVERY_REQUEST_FIELDS` rather than listed here, so the confirm input, the edit input
+    Read off `SITE_FORM_FIELDS` rather than listed here, so the confirm input, the edit input
     and the columns cannot drift apart: a field added to the header reaches both mutations or neither.
     """
-    return {field: getattr(input, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+    return {field: getattr(input, field) for field in shipping_repository.SITE_FORM_FIELDS}
+
+
+def _resolve_driver(info: strawberry.Info, session, project_id: uuid.UUID, driver_user_id: str | None):
+    """The driver a write names (#1726), checked against the Clerk roster: (user id, name), or None.
+    The roster is only fetched when a driver is named - most shipments go by courier."""
+    if not driver_user_id:
+        return None
+    company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+    return drivers.resolve_driver(user_roster(info.context), company, driver_user_id)
+
+
+def _driver_only(info: strawberry.Info) -> bool:
+    """Whether the caller holds the Driver role and nothing else (#1727).
+
+    Such an account reaches what the driver page does and no further: its own shipments marked picked up
+    and delivered, delivery photos of them, and the photos it took. Anybody else working shipments -
+    shipping, the warehouse, the office - keeps what they had; the rule narrows the driver, not them.
+    """
+    return set(caller_roles(info.context)) == {DRIVER_ROLE}
+
+
+def _refuse_another_drivers_shipment(info: strawberry.Info, session, packing_slip_id: uuid.UUID, user_id: str) -> None:
+    """A driver-only account moves only the shipments it drives (#1727)."""
+    if not _driver_only(info):
+        return
+    driver = session.scalar(select(PackingSlipModel.driver_user_id).where(PackingSlipModel.id == packing_slip_id))
+    if driver != user_id:
+        raise ForbiddenError("This shipment is another driver's.")
+
+
+def _refuse_driver_only(info: strawberry.Info) -> None:
+    """Booking, correcting, moving and calling off a shipment are the shipping department's, not a
+    driver's (#1727): a driver-only account is refused them outright."""
+    if _driver_only(info):
+        raise ForbiddenError("Drivers mark their own deliveries; booking and changing shipments is shipping's.")
 
 
 def _requests_to_types(session, reqs) -> list[ShippingOutRequest]:
@@ -163,6 +223,68 @@ class ShippingQueries:
                 offset=offset,
             )
             return [packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def joinable_loads(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ShipmentLoad]:
+        """The loads a shipment of `projectId` can join (#1720): its company's loads still on the dock,
+        soonest first. Confirming with none of them starts a new load."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            project = session.get(ProjectModel, pid)
+            if project is None:
+                raise NotFoundError(f"Project {project_id} not found")
+            return [shipment_load_to_type(load) for load in shipment_loads.joinable_loads(session, project.company)]
+
+    @strawberry.field
+    def project_rack_locations(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ProductRackLocations]:
+        """Where each of a project's products sits on the racks (#1730), for raising, accepting and returning
+        shipping requests with the bin in front of the person rather than in a spreadsheet."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            return [
+                ProductRackLocations(
+                    hardware_category=p["hardware_category"],
+                    product_code=p["product_code"],
+                    locations=[RackLocation(**loc) for loc in p["locations"]],
+                )
+                for p in rack_locations.project_rack_locations(session, pid)
+            ]
+
+    @strawberry.field
+    def slip_po_trace(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[SlipLinePoTrace]:
+        """Each line of a shipment with the POs its product could have come in on (#1732). Read when a
+        shipment is opened, not with the list - it is a drill-down, and most rows are never opened."""
+        with SessionLocal() as session:
+            sid = uuid.UUID(str(packing_slip_id))
+            tenancy.require_packing_slip_in_scope(session, sid, tenant_scope(info))
+            return [
+                SlipLinePoTrace(packing_slip_item_id=strawberry.ID(str(item_id)), po_numbers=numbers)
+                for item_id, numbers in po_trace.slip_candidate_pos(session, sid).items()
+            ]
+
+    @strawberry.field
+    def my_deliveries(self, info: strawberry.Info) -> list[PackingSlip]:
+        """The caller's own shipments still on the road (#1727): what the driver page lists."""
+        user_id = current_user(info)["user_id"]
+        with SessionLocal() as session:
+            slips = shipping_repository.list_driver_shipments(session, user_id, company=tenant_scope(info))
+            return [packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def shipment_drivers(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ShipmentDriver]:
+        """Who can drive a shipment of `projectId` (#1726): the Driver accounts of its company."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == pid))
+            if company is None:
+                raise NotFoundError(f"Project {project_id} not found")
+        return [
+            ShipmentDriver(user_id=u["id"], name=drivers.display_name(u))
+            for u in drivers.drivers_for(user_roster(info.context), company)
+        ]
 
     @strawberry.field
     def packing_slip_count(
@@ -316,7 +438,7 @@ class ShippingQueries:
 
     @strawberry.field
     def shipment_methods(self, info: strawberry.Info, active_only: bool = False) -> list[ShipmentMethod]:
-        """How a load can travel (#451). `activeOnly` is what the Delivery Request form passes; the
+        """How a load can travel (#451). `activeOnly` is what the Shipment Site Form passes; the
         management screen leaves it off so a retired method can still be seen and reactivated."""
         with SessionLocal() as session:
             return [
@@ -454,9 +576,12 @@ class ShippingMutations:
         """Break an open container back down; its contents return to the unplaced pool."""
         with SessionLocal() as session:
             tenancy.require_container_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            shipment_containers.delete_container(session, uuid.UUID(str(id)))
+            photo_keys = shipment_containers.delete_container(session, uuid.UUID(str(id)))
             session.commit()
-            return True
+        # #1728: its photos' rows went with it; their images go once that has committed.
+        for key in photo_keys:
+            shipment_photos.discard_object(key)
+        return True
 
     @strawberry.mutation
     def set_container_items(self, info: strawberry.Info, input: SetContainerItemsInput) -> ShipmentContainer:
@@ -516,7 +641,7 @@ class ShippingMutations:
                 uuid.UUID(str(input.project_id)),
                 [uuid.UUID(str(cid)) for cid in input.container_ids],
                 shipped_by=actor,
-                details=_delivery_details(input),
+                details=_site_form_details(input),
                 expected_contents=(
                     None
                     if input.expected_contents is None
@@ -525,6 +650,8 @@ class ShippingMutations:
                         for e in input.expected_contents
                     }
                 ),
+                load_id=uuid.UUID(str(input.load_id)) if input.load_id else None,
+                driver=_resolve_driver(info, session, uuid.UUID(str(input.project_id)), input.driver_user_id),
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, slip.id)
@@ -634,7 +761,7 @@ class ShippingMutations:
 
     @strawberry.mutation
     def update_shipment_details(self, info: strawberry.Info, input: UpdateShipmentDetailsInput) -> PackingSlip:
-        """Correct the Delivery Request of a shipment that has not left yet (#447).
+        """Correct the Shipment Site Form of a shipment that has not left yet (#447).
 
         Refused once the shipment is past SCHEDULED: from the moment it is picked up a driver holds a
         printed copy, and the stored record has to keep matching the paper the site will sign.
@@ -643,11 +770,106 @@ class ShippingMutations:
         touched."""
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
+            _refuse_driver_only(info)
+            project_id, stored_id, stored_name = session.execute(
+                select(
+                    PackingSlipModel.project_id, PackingSlipModel.driver_user_id, PackingSlipModel.driver_name
+                ).where(PackingSlipModel.id == uuid.UUID(str(input.id)))
+            ).one()
+            # The driver it already names stays as named: a driver who has since lost the role must not
+            # make the rest of the form uneditable, and the name kept is the one from when they were chosen.
+            if input.driver_user_id and input.driver_user_id == stored_id:
+                driver = (stored_id, stored_name)
+            else:
+                driver = _resolve_driver(info, session, project_id, input.driver_user_id)
             ps = shipping_repository.update_shipment_details(
                 session,
                 uuid.UUID(str(input.id)),
-                _delivery_details(input),
+                _site_form_details(input),
+                driver=driver,
             )
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def add_shipment_photo(
+        self,
+        info: strawberry.Info,
+        kind: ShipmentPhotoKindEnum,
+        file_name: str,
+        content_type: str,
+        file_data_base64: str,
+        container_id: strawberry.ID | None = None,
+        packing_slip_id: strawberry.ID | None = None,
+    ) -> ShipmentPhoto:
+        """Add a photo (#1728): a LOADING photo of a container, or a DELIVERY photo of a shipment that has
+        left the dock. Images only. Recorded against the signed-in caller."""
+        from app.models.enums import ShipmentPhotoKind as ShipmentPhotoKindDB
+
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        cid = uuid.UUID(str(container_id)) if container_id else None
+        sid = uuid.UUID(str(packing_slip_id)) if packing_slip_id else None
+        with SessionLocal() as session:
+            if cid is not None:
+                tenancy.require_container_in_scope(session, cid, tenant_scope(info))
+                # A loading photo is the floor's, taken at staging.
+                _refuse_driver_only(info)
+            if sid is not None:
+                tenancy.require_packing_slip_in_scope(session, sid, tenant_scope(info))
+                _refuse_another_drivers_shipment(info, session, sid, auth["user_id"])
+            photo = shipment_photos.add_photo(
+                session,
+                kind=ShipmentPhotoKindDB(kind.value),
+                container_id=cid,
+                packing_slip_id=sid,
+                file_name=file_name,
+                content_type=content_type,
+                file_data_base64=file_data_base64,
+                taken_by=actor,
+                taken_by_user_id=auth["user_id"],
+            )
+            s3_key = photo.s3_key
+            try:
+                session.commit()
+            except Exception:
+                shipment_photos.discard_object(s3_key)
+                raise
+            return shipment_photo_to_type(photo)
+
+    @strawberry.mutation
+    def delete_shipment_photo(self, info: strawberry.Info, id: strawberry.ID) -> bool:
+        """Remove a photo taken by mistake (#1728). A driver-only account removes only its own."""
+        user_id = current_user(info)["user_id"]
+        with SessionLocal() as session:
+            tenancy.require_shipment_photo_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            if _driver_only(info):
+                taker = session.scalar(
+                    select(ShipmentPhotoModel.taken_by_user_id).where(ShipmentPhotoModel.id == uuid.UUID(str(id)))
+                )
+                if taker != user_id:
+                    raise ForbiddenError("Drivers can remove only the photos they took.")
+            key = shipment_photos.delete_photo(session, uuid.UUID(str(id)))
+            session.commit()
+        shipment_photos.discard_object(key)
+        return True
+
+    @strawberry.mutation
+    def move_shipment_to_load(
+        self, info: strawberry.Info, id: strawberry.ID, load_id: strawberry.ID | None = None
+    ) -> PackingSlip:
+        """Move a scheduled shipment onto another load, or onto a new one when `loadId` is null (#1723).
+
+        For the truck that changed after the paper was written: two projects that turned out to share
+        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_driver_only(info)
+            ps = shipping_repository.lock_packing_slip(session, uuid.UUID(str(id)))
+            shipment_loads.move_slip_to_load(session, ps, uuid.UUID(str(load_id)) if load_id else None, actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)
@@ -663,6 +885,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_another_drivers_shipment(info, session, uuid.UUID(str(id)), auth["user_id"])
             ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -674,6 +897,7 @@ class ShippingMutations:
         lines, which a return cannot reach. Moves no inventory."""
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_driver_only(info)
             ps = shipping_repository.cancel_shipment(session, uuid.UUID(str(id)))
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -689,6 +913,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_another_drivers_shipment(info, session, uuid.UUID(str(id)), auth["user_id"])
             ps = shipping_repository.mark_shipment_delivered(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)

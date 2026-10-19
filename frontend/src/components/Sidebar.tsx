@@ -19,6 +19,7 @@ import {
   Truck,
   Building2,
   ShieldCheck,
+  Navigation,
 } from 'lucide-react';
 import { useIdentity } from '../hooks/useIdentity';
 import { cssSpring } from '../motion/css';
@@ -29,6 +30,12 @@ interface SidebarItem {
   path: string;
   icon: ReactNode;
   requiredRoles: string[];
+  /**
+   * Shown only to an account holding one of `requiredRoles` itself (#1727) - not greyed out for
+   * everybody else, and not opened by the UC Nexus Admin bypass. For a page that is one person's own
+   * work, where a disabled row would be noise on every other account's rail.
+   */
+  holdersOnly?: boolean;
 }
 
 const ICON_PROPS = { size: 19, strokeWidth: 1.75 } as const;
@@ -64,6 +71,13 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     path: '/app/shipping',
     icon: <Truck {...ICON_PROPS} />,
     requiredRoles: ['Shipping Out', 'Shipping Manager', 'Tenant Owner'],
+  },
+  {
+    label: 'My deliveries',
+    path: '/app/deliveries',
+    icon: <Navigation {...ICON_PROPS} />,
+    requiredRoles: ['Driver'],
+    holdersOnly: true,
   },
   {
     label: 'Tenant Owner',
@@ -116,7 +130,7 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
 
   return (
     <List sx={{ px: 1, py: 1 }}>
-      {SIDEBAR_ITEMS.map((item) => {
+      {SIDEBAR_ITEMS.filter((item) => !item.holdersOnly || item.requiredRoles.some((role) => hasRole(role))).map((item) => {
         const active = isActive(location.pathname, item.path);
         const accessible = canAccess(item);
 

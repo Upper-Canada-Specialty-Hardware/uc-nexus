@@ -72,6 +72,9 @@ from app.models.enums import (
     ShipmentContainerType as ShipmentContainerTypeDB,
 )
 from app.models.enums import (
+    ShipmentPhotoKind as ShipmentPhotoKindDB,
+)
+from app.models.enums import (
     ShipmentStatus as ShipmentStatusDB,
 )
 from app.models.enums import (
@@ -106,6 +109,7 @@ ShopAssemblyBatchStatus = strawberry.enum(ShopAssemblyBatchStatusDB)
 ShippingOutRequestStatus = strawberry.enum(ShippingOutRequestStatusDB)
 ShipmentStatus = strawberry.enum(ShipmentStatusDB)
 ShipmentContainerType = strawberry.enum(ShipmentContainerTypeDB)
+ShipmentPhotoKind = strawberry.enum(ShipmentPhotoKindDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
 PODocumentType = strawberry.enum(PODocumentTypeDB)
 DestockSource = strawberry.enum(DestockSourceDB)

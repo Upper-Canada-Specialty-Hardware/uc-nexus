@@ -156,7 +156,7 @@ export default function ShippingLanding() {
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
             {/* The carrier/method list is maintained by the same people who pick from it on the
-                Delivery Request (#451), so it lives here rather than behind Admin. Labelled, because a
+                Shipment Site Form (#451), so it lives here rather than behind Admin. Labelled, because a
                 bare truck icon told nobody what it did (#589). */}
             {canManage && (
               <Button

@@ -423,7 +423,7 @@ def test_the_same_container_named_twice_ships_once(db_session):
 
 
 # --- the slip remembers how it was loaded --------------------------------------------------------
-# `items` says what shipped; the Delivery Request also has to say which skid to open and in what
+# `items` says what shipped; the Shipment Site Form also has to say which skid to open and in what
 # order it was stacked, which is only answerable from the containers themselves.
 
 
@@ -453,7 +453,7 @@ def test_a_shipped_slip_carries_its_containers(db_session):
 
 
 def test_the_stacking_order_survives_onto_the_slip(db_session):
-    # Position is the whole point of a skid section on the Delivery Request. If it did not come back
+    # Position is the whole point of a skid section on the Shipment Site Form. If it did not come back
     # with the slip, a reprint would list the stack in an arbitrary order.
     project = _project(db_session)
     _staged_loose(db_session, project, qty=1, opening="101")

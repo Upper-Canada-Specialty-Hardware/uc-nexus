@@ -13,6 +13,7 @@ const POModule = React.lazy(() => import('./modules/po'));
 const WarehouseModule = React.lazy(() => import('./modules/warehouse'));
 const ShopAssemblyModule = React.lazy(() => import('./modules/shop-assembly'));
 const ShippingModule = React.lazy(() => import('./modules/shipping'));
+const DeliveriesModule = React.lazy(() => import('./modules/deliveries'));
 const TenantOwnerModule = React.lazy(() => import('./modules/tenant-owner'));
 const NexusAdminModule = React.lazy(() => import('./modules/nexus-admin'));
 
@@ -71,6 +72,7 @@ function App() {
         <Route path="warehouse/*" element={<LazyRoute fallback={<SuspenseFallback />}><WarehouseModule /></LazyRoute>} />
         <Route path="shop-assembly/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShopAssemblyModule /></LazyRoute>} />
         <Route path="shipping/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShippingModule /></LazyRoute>} />
+        <Route path="deliveries/*" element={<LazyRoute fallback={<SuspenseFallback />}><DeliveriesModule /></LazyRoute>} />
         <Route path="tenant-owner/*" element={<LazyRoute fallback={<SuspenseFallback />}><TenantOwnerModule /></LazyRoute>} />
         <Route path="nexus-admin/*" element={<LazyRoute fallback={<SuspenseFallback />}><NexusAdminModule /></LazyRoute>} />
         {/* #729: the Admin module split in two. Every link to the old one ever bookmarked, mailed

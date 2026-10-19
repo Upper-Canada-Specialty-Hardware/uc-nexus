@@ -78,6 +78,14 @@ class PullPickLineState(str, enum.Enum):
     APPLIED = "APPLIED"
 
 
+class ShipmentPhotoKind(str, enum.Enum):
+    """When a shipment photo was taken (#1728): of a container as it was loaded, or at the site on
+    delivery. The two answer different disputes - what left the dock, and what arrived."""
+
+    LOADING = "LOADING"
+    DELIVERY = "DELIVERY"
+
+
 class ShipmentContainerType(str, enum.Enum):
     """What the warehouse physically loads a shipment into (#451).
 
@@ -176,13 +184,13 @@ class ShipmentStatus(str, enum.Enum):
     """Where a confirmed shipment is on its physical journey (#447).
 
     A packing slip used to be a single moment - it was cut and that was the end of it. It is now a
-    Delivery Request that outlives its own creation: the paper is written days before a truck comes,
+    Shipment Site Form that outlives its own creation: the paper is written days before a truck comes,
     the driver takes it, and the site signs for it. These three states are that journey and nothing
     more. **No inventory moves between them.** `confirm_shipment` is still what claims the hardware
     (opening items go SHIPPED_OUT, loose lines come off what is available to ship), because that is
     the moment the warehouse committed it; PICKED_UP and DELIVERED only record where it got to.
 
-    SCHEDULED is also the one editable state. Once the Delivery Request has been picked up, a driver
+    SCHEDULED is also the one editable state. Once the Shipment Site Form has been picked up, a driver
     is carrying a printed copy of it, and the stored record has to keep matching what they hold.
 
     CANCELLED (#973) is a SCHEDULED shipment whose every returnable line came back before a truck

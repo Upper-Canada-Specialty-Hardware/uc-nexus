@@ -343,6 +343,27 @@ def test_the_seed_puts_every_module_in_every_state(seeded):
                 f"JOIN projects p ON p.id = s.project_id WHERE p.company = {demo}"
             )
         )
+        # #1720: every shipment rides a load, demo loads are numbered apart from real ones, and one truck
+        # carries two slips so the list has a load to draw as a group.
+        slips_per_load = list(
+            session.scalars(
+                text(
+                    "SELECT count(s.id) FROM shipment_loads l LEFT JOIN packing_slips s ON s.load_id = l.id "
+                    f"WHERE l.company = {demo} GROUP BY l.id"
+                )
+            )
+        )
+        assert slips_per_load and max(slips_per_load) >= 2
+        assert not session.scalar(
+            text(
+                "SELECT count(*) FROM packing_slips s JOIN projects p ON p.id = s.project_id "
+                f"WHERE p.company = {demo} AND s.load_id IS NULL"
+            )
+        )
+        assert all(
+            n.startswith("D-")
+            for n in session.scalars(text(f"SELECT load_number FROM shipment_loads WHERE company = {demo}"))
+        )
         located = _states(
             session,
             "SELECT i.aisle IS NOT NULL FROM inventory_locations i JOIN projects p ON p.id = i.project_id "

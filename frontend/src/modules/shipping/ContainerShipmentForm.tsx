@@ -19,16 +19,19 @@ import { CONFIRM_SHIPMENT_FROM_CONTAINERS } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
-import DeliveryRequestFields from './DeliveryRequestFields';
+import ShipmentSiteFormFields from './ShipmentSiteFormFields';
+import LoadPicker from './LoadPicker';
+import DriverPicker from './DriverPicker';
+import { NEW_LOAD } from './loads';
 import { useShipmentMethods } from './useShipmentMethods';
 import {
-  deliveryDetailsInput,
-  EMPTY_DELIVERY_DETAILS,
+  siteFormInput,
+  EMPTY_SITE_FORM,
   isWeightInvalid,
   SHIPMENT_SLIP_PARAM,
   WEIGHT_ERROR,
-  type DeliveryDetails,
-} from './deliveryRequest';
+  type SiteFormDetails,
+} from './shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL, isStacked, type Container } from './staging';
 import { microLabelSx, monoSx } from '../../theme';
 
@@ -45,7 +48,7 @@ interface Props {
 /**
  * Confirm a shipment out of whole containers (#451).
  *
- * The same Delivery Request the cart flow fills in - it is one paper form and the site signs one of
+ * The same Shipment Site Form the cart flow fills in - it is one paper form and the site signs one of
  * them - with the manifest above it showing what is actually on the truck, container by container.
  * A skid prints its stack in order, because that is the thing the driver and the site both need and
  * the reason containers exist at all.
@@ -62,7 +65,9 @@ export default function ContainerShipmentForm({
   const navigate = useNavigate();
   const { displayName } = useIdentity();
   const shipmentMethods = useShipmentMethods(!open);
-  const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
+  const [details, setDetails] = useState<SiteFormDetails>(EMPTY_SITE_FORM);
+  const [loadId, setLoadId] = useState<string>(NEW_LOAD);
+  const [driverUserId, setDriverUserId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const totalUnits = useMemo(
@@ -123,7 +128,10 @@ export default function ContainerShipmentForm({
           // #1583: the lines the manifest above shows. A container loaded further since is refused,
           // not shipped with lines nobody checked.
           expectedContents: containers.map((c) => ({ containerId: c.id, itemIds: c.items.map((i) => i.id) })),
-          ...deliveryDetailsInput(details),
+          // #1720: omitted, the server starts a new load for this shipment.
+          loadId: loadId === NEW_LOAD ? null : loadId,
+          driverUserId: driverUserId || null,
+          ...siteFormInput(details),
         },
       },
     });
@@ -173,7 +181,14 @@ export default function ContainerShipmentForm({
             </Stack>
           </Box>
 
-          <DeliveryRequestFields
+          {open && (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ '& > *': { flex: 1, minWidth: 0 } }}>
+              <LoadPicker projectId={projectId} value={loadId} onChange={setLoadId} disabled={loading} />
+              <DriverPicker projectId={projectId} value={driverUserId} onChange={setDriverUserId} disabled={loading} />
+            </Stack>
+          )}
+
+          <ShipmentSiteFormFields
             details={details}
             onChange={(patch) => setDetails((prev) => ({ ...prev, ...patch }))}
             shipperName={displayName}

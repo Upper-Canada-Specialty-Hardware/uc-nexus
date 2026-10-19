@@ -68,7 +68,7 @@ def test_retiring_keeps_the_row_and_takes_it_out_of_the_form_list(db_session):
 
     # The management screen still sees it, so retirement is not a one-way door...
     assert [m.name for m in methods.get_shipment_methods(db_session)] == ["Courier"]
-    # ...while the Delivery Request form does not offer it.
+    # ...while the Shipment Site Form does not offer it.
     assert methods.get_shipment_methods(db_session, active_only=True) == []
 
 

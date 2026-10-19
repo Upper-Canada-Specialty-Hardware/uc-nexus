@@ -22,16 +22,18 @@ from .enums import ReturnDisposition, ShipmentStatus
 if TYPE_CHECKING:
     from .project import Project
     from .shipment_container import ShipmentContainer
+    from .shipment_load import ShipmentLoad
+    from .shipment_photo import ShipmentPhoto
 
 
 class PackingSlip(Base):
-    """One shipment out of the warehouse, and the Delivery Request that goes with it (#447).
+    """One shipment out of the warehouse, and the Shipment Site Form that goes with it (#447).
 
     The header below is the paper form UC Hardware's shipping department fills in and the
     construction site signs off on: when it is being picked up and delivered, who is shipping it and
     how to reach them, where it is being collected from, the questions the site has to answer before
     a truck is worth sending, and the two contacts. It is written once at confirm time and printed
-    from here every time afterwards, so a Delivery Request reprinted a year later says exactly what
+    from here every time afterwards, so a Shipment Site Form reprinted a year later says exactly what
     the driver was handed.
 
     Every header field is nullable. The form is filled in by a human against whatever the site has
@@ -43,11 +45,19 @@ class PackingSlip(Base):
     """
 
     __tablename__ = "packing_slips"
-    __table_args__ = (Index("ix_packing_slips_project", "project_id"),)
+    __table_args__ = (
+        Index("ix_packing_slips_project", "project_id"),
+        Index("ix_packing_slips_load", "load_id"),
+        # The driver page's read (#1727): one driver's shipments still on the road.
+        Index("ix_packing_slips_driver_status", "driver_user_id", "status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     packing_slip_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    # The truck trip this slip rides (#1720). Every confirm puts its slip on one, and the migration gave
+    # every slip before it a load of its own; null only on a row written outside the confirm path.
+    load_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shipment_loads.id"), nullable=True)
     shipped_by: Mapped[str] = mapped_column(String, nullable=False)
     shipped_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
@@ -61,7 +71,7 @@ class PackingSlip(Base):
         nullable=False,
     )
 
-    # --- Delivery Request header ---------------------------------------------------------------
+    # --- Shipment Site Form header ---------------------------------------------------------------
     # Dates the truck is expected, as days rather than instants: nobody schedules a pickup to the
     # minute, and printing a timezone-shifted timestamp on a form would be actively misleading.
     pickup_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -76,6 +86,9 @@ class PackingSlip(Base):
     # or retired years later and the reprint has to keep saying what the driver was told.
     shipment_method: Mapped[str | None] = mapped_column(String, nullable=True)
     carrier_tag_bol: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A courier's tracking number (#1725), asked for by the outbound supervisor so the one number a
+    # courier shipment is traced by is not lost inside carrier / tag / BOL.
+    tracking_number: Mapped[str | None] = mapped_column(String, nullable=True)
     weight_lbs: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     special_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -94,6 +107,13 @@ class PackingSlip(Base):
     ucsh_contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     sales_order_number: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # --- Driver (#1726) ---------------------------------------------------------------------------
+    # The account driving it, and its name as it was when chosen: a snapshot, like `shipment_method`,
+    # so the reprint keeps saying who drove after the account is renamed or gone. Not part of the
+    # header tuple - the client names a driver by id and the server writes both.
+    driver_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    driver_name: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # --- Lifecycle stamps ------------------------------------------------------------------------
     # Who confirmed each leg and when. The actor is the Clerk-authenticated caller (#427), never
     # something the client named.
@@ -106,7 +126,7 @@ class PackingSlip(Base):
 
     # The containers this shipment went out in (#451), empty for a slip cut before containers existed
     # or by any path that did not build one. `items` stays the record of WHAT shipped; this is how it
-    # was physically arranged, which is what the Delivery Request has to print for the person
+    # was physically arranged, which is what the Shipment Site Form has to print for the person
     # unloading it.
     containers: Mapped[list["ShipmentContainer"]] = relationship(
         "ShipmentContainer",
@@ -118,6 +138,12 @@ class PackingSlip(Base):
     # the pickers but not from its shipments, so the slip reads them here rather than from a lookup
     # that leaves archived projects out.
     project: Mapped["Project"] = relationship(viewonly=True)
+    load: Mapped["ShipmentLoad | None"] = relationship("ShipmentLoad", back_populates="slips")
+    # Every photo of the shipment (#1728): its containers' loading photos, stamped with the slip when
+    # they shipped, and the delivery photos. Read-only; photos are written through their own repository.
+    photos: Mapped[list["ShipmentPhoto"]] = relationship(
+        "ShipmentPhoto", viewonly=True, order_by="ShipmentPhoto.taken_at"
+    )
 
 
 class PackingSlipItem(Base):
@@ -142,7 +168,7 @@ class PackingSlipItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     # A free-text, off-inventory line the shipping user typed into a container (see
     # ShipmentContainerItem.is_manual): on the truck, never in Nexus inventory. Carried onto the slip
-    # so the Delivery Request prints it, but excluded from the ship-ready arithmetic and never
+    # so the Shipment Site Form prints it, but excluded from the ship-ready arithmetic and never
     # returnable - there is nothing in inventory to restock.
     is_manual: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 

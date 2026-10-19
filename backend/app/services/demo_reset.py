@@ -36,6 +36,7 @@ from app.models.audit_log import InventoryAuditLog
 from app.models.gp_write import GpWriteIdempotency
 from app.models.project import Project
 from app.models.purchase_order import PODocument
+from app.models.shipment_photo import ShipmentPhoto
 from app.services import demo_gp, storage
 
 logger = logging.getLogger(__name__)
@@ -221,13 +222,14 @@ def no_reset_running():
 
 def _wipe_committed() -> dict[str, int]:
     with SessionLocal() as session:
-        # The demo POs' documents are files in storage as well as rows; read their keys before the rows go.
-        doomed_docs = demo_rows(session).get(PODocument.__tablename__) or set()
-        keys = (
-            list(session.scalars(select(PODocument.s3_key).where(PODocument.id.in_(doomed_docs))))
-            if doomed_docs
-            else []
-        )
+        # The demo POs' documents and the demo shipments' photos (#1728) are files in storage as well as
+        # rows; read their keys before the rows go.
+        doomed = demo_rows(session)
+        keys = []
+        for model in (PODocument, ShipmentPhoto):
+            ids = doomed.get(model.__tablename__) or set()
+            if ids:
+                keys += list(session.scalars(select(model.s3_key).where(model.id.in_(ids))))
         counts = wipe(session)
         session.commit()
     for key in keys:

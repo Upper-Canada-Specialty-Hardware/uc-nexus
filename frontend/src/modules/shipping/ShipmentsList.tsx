@@ -45,6 +45,7 @@ import { pdf } from '@react-pdf/renderer';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PACKING_SLIPS,
+  GET_SLIP_PO_TRACE,
   MARK_SHIPMENT_DELIVERED,
   CANCEL_SHIPMENT,
   MARK_SHIPMENT_PICKED_UP,
@@ -52,7 +53,7 @@ import {
 import { useToast } from '../../components/Toast';
 import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 import EditShipmentDialog from './EditShipmentDialog';
-import DeliveryRequestDocument from './DeliveryRequestDocument';
+import ShipmentSiteFormDocument from './ShipmentSiteFormDocument';
 import {
   netQuantity,
   primaryWarehouse,
@@ -68,10 +69,14 @@ import {
   type PackingSlip,
   type ShipmentStatus,
   type WarehouseAddress,
-} from './deliveryRequest';
+} from './shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
+import { fmtShipDate, ridingWith } from './loads';
 import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { SHIPPING_REFETCH_QUERIES } from '../../graphql/refetch';
+import PhotoCapture from './PhotoCapture';
+import PhotoStrip from './PhotoStrip';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
@@ -105,7 +110,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 const LONG_DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
 
-/** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
+/** A calendar date the way the Shipment Site Form carries it, or a dash when it was left blank. */
 /** The project a shipment belongs to, by name, falling back to its number (#1173). */
 function slipProjectLabel(slip: Pick<PackingSlip, 'projectNumber' | 'projectDescription'>): string {
   return slip.projectDescription || slip.projectNumber;
@@ -163,6 +168,8 @@ function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
   return [
     { id: 'expand', label: 'Expand', min: 44, fixed: 44, header: null, flush: true },
     { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1 },
+    // #1724: the truck it rides, as the dock names it ("22713-10152026", up to a "-2" suffix).
+    { id: 'load', label: 'Load', min: 136, weight: 1 },
     ...(isGlobal ? [{ id: 'project', label: 'Project', min: 120, weight: 1.5 }] : []),
     { id: 'status', label: 'Status', min: 112, weight: 0.8 },
     { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },
@@ -180,19 +187,19 @@ type LifecycleAction = 'PICKED_UP' | 'DELIVERED' | 'CANCELLED';
 const LIFECYCLE_PROMPT: Record<LifecycleAction, { title: string; body: string; confirm: string }> = {
   PICKED_UP: {
     title: 'Mark as picked up?',
-    body: 'The carrier has the material and the Delivery Request has left the building. The shipment can no longer be edited after this.',
+    body: 'The carrier has the material and the Shipment Site Form has left the building. The shipment can no longer be edited after this.',
     confirm: 'Mark picked up',
   },
   DELIVERED: {
     title: 'Mark as delivered?',
-    body: 'The site has taken delivery and signed off on the Delivery Request.',
+    body: 'The site has taken delivery and signed off on the Shipment Site Form.',
     confirm: 'Mark delivered',
   },
   // #1176: only offered once nothing on the shipment can come back - a return is how hardware gets
   // back into inventory, and returning the last of it cancels the shipment on its own.
   CANCELLED: {
     title: 'Cancel this shipment?',
-    body: 'Nothing on it can be returned, so no inventory moves. Its Delivery Request is withdrawn and it can no longer be picked up.',
+    body: 'Nothing on it can be returned, so no inventory moves. Its Shipment Site Form is withdrawn and it can no longer be picked up.',
     confirm: 'Cancel shipment',
   },
 };
@@ -206,7 +213,7 @@ const LIFECYCLE_DONE: Record<LifecycleAction, string> = {
 /**
  * Shipments, as a record of where each one has got to (#447).
  *
- * A shipment used to be a row and a Return button. It is now a Delivery Request with a life: booked,
+ * A shipment used to be a row and a Return button. It is now a Shipment Site Form with a life: booked,
  * collected by a carrier, signed for on site. The row carries where it is and the dates it was
  * promised for; everything that acts on it - reprinting the paper, correcting it while it is still
  * only booked, moving it along, returning material off it - lives in the expansion, next to the
@@ -276,7 +283,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // than the table dropping to skeletons between keystrokes.
   const current = data ?? previousData;
 
-  // Only the all-projects view's filter reads this. The project column, the Delivery Request's
+  // Only the all-projects view's filter reads this. The project column, the Shipment Site Form's
   // PROJECT and JOB NUMBER and the return dialog take the project off the slip itself (#1173): this
   // list leaves archived projects out, and their shipments still have to say whose they are.
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isGlobal });
@@ -349,7 +356,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         // after pickup it prints what the driver was handed, with returns noted beside it.
         const net = reprintContents(slip);
         const blob = await pdf(
-          <DeliveryRequestDocument
+          <ShipmentSiteFormDocument
             packingSlipNumber={slip.packingSlipNumber}
             projectName={slipProjectLabel(slip)}
             jobNumber={slip.projectNumber}
@@ -360,12 +367,15 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
             returnedNote={net.returnedNote}
+            loadNumber={slip.load?.loadNumber ?? null}
+            ridingWith={ridingWith(slip)}
+            driverName={slip.driverName ?? null}
           />,
         ).toBlob();
         tab.show(blob);
       } catch {
         tab.cancel();
-        showToast('Failed to generate the Delivery Request', 'error');
+        showToast('Failed to generate the Shipment Site Form', 'error');
       } finally {
         setGeneratingFor(null);
       }
@@ -387,9 +397,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     }
   }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast, refetch]);
 
-  // Slip #, [project], status, shipped by, created, pick-up, delivery, method, carrier. The
-  // expansion row spans all of them plus the chevron, so this has to move with the header.
-  const columnCount = isGlobal ? 9 : 8;
+  // Every column but the chevron, which the expansion row's colSpan adds back. Derived from the
+  // columns so it moves with the header (#1724 added Load).
+  const columnCount = shipmentColumns(isGlobal).length - 1;
 
   return (
     <FadeIn>
@@ -398,7 +408,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
         <TextField
           size="small"
-          label="Search packing slip #"
+          label="Search packing slip or load #"
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -468,12 +478,33 @@ export default function ShipmentsList({ projectId, heading }: Props) {
               </TableCell>
             </TableRow>
           )}
-          {visible.map((slip) => {
+          {visible.map((slip, index) => {
             const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
             const status = shipmentStatusDisplay(slip.status);
             const returnable = returnableUnits(slip.items);
+            // #1724: a truck carrying more than one slip is drawn as a group, headed once above its
+            // first row. The server orders a load's slips together, so "first" is the row before it
+            // being on another load. A load of one slip needs no header - its Load cell says it all.
+            const load = slip.load;
+            const headsLoad =
+              !!load && load.slips.length > 1 && visible[index - 1]?.load?.id !== load.id;
             return (
               <Fragment key={slip.id}>
+                {headsLoad && load && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={columnCount + 1}
+                      sx={{ ...FIT_CELL_WRAP_SX, bgcolor: 'action.hover', py: 0.75 }}
+                    >
+                      <Typography variant="body2" component="span" sx={{ ...monoSx, fontWeight: 700 }}>
+                        Load {load.loadNumber}
+                      </Typography>
+                      <Typography variant="body2" component="span" color="text.secondary" sx={{ ml: 1 }}>
+                        {fmtShipDate(load.shipDate)} · {truckCount(load.slips)}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
                 <TableRow
                   hover
                   sx={{ '& > *': { borderBottom: isOpen ? 'unset' : undefined } }}
@@ -494,6 +525,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                   </TableCell>
                   <TableCell sx={{ ...monoSx, fontWeight: 600 }}>
                     {slip.packingSlipNumber}
+                  </TableCell>
+                  <TableCell sx={monoSx} title={slip.load?.loadNumber}>
+                    {slip.load?.loadNumber ?? '-'}
                   </TableCell>
                   {isGlobal && <TableCell title={slipProjectLabel(slip)}>{slipProjectLabel(slip)}</TableCell>}
                   <TableCell>
@@ -518,7 +552,22 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                     />
                   </TableCell>
                   <TableCell title={slip.shipmentMethod || undefined}>{slip.shipmentMethod || '-'}</TableCell>
-                  <TableCell title={slip.carrierTagBol || undefined}>{slip.carrierTagBol || '-'}</TableCell>
+                  <TableCell title={[slip.carrierTagBol, slip.trackingNumber].filter(Boolean).join(' · ') || undefined}>
+                    {slip.carrierTagBol || '-'}
+                    {/* #1725: the courier's tracking number under the carrier, not a column of its own -
+                        most shipments go on a company truck and have none. */}
+                    {slip.trackingNumber && (
+                      <Typography variant="caption" component="div" color="text.secondary" sx={monoSx} noWrap>
+                        Tracking {slip.trackingNumber}
+                      </Typography>
+                    )}
+                    {/* #1726: who drives it, on a company truck. */}
+                    {slip.driverName && (
+                      <Typography variant="caption" component="div" color="text.secondary" noWrap>
+                        Driver {slip.driverName}
+                      </Typography>
+                    )}
+                  </TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell
@@ -538,40 +587,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         >
                           Material description ({slip.items.length})
                         </Typography>
-                        <Table size="small" sx={{ mb: 2 }}>
-                          <TableHead>
-                            <TableRow>
-                              <TableCell sx={HUG_SX}>Opening</TableCell>
-                              <TableCell>Product code</TableCell>
-                              <TableCell sx={HUG_SX}>Hardware category</TableCell>
-                              <TableCell align="right" sx={HUG_SX}>
-                                Qty
-                              </TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {slip.items.map((item) => (
-                              <TableRow key={item.id}>
-                                <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
-                                <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
-                                <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
-                                <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
-                                  {netQuantity(item)}
-                                  {(item.returnedQuantity ?? 0) > 0 && (
-                                    <Typography
-                                      component="span"
-                                      variant="caption"
-                                      color="text.secondary"
-                                      sx={{ display: 'block' }}
-                                    >
-                                      of {item.quantity}, {item.returnedQuantity} returned
-                                    </Typography>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
+                        <SlipMaterial slip={slip} />
 
                         {/* How the load was arranged (#451). Absent on slips cut before
                             containers existed, which is why this is conditional rather than an
@@ -641,7 +657,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         {slip.status === 'CANCELLED' && (
                           <Alert severity="info">
                             This shipment was cancelled before pickup. Anything returnable on it came
-                            back to inventory, and its Delivery Request is withdrawn.
+                            back to inventory, and its Shipment Site Form is withdrawn.
                           </Alert>
                         )}
                         {slip.status !== 'CANCELLED' && (
@@ -653,7 +669,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             disabled={generatingFor === slip.id}
                             onClick={() => handleViewPdf(slip)}
                           >
-                            {generatingFor === slip.id ? 'Generating...' : 'Delivery Request'}
+                            {generatingFor === slip.id ? 'Generating...' : 'Site Form'}
                           </Button>
                           {slip.status === 'SCHEDULED' && (
                             <Button
@@ -696,6 +712,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                 id: slip.id,
                                 packingSlipNumber: slip.packingSlipNumber,
                                 projectName: slipProjectLabel(slip),
+                                projectId: slip.projectId,
                                 status: slip.status,
                               })
                             }
@@ -714,6 +731,31 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             </Button>
                           )}
                         </Stack>
+                        )}
+                        {/* #1728: the containers as loaded and the load as delivered, where a discrepancy
+                            is investigated. A delivery photo can be added once it has left the dock. */}
+                        {((slip.photos?.length ?? 0) > 0 ||
+                          slip.status === 'PICKED_UP' ||
+                          slip.status === 'DELIVERED') && (
+                          <Box sx={{ mt: 2 }}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
+                              <Typography sx={microLabelSx}>Photos</Typography>
+                              {(slip.status === 'PICKED_UP' || slip.status === 'DELIVERED') && (
+                                <PhotoCapture
+                                  kind="DELIVERY"
+                                  packingSlipId={slip.id}
+                                  refetchQueries={SHIPPING_REFETCH_QUERIES}
+                                />
+                              )}
+                            </Stack>
+                            {(slip.photos?.length ?? 0) > 0 ? (
+                              <PhotoStrip photos={slip.photos ?? []} removeRefetchQueries={SHIPPING_REFETCH_QUERIES} />
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                None yet.
+                              </Typography>
+                            )}
+                          </Box>
                         )}
                       </Box>
                     </Collapse>
@@ -775,4 +817,66 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       )}
     </FadeIn>
   );
+}
+
+/**
+ * What a shipment carried, line by line, with the POs each line could have come in on (#1732) - the last
+ * step of the drill-down from the load. Read when the shipment is opened: the expansion mounts this only
+ * then, so the list itself never pays for it.
+ */
+function SlipMaterial({ slip }: { slip: PackingSlip }) {
+  const { data } = useQuery<{ slipPoTrace: { packingSlipItemId: string; poNumbers: string[] }[] }>(
+    GET_SLIP_PO_TRACE,
+    { variables: { packingSlipId: slip.id } },
+  );
+  const posOf = new Map((data?.slipPoTrace ?? []).map((t) => [t.packingSlipItemId, t.poNumbers]));
+  return (
+    <Table size="small" sx={{ mb: 2 }}>
+      <TableHead>
+        <TableRow>
+          <TableCell sx={HUG_SX}>Opening</TableCell>
+          <TableCell>Product code</TableCell>
+          <TableCell sx={HUG_SX}>Hardware category</TableCell>
+          <TableCell title="The POs this product was picked from for the project. More than one means it came from one or more of them.">
+            Came in on
+          </TableCell>
+          <TableCell align="right" sx={HUG_SX}>
+            Qty
+          </TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {slip.items.map((item) => {
+          const pos = posOf.get(item.id) ?? [];
+          return (
+            <TableRow key={item.id}>
+              <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
+              <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }} title={pos.join(', ') || undefined}>
+                {pos.length > 0 ? pos.join(', ') : '-'}
+              </TableCell>
+              <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
+                {netQuantity(item)}
+                {(item.returnedQuantity ?? 0) > 0 && (
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                    of {item.quantity}, {item.returnedQuantity} returned
+                  </Typography>
+                )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** "2 shipments on this truck", and how many of the load's slips were called off, which stay on it as
+ *  history but are not on the truck (#1720). */
+function truckCount(slips: { status: string }[]): string {
+  const cancelled = slips.filter((s) => s.status === 'CANCELLED').length;
+  const aboard = slips.length - cancelled;
+  const main = `${aboard} ${aboard === 1 ? 'shipment' : 'shipments'} on this truck`;
+  return cancelled > 0 ? `${main} · ${cancelled} cancelled` : main;
 }

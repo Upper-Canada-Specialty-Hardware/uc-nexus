@@ -45,7 +45,9 @@ from .shipment_container import (  # noqa: E402, F401
     ShipmentContainer,
     ShipmentContainerItem,
 )
+from .shipment_load import ShipmentLoad  # noqa: E402, F401
 from .shipment_method import ShipmentMethod  # noqa: E402, F401
+from .shipment_photo import ShipmentPhoto  # noqa: E402, F401
 from .shipping import (  # noqa: E402, F401
     PackingSlip,
     PackingSlipItem,

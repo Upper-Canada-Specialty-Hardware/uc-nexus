@@ -1,5 +1,5 @@
 import { gql } from '@apollo/client/core';
-import { DELIVERY_REQUEST_FIELDS } from '../types/deliveryRequestFields';
+import { SITE_FORM_FIELDS } from '../types/shipmentSiteFormFields';
 
 // The Shipping landing's pipeline gauges (#589): one rollup for the whole home page.
 export const GET_SHIPPING_STATS = gql`
@@ -15,11 +15,16 @@ export const GET_SHIPPING_STATS = gql`
 
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
 // for both halves so they can never disagree about whether something has been loaded.
+// A photo of a container as loaded or a load as delivered (#1728). `url` is signed when read and good
+// for an hour, which is longer than anybody keeps a screen open.
+const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenAt url`;
+
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
   items {
     id shipmentContainerId openingNumber hardwareCategory productCode quantity isManual position
   }
+  photos { ${PHOTO_FIELDS} }
 `;
 
 // #1698: every project's staged floor, for the staging page before a project is picked. The lines
@@ -215,8 +220,8 @@ export const GET_REQUEST_COVERAGE = gql`
   }
 `;
 
-// What shipped, and the journey it went on. The Delivery Request header sits between them, and is
-// spliced in from DELIVERY_REQUEST_FIELDS rather than listed again (#453): a header field missing
+// What shipped, and the journey it went on. The Shipment Site Form header sits between them, and is
+// spliced in from SITE_FORM_FIELDS rather than listed again (#453): a header field missing
 // from this selection saves fine, reads back undefined and prints blank on the form, which is a
 // failure no build or test catches.
 const SLIP_IDENTITY_FIELDS = [
@@ -231,14 +236,22 @@ const SLIP_IDENTITY_FIELDS = [
   'createdAt',
 ] as const;
 
-const SLIP_LIFECYCLE_FIELDS = ['pickedUpAt', 'pickedUpBy', 'deliveredAt', 'deliveredBy'] as const;
+const SLIP_LIFECYCLE_FIELDS = [
+  'pickedUpAt',
+  'pickedUpBy',
+  'deliveredAt',
+  'deliveredBy',
+  // #1726: who drives it, by account and by the name kept for the reprint.
+  'driverUserId',
+  'driverName',
+] as const;
 
-// Every field of the Delivery Request a shipment carries (#447), in one place. The confirm, the
+// Every field of the Shipment Site Form a shipment carries (#447), in one place. The confirm, the
 // list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
 // SAME PackingSlip: Apollo normalises on `id`, so a mutation that answered with a narrower selection
 // than the list reads would leave the row it just changed half-stale in the cache.
 // How the load was physically arranged (#451), spliced in for the same reason the header is: a
-// document that read a slip without its containers would print a Delivery Request that silently
+// document that read a slip without its containers would print a Shipment Site Form that silently
 // lost the stacking order, and nothing would fail. Items come back in load order from the server.
 const SLIP_CONTAINER_FIELDS = `
   containers {
@@ -256,9 +269,134 @@ const SLIP_CONTAINER_FIELDS = `
     }
   }`;
 
+// The truck trip the slip rides (#1720), with every slip on it (#1724): the list groups a load's slips
+// under it and the Shipment Site Form names the others as riding along.
+const SLIP_LOAD_FIELDS = `
+  load {
+    id
+    loadNumber
+    shipDate
+    slips {
+      id
+      packingSlipNumber
+      projectNumber
+      projectDescription
+      status
+    }
+  }`;
+
 const PACKING_SLIP_FIELDS =
-  [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
-  SLIP_CONTAINER_FIELDS;
+  [...SLIP_IDENTITY_FIELDS, ...SITE_FORM_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
+  SLIP_CONTAINER_FIELDS +
+  SLIP_LOAD_FIELDS +
+  `
+  photos { ${PHOTO_FIELDS} }`;
+
+// Add a photo (#1728): LOADING of a container, DELIVERY of a shipment that has left the dock.
+export const ADD_SHIPMENT_PHOTO = gql`
+  mutation AddShipmentPhoto(
+    $kind: ShipmentPhotoKind!
+    $fileName: String!
+    $contentType: String!
+    $fileDataBase64: String!
+    $containerId: ID
+    $packingSlipId: ID
+  ) {
+    addShipmentPhoto(
+      kind: $kind
+      fileName: $fileName
+      contentType: $contentType
+      fileDataBase64: $fileDataBase64
+      containerId: $containerId
+      packingSlipId: $packingSlipId
+    ) {
+      ${PHOTO_FIELDS}
+    }
+  }
+`;
+
+export const DELETE_SHIPMENT_PHOTO = gql`
+  mutation DeleteShipmentPhoto($id: ID!) {
+    deleteShipmentPhoto(id: $id)
+  }
+`;
+
+// The loads a shipment of this project can join (#1720): its company's still on the dock, soonest
+// first. Read fresh each time a picker opens - a load somebody else just picked up must not be offered.
+export const GET_JOINABLE_LOADS = gql`
+  query GetJoinableLoads($projectId: ID!) {
+    joinableLoads(projectId: $projectId) {
+      id
+      loadNumber
+      shipDate
+      leadProjectNumber
+      slips {
+        id
+        packingSlipNumber
+        projectNumber
+        projectDescription
+        status
+      }
+    }
+  }
+`;
+
+// Where each of a project's products sits on the racks (#1730), for the request composer, the accept
+// queue and the return dialog.
+export const GET_PROJECT_RACK_LOCATIONS = gql`
+  query GetProjectRackLocations($projectId: ID!) {
+    projectRackLocations(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      locations {
+        warehouseCode
+        aisle
+        row
+        bay
+        quantity
+      }
+    }
+  }
+`;
+
+// The POs each line of a shipment could have come in on (#1732), read when the shipment is opened.
+export const GET_SLIP_PO_TRACE = gql`
+  query GetSlipPoTrace($packingSlipId: ID!) {
+    slipPoTrace(packingSlipId: $packingSlipId) {
+      packingSlipItemId
+      poNumbers
+    }
+  }
+`;
+
+// The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
+// selection as every other read, so marking one picked up updates it in place.
+export const GET_MY_DELIVERIES = gql`
+  query GetMyDeliveries {
+    myDeliveries {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
+// Who can drive a shipment of this project (#1726): its company's Driver accounts.
+export const GET_SHIPMENT_DRIVERS = gql`
+  query GetShipmentDrivers($projectId: ID!) {
+    shipmentDrivers(projectId: $projectId) {
+      userId
+      name
+    }
+  }
+`;
+
+// Put a scheduled shipment on another load, or on a new one when loadId is null (#1723).
+export const MOVE_SHIPMENT_TO_LOAD = gql`
+  mutation MoveShipmentToLoad($id: ID!, $loadId: ID) {
+    moveShipmentToLoad(id: $id, loadId: $loadId) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
 
 // One page of the Shipments list (#1107): paged and searched on the server, with the count of
 // everything the filter matches so the list can say how many more there are.
@@ -320,7 +458,7 @@ export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
   }
 `;
 
-// The Delivery Request is editable only while the shipment is still SCHEDULED - once it has been
+// The Shipment Site Form is editable only while the shipment is still SCHEDULED - once it has been
 // picked up, the paper is out of the building and the record has to match it. The backend enforces
 // that; the list hides the button.
 export const UPDATE_SHIPMENT_DETAILS = gql`

@@ -56,6 +56,8 @@ const MODULE_ROLES = [
   'Shop Assembly Manager',
   'Shipping Out',
   'Shipping Manager',
+  // #1726: drives shipments to site; named on the shipment and opens the driver page.
+  'Driver',
   'Tenant Owner',
 ] as const;
 

@@ -379,7 +379,7 @@ mutation SetContainerItems($input: SetContainerItemsInput!) { setContainerItems(
 """
 _CONFIRM_SHIPMENT = """
 mutation ConfirmShipmentFromContainers($input: ConfirmShipmentFromContainersInput!) {
-  confirmShipmentFromContainers(input: $input) { id packingSlipNumber items { id quantity } }
+  confirmShipmentFromContainers(input: $input) { id packingSlipNumber load { id } items { id quantity } }
 }
 """
 _PICKED_UP = "mutation MarkShipmentPickedUp($id: ID!) { markShipmentPickedUp(id: $id) { id status } }"
@@ -662,8 +662,9 @@ class _Demo:
         accepted = (await self.s.gql(_ACCEPT_SHIPPING_REQUEST, id=request_id))["acceptShippingOutRequest"]
         await self.pick(accepted["pullRequestId"])
 
-    async def ship(self, job: str, openings: list[str], name: str) -> dict:
-        """Load what is staged for `openings` onto a skid and confirm the shipment: a scheduled delivery."""
+    async def ship(self, job: str, openings: list[str], name: str, load_id: str | None = None) -> dict:
+        """Load what is staged for `openings` onto a skid and confirm the shipment: a scheduled delivery,
+        on a load of its own or, given `load_id`, on the same truck as another (#1720)."""
         project_id = self.projects[job]
         ready = (await self.s.gql(_SHIP_READY, projectId=project_id))["shipReadyItems"]["looseItems"]
         items = [
@@ -692,6 +693,7 @@ class _Demo:
                 "contractorContactName": "Casey Contractor",
                 "contractorContactPhone": "4165550199",
                 "specialInstructions": "Deliver to the loading dock.",
+                "loadId": load_id,
             },
         )
         return slip["confirmShipmentFromContainers"]
@@ -898,9 +900,10 @@ async def _scripted(demo: _Demo) -> None:
     on_truck = await demo.ship(tower, ["A103"], "Skid 2")
     await demo.s.gql(_PICKED_UP, id=on_truck["id"])
     await demo.stage(tower, ["A104", "A105"])
-    await demo.ship(tower, ["A104"], "Skid 3")
-    # A scheduled shipment is cancelled by bringing every line back before a truck takes it.
-    cancelled = await demo.ship(tower, ["A105"], "Skid 4")
+    scheduled = await demo.ship(tower, ["A104"], "Skid 3")
+    # A scheduled shipment is cancelled by bringing every line back before a truck takes it. It was
+    # booked onto the same truck as Skid 3 (#1720), so the list shows a load carrying two slips.
+    cancelled = await demo.ship(tower, ["A105"], "Skid 4", load_id=scheduled["load"]["id"])
     await demo.s.gql(
         _CREATE_RETURN,
         input={

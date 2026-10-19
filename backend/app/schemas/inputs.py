@@ -725,8 +725,8 @@ class ApproveReceiveDraftInput:
 
 
 @strawberry.input
-class DeliveryRequestHeaderInput:
-    """The Delivery Request header, on both of the mutations that write it (#453).
+class ShipmentSiteFormInput:
+    """The Shipment Site Form header, on both of the mutations that write it (#453).
 
     A base rather than the same twenty fields typed out under each input. Two paths write this
     header - `confirmShipmentFromContainers` fills it in and `updateShipmentDetails` rewrites it - and a field
@@ -734,7 +734,7 @@ class DeliveryRequestHeaderInput:
     correct, or correct and never set. Neither breaks the build or any test, so the drift is
     silent until somebody notices a box on the paper that will not stick.
 
-    The names have to match `shipping_repository.DELIVERY_REQUEST_FIELDS` as well as the count:
+    The names have to match `shipping_repository.SITE_FORM_FIELDS` as well as the count:
     that tuple is what reads the header back off either input, so a field named differently here is
     a field the resolver quietly never persists.
 
@@ -743,7 +743,7 @@ class DeliveryRequestHeaderInput:
     nobody knew the gate number would stop hardware leaving over paperwork.
 
     Not a GraphQL input type of its own: Strawberry flattens these fields into each subclass, so
-    the schema shows twenty fields on both inputs and nothing named DeliveryRequestHeaderInput.
+    the schema shows twenty fields on both inputs and nothing named ShipmentSiteFormInput.
     """
 
     pickup_date: date | None = None
@@ -755,6 +755,10 @@ class DeliveryRequestHeaderInput:
     # an id so a shipment keeps printing the method it left under after that method is renamed.
     shipment_method: str | None = None
     carrier_tag_bol: str | None = None
+    tracking_number: str | None = None
+    # #1726: the Driver account driving it, by Clerk user id; null for none. Not a header column - the
+    # server checks the account and writes its name beside it.
+    driver_user_id: str | None = None
     weight_lbs: float | None = None
     delivery_address: str | None = None
     special_instructions: str | None = None
@@ -783,7 +787,7 @@ class ExpectedContainerContentsInput:
 
 
 @strawberry.input
-class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
+class ConfirmShipmentFromContainersInput(ShipmentSiteFormInput):
     """Ship whole containers as one shipment (#451).
 
     The only confirm. The loose `confirmShipment` it sat beside measured against the staged pool
@@ -802,11 +806,13 @@ class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
     # refused rather than shipped with contents nobody checked. Optional so the check is skipped only
     # when nothing was sent; the screen always sends it.
     expected_contents: list[ExpectedContainerContentsInput] | None = None
+    # #1720: the load this shipment joins, one of `joinableLoads`. Omitted, it starts a new load.
+    load_id: strawberry.ID | None = None
 
 
 @strawberry.input
-class UpdateShipmentDetailsInput(DeliveryRequestHeaderInput):
-    """Correct the Delivery Request of a shipment that has not been picked up yet (#447).
+class UpdateShipmentDetailsInput(ShipmentSiteFormInput):
+    """Correct the Shipment Site Form of a shipment that has not been picked up yet (#447).
 
     **Full replace.** Every header field is applied exactly as given, and a field given as null is
     CLEARED. The client sends all of them on every edit, blanks as explicit nulls, because the

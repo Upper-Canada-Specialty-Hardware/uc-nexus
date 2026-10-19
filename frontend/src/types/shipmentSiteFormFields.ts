@@ -1,8 +1,8 @@
-// The Delivery Request header's fields, named once for the whole frontend (#453).
+// The Shipment Site Form header's fields, named once for the whole frontend (#453).
 //
 // Two places need this list and they are on opposite sides of the Apollo boundary: `graphql/shipping.ts`
 // builds the GraphQL selection every PackingSlip read and mutation shares, and
-// `modules/shipping/deliveryRequest.ts` derives the form state, the wire shape and the converters
+// `modules/shipping/shipmentSiteForm.ts` derives the form state, the wire shape and the converters
 // between them. It lives here rather than in either of those because they must not import each
 // other - a module importing the shared GraphQL layer is the direction this codebase runs in, and
 // the reverse would invert it.
@@ -12,11 +12,11 @@
 //   - missing from the backend tuple -> GraphQL accepts it and never persists or clears it
 //   - missing from the selection     -> saves, reads back undefined, prints blank on the form
 // Adding it here now reaches the selection and every derived shape at once, and
-// `backend/tests/test_delivery_request_field_parity.py` fails if this list and the backend's
-// DELIVERY_REQUEST_FIELDS stop agreeing.
+// `backend/tests/test_shipment_site_form_field_parity.py` fails if this list and the backend's
+// SITE_FORM_FIELDS stop agreeing.
 //
 // Order matches the backend tuple, which is the order the paper form asks for them.
-export const DELIVERY_REQUEST_FIELDS = [
+export const SITE_FORM_FIELDS = [
   'pickupDate',
   'deliveryDate',
   'shipperEmail',
@@ -26,6 +26,8 @@ export const DELIVERY_REQUEST_FIELDS = [
   // name, so a method renamed or retired later cannot rewrite an already-shipped slip.
   'shipmentMethod',
   'carrierTagBol',
+  // #1725: the tracking number a courier gives, in its own box.
+  'trackingNumber',
   'weightLbs',
   'deliveryAddress',
   'specialInstructions',
@@ -42,8 +44,8 @@ export const DELIVERY_REQUEST_FIELDS = [
   'salesOrderNumber',
 ] as const;
 
-/** One header field's name. Every shape in `deliveryRequest.ts` is keyed on this. */
-export type DeliveryRequestField = (typeof DELIVERY_REQUEST_FIELDS)[number];
+/** One header field's name. Every shape in `shipmentSiteForm.ts` is keyed on this. */
+export type ShipmentSiteFormField = (typeof SITE_FORM_FIELDS)[number];
 
 /**
  * The one header field that is not text. `weight_lbs` is Numeric(10, 2) on the way in and a Float on

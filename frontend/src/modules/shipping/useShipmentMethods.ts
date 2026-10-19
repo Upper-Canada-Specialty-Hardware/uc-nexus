@@ -9,7 +9,7 @@ export interface ShipmentMethod {
 }
 
 /**
- * The active shipment methods, for the Delivery Request form (#451).
+ * The active shipment methods, for the Shipment Site Form (#451).
  *
  * Both the create form and the edit dialog need the same list, and both have to degrade to an empty
  * one rather than blocking: a company that has not set any methods up yet still has to be able to

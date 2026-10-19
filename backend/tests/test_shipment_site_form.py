@@ -1,4 +1,4 @@
-"""The Delivery Request a shipment carries, and the lifecycle it travels through (#447).
+"""The Shipment Site Form a shipment carries, and the lifecycle it travels through (#447).
 
 A packing slip stopped being a single moment. It is now the paper form the shipping department fills
 in, which outlives its own creation: written days before a truck comes, taken by the driver, signed
@@ -32,6 +32,7 @@ FULL_DETAILS = {
     "pickup_location": "UC Hardware\n12 Depot Rd\nToronto ON M1M 1M1",
     "shipment_method": "Our truck",
     "carrier_tag_bol": "BOL-4471",
+    "tracking_number": "1Z999AA10123456784",
     "weight_lbs": 812.5,
     "delivery_address": "40 Site Blvd\nMississauga ON",
     "special_instructions": "Call ahead.\nNo weekend deliveries.",
@@ -109,7 +110,7 @@ def _shipped_line(**placement) -> dict:
 
 
 def _header(ps) -> dict:
-    return {field: getattr(ps, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+    return {field: getattr(ps, field) for field in shipping_repository.SITE_FORM_FIELDS}
 
 
 def _round_trip(session, ps) -> None:
@@ -122,12 +123,12 @@ def _round_trip(session, ps) -> None:
 # --- confirm ------------------------------------------------------------------------------------
 
 
-def test_confirm_shipment_starts_scheduled_carrying_its_delivery_request(db_session):
+def test_confirm_shipment_starts_scheduled_carrying_its_site_form(db_session):
     """A slip is born SCHEDULED with the form the shipping department filled in already on it.
 
     SCHEDULED rather than shipped-and-done because the paper is written before the truck arrives -
     the whole reason the header is editable at all is that there is a window between cutting the
-    Delivery Request and anyone collecting it."""
+    Shipment Site Form and anyone collecting it."""
     project = _make_project(db_session)
     _stage(db_session, project.id)
 
@@ -147,7 +148,7 @@ def test_confirm_shipment_starts_scheduled_carrying_its_delivery_request(db_sess
     assert stored == {k: v for k, v in FULL_DETAILS.items() if k != "weight_lbs"}
 
 
-def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
+def test_confirm_shipment_takes_no_site_form_at_all(db_session):
     """Every header field is optional, and a shipment with none of them is a valid shipment.
 
     The form is filled in against whatever the site has told the shipping department. Refusing to
@@ -170,7 +171,7 @@ def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
 def test_confirm_shipment_snapshots_where_the_hardware_was_going(db_session):
     """The slip records the placement, not just the opening number (#452).
 
-    The Delivery Request cut at confirm time prints building / floor / location after the opening
+    The Shipment Site Form cut at confirm time prints building / floor / location after the opening
     number. Without these columns the reprint rebuilt its material lines from the stored items and
     dropped that suffix, so one shipment produced two different documents - and the reprint is the
     copy pulled up in a site dispute.
@@ -293,7 +294,7 @@ def test_the_largest_weight_the_column_holds_is_accepted(db_session):
 
 
 def test_confirm_shipment_refuses_a_delivery_before_the_pick_up(db_session):
-    """#1438: a Delivery Request delivering before it is picked up is a typo, caught at the box it came
+    """#1438: a Shipment Site Form delivering before it is picked up is a typo, caught at the box it came
     from rather than printed and handed to a driver."""
     project = _make_project(db_session)
     _stage(db_session, project.id)

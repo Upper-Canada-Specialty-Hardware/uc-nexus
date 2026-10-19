@@ -26,6 +26,7 @@ from .enums import (
     RequestStage,
     ReturnDisposition,
     ShipmentContainerType,
+    ShipmentPhotoKind,
     ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyBatchStatus,
@@ -1229,7 +1230,7 @@ class PackingSlipItem:
 
 @strawberry.type
 class PackingSlip:
-    """A shipment and the Delivery Request that travels with it (#447).
+    """A shipment and the Shipment Site Form that travels with it (#447).
 
     The header below is the paper form the site signs, so every field of it survives out of
     `packingSlips` unchanged and the document can be reprinted years later exactly as issued. Blanks
@@ -1257,6 +1258,7 @@ class PackingSlip:
     # cannot rewrite what an already-shipped slip says.
     shipment_method: str | None
     carrier_tag_bol: str | None
+    tracking_number: str | None
     weight_lbs: float | None
     delivery_address: str | None
     special_instructions: str | None
@@ -1275,11 +1277,87 @@ class PackingSlip:
     picked_up_by: str | None
     delivered_at: datetime | None
     delivered_by: str | None
+    # Who drives it (#1726): the Driver account and its name as it was when chosen.
+    driver_user_id: str | None
+    driver_name: str | None
     items: list[PackingSlipItem]
     # How the load was physically arranged (#451). Empty for a slip cut before containers existed, so
-    # the Delivery Request falls back to a flat material list rather than printing nothing. `items` is
+    # the Shipment Site Form falls back to a flat material list rather than printing nothing. `items` is
     # still the record of what shipped; this is what the person unloading the truck reads.
     containers: list["ShipmentContainer"]
+    # The truck trip it rides (#1720). Null only on a slip written outside the confirm path.
+    load: "ShipmentLoadRef | None" = None
+    # Every photo of it (#1728): its containers as loaded, then the delivery.
+    photos: list["ShipmentPhoto"] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class RackLocation:
+    """One rack holding some of a product (#1730), with how many usable units are on it."""
+
+    warehouse_code: str
+    aisle: str
+    row: str | None
+    bay: str | None
+    quantity: int
+
+
+@strawberry.type
+class ProductRackLocations:
+    """Where one of a project's products sits on the racks (#1730)."""
+
+    hardware_category: str
+    product_code: str
+    locations: list[RackLocation]
+
+
+@strawberry.type
+class SlipLinePoTrace:
+    """The POs one slip line's product could have come in on (#1732): candidates, not a single answer."""
+
+    packing_slip_item_id: strawberry.ID
+    po_numbers: list[str]
+
+
+@strawberry.type
+class ShipmentDriver:
+    """An account that can drive a shipment (#1726)."""
+
+    user_id: str
+    name: str
+
+
+@strawberry.type
+class ShipmentLoadRef:
+    """A load as a slip names it (#1720), with every slip on it (#1724) - the Shipment Site Form prints the
+    others as riding with this one, and the list counts them to draw the truck as a group."""
+
+    id: strawberry.ID
+    load_number: str
+    ship_date: date
+    slips: list["ShipmentLoadSlip"]
+
+
+@strawberry.type
+class ShipmentLoadSlip:
+    """One slip on a load, as the load picker lists it."""
+
+    id: strawberry.ID
+    packing_slip_number: str
+    project_number: str
+    project_description: str | None
+    status: ShipmentStatus
+
+
+@strawberry.type
+class ShipmentLoad:
+    """One truck trip and the slips riding it (#1720), for choosing a load to join."""
+
+    id: strawberry.ID
+    load_number: str
+    ship_date: date
+    lead_project_number: str
+    slips: list[ShipmentLoadSlip]
 
 
 @strawberry.type
@@ -1473,6 +1551,30 @@ class ShipmentContainer:
     created_at: datetime
     updated_at: datetime
     items: list[ShipmentContainerItem]
+    # Photos of it as it was loaded (#1728). Empty when read as part of a slip, which carries every
+    # photo of the shipment itself.
+    photos: list["ShipmentPhoto"] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class ShipmentPhoto:
+    """A photo of a shipment (#1728): a container as it was loaded, or the load at the site."""
+
+    id: strawberry.ID
+    kind: ShipmentPhotoKind
+    container_id: strawberry.ID | None
+    packing_slip_id: strawberry.ID | None
+    file_name: str
+    taken_by: str
+    taken_at: datetime
+    s3_key: strawberry.Private[str]
+
+    @strawberry.field
+    def url(self) -> str:
+        """A link to the image good for an hour, signed only when asked for."""
+        from app.services import storage
+
+        return storage.generate_presigned_url(self.s3_key)
 
 
 @strawberry.type
@@ -1517,7 +1619,7 @@ class StagingProjectSummary:
 class ShipmentMethod:
     """How a load can travel, as the shipping department maintains it (#451).
 
-    Retiring one flips `isActive` rather than deleting it: the Delivery Request form offers only
+    Retiring one flips `isActive` rather than deleting it: the Shipment Site Form offers only
     active methods, while shipments that already went out under it keep printing their own snapshot
     of the name.
     """

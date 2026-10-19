@@ -4,7 +4,11 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import ReturnShipmentDialog from '../ReturnShipmentDialog';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
-import { CREATE_SHIPMENT_RETURN, GET_RETURNABLE_LINES } from '../../../graphql/shipping';
+import {
+  CREATE_SHIPMENT_RETURN,
+  GET_PROJECT_RACK_LOCATIONS,
+  GET_RETURNABLE_LINES,
+} from '../../../graphql/shipping';
 
 vi.setConfig({ testTimeout: 30_000 });
 configure({ asyncUtilTimeout: 10_000 });
@@ -69,6 +73,42 @@ const warehousesMock: MockedResponse = {
 };
 
 describe('ReturnShipmentDialog', () => {
+  it('says where the rest of a product sits, for a line going back to the project (#1731)', async () => {
+    const racksMock: MockedResponse = {
+      request: { query: GET_PROJECT_RACK_LOCATIONS, variables: { projectId: 'proj-1' } },
+      maxUsageCount: INFINITE,
+      result: {
+        data: {
+          projectRackLocations: [
+            {
+              __typename: 'ProductRackLocations',
+              hardwareCategory: 'HINGE',
+              productCode: 'HG-1',
+              locations: [
+                { __typename: 'RackLocation', warehouseCode: 'CM', aisle: 'A', row: '1', bay: '2', quantity: 6 },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    render(
+      <MockedProvider mocks={[linesMock, warehousesMock, racksMock]}>
+        <ToastProvider>
+          <ReturnShipmentDialog
+            slip={{ id: 'ps-1', packingSlipNumber: 'PS-0019', projectName: 'Cowichan District Hospital', projectId: 'proj-1' }}
+            onClose={() => {}}
+            onCompleted={() => {}}
+          />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    expect(await screen.findByText('CM A-1-2 ×6')).toBeInTheDocument();
+    // HG-2 has nowhere on the racks yet, so it says nothing rather than guessing.
+    expect(screen.getAllByText(/Put it back with the rest at/)).toHaveLength(1);
+  });
+
   it("names each line's disposition by its product, and the destination warehouse (#1547)", async () => {
     render(
       <MockedProvider mocks={[linesMock, warehousesMock]}>

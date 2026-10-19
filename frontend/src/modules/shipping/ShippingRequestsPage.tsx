@@ -33,6 +33,7 @@ import type { Project } from '../../types/project';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { rackLabel, racksCaption, useProjectRacks } from './racks';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
 // same module rather than a second copy that can drift (#613).
 import {
@@ -296,30 +297,7 @@ export default function ShippingRequestsPage() {
         )}
         renderDetails={(req) =>
           req.items.length > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell sx={HUG_SX}>Opening</TableCell>
-                  <TableCell>Product Code</TableCell>
-                  <TableCell sx={HUG_SX}>Hardware Category</TableCell>
-                  <TableCell align="right" sx={HUG_SX}>
-                    Quantity
-                  </TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {req.items.map((item) => (
-                  <TableRow key={item.id} hover>
-                    <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
-                    <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode}</TableCell>
-                    <TableCell sx={HUG_SX}>{item.hardwareCategory}</TableCell>
-                    <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
-                      {item.requestedQuantity}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <RequestLines projectId={req.projectId} items={req.items} />
           ) : (
             <Typography variant="body2" color="text.secondary">
               No items.
@@ -328,5 +306,46 @@ export default function ShippingRequestsPage() {
         }
       />
     </Box>
+  );
+}
+
+/**
+ * What a request asks for, with where each product sits on the racks (#1730) - the bins the
+ * outbound supervisor used to look up in a spreadsheet once the email arrived.
+ */
+function RequestLines({ projectId, items }: { projectId: string; items: ShippingRequestItem[] }) {
+  const racksOf = useProjectRacks(projectId);
+  return (
+    <Table size="small">
+      <TableHead>
+        <TableRow>
+          <TableCell sx={HUG_SX}>Opening</TableCell>
+          <TableCell>Product Code</TableCell>
+          <TableCell sx={HUG_SX}>Hardware Category</TableCell>
+          <TableCell>Racks</TableCell>
+          <TableCell align="right" sx={HUG_SX}>
+            Quantity
+          </TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {items.map((item) => {
+          const racks = racksOf(item.hardwareCategory, item.productCode);
+          return (
+            <TableRow key={item.id} hover>
+              <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode}</TableCell>
+              <TableCell sx={HUG_SX}>{item.hardwareCategory}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }} title={racks.map(rackLabel).join(', ') || undefined}>
+                {racks.length > 0 ? racksCaption(racks) : '-'}
+              </TableCell>
+              <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
+                {item.requestedQuantity}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }

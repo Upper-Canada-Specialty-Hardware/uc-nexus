@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import StagingWorkspace from '../StagingWorkspace';
 import { sameStagedStock } from '../staging';
-import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
+import { SITE_FORM_FIELDS } from '../../../types/shipmentSiteFormFields';
 import {
   CONFIRM_SHIPMENT_FROM_CONTAINERS,
   GET_SHIPMENT_METHODS,
@@ -55,6 +55,7 @@ function container(overrides: Record<string, unknown> = {}) {
     packingSlipId: null,
     createdBy: 'tester',
     items: [],
+    photos: [],
     ...overrides,
   };
 }
@@ -600,7 +601,7 @@ describe('confirming a shipment (#859)', () => {
           shippedBy: 'Darren W',
           shippedAt: '2026-09-25T00:00:00Z',
           createdAt: '2026-09-25T00:00:00Z',
-          ...Object.fromEntries(DELIVERY_REQUEST_FIELDS.map((f) => [f, null])),
+          ...Object.fromEntries(SITE_FORM_FIELDS.map((f) => [f, null])),
           pickedUpAt: null,
           pickedUpBy: null,
           deliveredAt: null,

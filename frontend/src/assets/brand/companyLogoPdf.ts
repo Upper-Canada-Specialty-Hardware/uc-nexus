@@ -1,5 +1,5 @@
 // The official company logo (Upper Canada Specialty Hardware loon) for the generated PDFs: the
-// supplier PO and the delivery request. The master is ucsh-logo.png beside this file; this is it
+// supplier PO and the shipment site form. The master is ucsh-logo.png beside this file; this is it
 // flattened onto white, grayscale, 420px wide, as a PNG data URI so react-pdf embeds it
 // self-contained. Aspect 650:418.
 export const COMPANY_LOGO_PDF =

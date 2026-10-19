@@ -161,6 +161,7 @@ describe('Staging workspace under quarantine', () => {
                 name: 'Box 1',
                 packingSlipId: null,
                 createdBy: 'tester',
+                photos: [],
                 items: [
                   {
                     __typename: 'ShipmentContainerItem',

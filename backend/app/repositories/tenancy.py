@@ -39,6 +39,7 @@ from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receive_draft import ReceiveDraft
 from app.models.shipment_container import ShipmentContainer
 from app.models.shipment_method import ShipmentMethod
+from app.models.shipment_photo import ShipmentPhoto
 from app.models.shipping import PackingSlip
 from app.models.shipping_out_request import ShippingOutRequest
 from app.models.shop_assembly import ShopAssemblyRequest
@@ -248,6 +249,18 @@ def require_packing_slip_in_scope(session: Session, packing_slip_id: uuid.UUID, 
         scope,
         "Packing slip",
         packing_slip_id,
+    )
+
+
+def require_shipment_photo_in_scope(session: Session, photo_id: uuid.UUID, scope: str | None) -> None:
+    _require(
+        session,
+        select(Project.company)
+        .join(ShipmentPhoto, ShipmentPhoto.project_id == Project.id)
+        .where(ShipmentPhoto.id == photo_id),
+        scope,
+        "Photo",
+        photo_id,
     )
 
 

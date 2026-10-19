@@ -283,6 +283,19 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,
     "packingSlipCount": SIGNED_IN,
+    # The loads a confirm can join (#1720). Read by the same confirm dialog every signed-in user loading
+    # a truck opens, so it is gated the same as the confirm.
+    "joinableLoads": SIGNED_IN,
+    # Who can drive a shipment (#1726): names and ids only, of the project's company, for the same
+    # dialogs that book and correct one.
+    "shipmentDrivers": SIGNED_IN,
+    # The driver page (#1727): only ever the caller's own shipments, so nothing to gate beyond a session.
+    "myDeliveries": SIGNED_IN,
+    # Where a project's hardware sits (#1730): read by the request composer, the accept queue and the
+    # return dialog, each of which the signed-in users of the project's company already open.
+    "projectRackLocations": SIGNED_IN,
+    # The POs behind a shipment's lines (#1732), opened from the same Shipments page as the slip itself.
+    "slipPoTrace": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.
@@ -320,11 +333,18 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "editShippingOutRequest": SIGNED_IN,
     "rejectShippingOutRequest": SHIPPING_MANAGERS,
     "reopenShippingOutRequest": SHIPPING_MANAGERS,
-    # The Delivery Request lifecycle (#447), SIGNED_IN for the same reason the confirm is: the
+    # The Shipment Site Form lifecycle (#447), SIGNED_IN for the same reason the confirm is: the
     # shipping department, the warehouse and the office all work the same Shipments page, so no one
     # role's module owns the callers. The lifecycle mutations move nothing - they record where the
     # truck got to - and the edit is refused on state rather than on role.
     "updateShipmentDetails": SIGNED_IN,
+    # Which truck a scheduled shipment rides (#1723) is part of the same paperwork, so the same callers.
+    "moveShipmentToLoad": SIGNED_IN,
+    # Photos of containers as loaded and loads as delivered (#1728). Whoever loads a truck or drives it
+    # takes them, so the same callers as loading and the lifecycle; a driver-only account is held to its
+    # own shipments in the body.
+    "addShipmentPhoto": SIGNED_IN,
+    "deleteShipmentPhoto": SIGNED_IN,
     "markShipmentPickedUp": SIGNED_IN,
     "markShipmentDelivered": SIGNED_IN,
     # Calling off a scheduled shipment nothing can be returned from (#1176). Same callers as the
