@@ -1280,6 +1280,39 @@ class PackingSlip:
     # the Delivery Request falls back to a flat material list rather than printing nothing. `items` is
     # still the record of what shipped; this is what the person unloading the truck reads.
     containers: list["ShipmentContainer"]
+    # The truck trip it rides (#1720). Null only on a slip written outside the confirm path.
+    load: "ShipmentLoadRef | None" = None
+
+
+@strawberry.type
+class ShipmentLoadRef:
+    """A load as a slip names it (#1720): enough to group and label, without its other slips."""
+
+    id: strawberry.ID
+    load_number: str
+    ship_date: date
+
+
+@strawberry.type
+class ShipmentLoadSlip:
+    """One slip on a load, as the load picker lists it."""
+
+    id: strawberry.ID
+    packing_slip_number: str
+    project_number: str
+    project_description: str | None
+    status: ShipmentStatus
+
+
+@strawberry.type
+class ShipmentLoad:
+    """One truck trip and the slips riding it (#1720), for choosing a load to join."""
+
+    id: strawberry.ID
+    load_number: str
+    ship_date: date
+    lead_project_number: str
+    slips: list[ShipmentLoadSlip]
 
 
 @strawberry.type

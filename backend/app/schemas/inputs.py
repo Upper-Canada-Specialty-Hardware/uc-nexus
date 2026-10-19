@@ -802,6 +802,8 @@ class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
     # refused rather than shipped with contents nobody checked. Optional so the check is skipped only
     # when nothing was sent; the screen always sends it.
     expected_contents: list[ExpectedContainerContentsInput] | None = None
+    # #1720: the load this shipment joins, one of `joinableLoads`. Omitted, it starts a new load.
+    load_id: strawberry.ID | None = None
 
 
 @strawberry.input

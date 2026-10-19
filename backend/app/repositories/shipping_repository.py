@@ -244,6 +244,7 @@ def confirm_shipment(
     shipped_by: str,
     items: list[dict],
     details: dict | None = None,
+    load_id: uuid.UUID | None = None,
 ) -> PackingSlip:
     """Cut a packing slip against what a completed shipping-out pull staged.
 
@@ -265,6 +266,7 @@ def confirm_shipment(
             staged-pool availability check and stamped is_manual onto the slip.
         details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
             the form is filled in against whatever the site has said, and a blank is a real answer.
+        load_id: the load (#1720) the slip joins. None starts a new one, led by this project.
     """
     # 0. #425: quarantine gate. Shipping out is the last thing a project does, and it is the point of
     # no return - hardware leaves the building against a job whose costs cannot be booked. Blocked
@@ -340,6 +342,18 @@ def confirm_shipment(
         status=ShipmentStatus.SCHEDULED,
     )
     _apply_delivery_details(packing_slip, details)
+
+    # 3b. Put it on its truck (#1720). After the header is applied, so a new load is named for the
+    # slip's own pickup date rather than for today when the two differ.
+    from app.repositories import shipment_loads
+
+    project = session.get(ProjectModel, project_id)
+    if load_id is None:
+        load = shipment_loads.start_load(session, project, packing_slip.pickup_date, shipped_by)
+    else:
+        load = shipment_loads.join_load(session, load_id, project)
+    packing_slip.load_id = load.id
+
     session.add(packing_slip)
     session.flush()
 
@@ -540,6 +554,7 @@ def _packing_slip_loads():
         selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
         selectinload(PackingSlip.project),
+        selectinload(PackingSlip.load),
     )
 
 

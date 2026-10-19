@@ -7,12 +7,14 @@ from sqlalchemy import func, select
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.errors import NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 from app.repositories import (
     request_composer,
     shipment_containers,
+    shipment_loads,
     shipment_method_repository,
     shipping_repository,
     shipping_requests,
@@ -23,6 +25,7 @@ from .converters import (
     container_to_type,
     packing_slip_to_type,
     project_to_type,
+    shipment_load_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
@@ -44,6 +47,7 @@ from .types import (
     RequestCoverageLine,
     ReturnableLine,
     ShipmentContainer,
+    ShipmentLoad,
     ShipmentMethod,
     ShipmentReturn,
     ShippingOutRequest,
@@ -163,6 +167,18 @@ class ShippingQueries:
                 offset=offset,
             )
             return [packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def joinable_loads(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ShipmentLoad]:
+        """The loads a shipment of `projectId` can join (#1720): its company's loads still on the dock,
+        soonest first. Confirming with none of them starts a new load."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            project = session.get(ProjectModel, pid)
+            if project is None:
+                raise NotFoundError(f"Project {project_id} not found")
+            return [shipment_load_to_type(load) for load in shipment_loads.joinable_loads(session, project.company)]
 
     @strawberry.field
     def packing_slip_count(
@@ -525,6 +541,7 @@ class ShippingMutations:
                         for e in input.expected_contents
                     }
                 ),
+                load_id=uuid.UUID(str(input.load_id)) if input.load_id else None,
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, slip.id)

@@ -22,6 +22,7 @@ from .enums import ReturnDisposition, ShipmentStatus
 if TYPE_CHECKING:
     from .project import Project
     from .shipment_container import ShipmentContainer
+    from .shipment_load import ShipmentLoad
 
 
 class PackingSlip(Base):
@@ -43,11 +44,17 @@ class PackingSlip(Base):
     """
 
     __tablename__ = "packing_slips"
-    __table_args__ = (Index("ix_packing_slips_project", "project_id"),)
+    __table_args__ = (
+        Index("ix_packing_slips_project", "project_id"),
+        Index("ix_packing_slips_load", "load_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     packing_slip_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    # The truck trip this slip rides (#1720). Every confirm puts its slip on one, and the migration gave
+    # every slip before it a load of its own; null only on a row written outside the confirm path.
+    load_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shipment_loads.id"), nullable=True)
     shipped_by: Mapped[str] = mapped_column(String, nullable=False)
     shipped_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
@@ -118,6 +125,7 @@ class PackingSlip(Base):
     # the pickers but not from its shipments, so the slip reads them here rather than from a lookup
     # that leaves archived projects out.
     project: Mapped["Project"] = relationship(viewonly=True)
+    load: Mapped["ShipmentLoad | None"] = relationship("ShipmentLoad", back_populates="slips")
 
 
 class PackingSlipItem(Base):

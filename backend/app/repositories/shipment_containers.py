@@ -247,6 +247,7 @@ def confirm_shipment_from_containers(
     shipped_by: str,
     details: dict | None,
     expected_contents: dict[uuid.UUID, set[uuid.UUID]] | None = None,
+    load_id: uuid.UUID | None = None,
 ):
     """Ship the named containers as one shipment (#451).
 
@@ -312,6 +313,7 @@ def confirm_shipment_from_containers(
         shipped_by,
         items,
         details,
+        load_id=load_id,
     )
     for container in containers:
         container.packing_slip_id = slip.id

@@ -76,6 +76,9 @@ from .types import (
     RelayInstallInfo,
     ShipmentContainer,
     ShipmentContainerItem,
+    ShipmentLoad,
+    ShipmentLoadRef,
+    ShipmentLoadSlip,
     ShipmentReturn,
     ShipmentReturnItem,
     ShippingOutRequest,
@@ -1079,6 +1082,34 @@ def packing_slip_to_type(ps) -> PackingSlip:
         delivered_by=ps.delivered_by,
         items=[packing_slip_item_to_type(i) for i in ps.items],
         containers=[container_to_type(c) for c in ps.containers],
+        load=(
+            ShipmentLoadRef(
+                id=strawberry.ID(str(ps.load.id)), load_number=ps.load.load_number, ship_date=ps.load.ship_date
+            )
+            if ps.load is not None
+            else None
+        ),
+    )
+
+
+def shipment_load_to_type(load) -> ShipmentLoad:
+    """A load with its slips, for the picker that joins one (#1720). The caller loads `slips` with their
+    projects, and `lead_project`."""
+    return ShipmentLoad(
+        id=strawberry.ID(str(load.id)),
+        load_number=load.load_number,
+        ship_date=load.ship_date,
+        lead_project_number=load.lead_project.project_id,
+        slips=[
+            ShipmentLoadSlip(
+                id=strawberry.ID(str(s.id)),
+                packing_slip_number=s.packing_slip_number,
+                project_number=s.project.project_id,
+                project_description=s.project.description,
+                status=s.status,
+            )
+            for s in load.slips
+        ],
     )
 
 
