@@ -24,6 +24,7 @@ import { GET_RETURNABLE_LINES, CREATE_SHIPMENT_RETURN } from '../../graphql/ship
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { monoSx, microLabelSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
+import { racksCaption, useProjectRacks } from './racks';
 
 type Disposition = 'RETURN_TO_PROJECT' | 'NON_STOCK' | 'RMA_DEFECTIVE';
 
@@ -69,6 +70,8 @@ export interface ReturnSlip {
   id: string;
   packingSlipNumber: string;
   projectName: string;
+  /** #1731: the project, for where its stock of each returned product already sits. */
+  projectId?: string;
   /** #1578: a full return cancels only a SCHEDULED slip, so the shortcut is named for what it will do. */
   status?: string;
 }
@@ -81,6 +84,7 @@ interface Props {
 
 export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Props) {
   const { showToast } = useToast();
+  const racksOf = useProjectRacks(slip.projectId);
 
   const { data, loading, error, refetch } = useQuery<{ returnableLines: ReturnableLine[] }>(GET_RETURNABLE_LINES, {
     variables: { packingSlipId: slip.id },
@@ -331,6 +335,17 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
                       <Box sx={{ flexGrow: 1 }} />
                       <Chip size="small" label={`returnable ${line.returnableQuantity}`} />
                     </Box>
+                    {/* #1731: back to project inventory, it lands on the Put-away queue - this says
+                        where the rest of that product already sits, so it can go back beside it. */}
+                    {draft.disposition === 'RETURN_TO_PROJECT' &&
+                      racksOf(line.hardwareCategory, line.productCode).length > 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                          Put it back with the rest at{' '}
+                          <Box component="span" sx={monoSx}>
+                            {racksCaption(racksOf(line.hardwareCategory, line.productCode))}
+                          </Box>
+                        </Typography>
+                      )}
                     <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                       <TextField
                         size="small"

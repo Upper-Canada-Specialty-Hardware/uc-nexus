@@ -744,6 +744,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                 id: slip.id,
                                 packingSlipNumber: slip.packingSlipNumber,
                                 projectName: slipProjectLabel(slip),
+                                projectId: slip.projectId,
                                 status: slip.status,
                               })
                             }
