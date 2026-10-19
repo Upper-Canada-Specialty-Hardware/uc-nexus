@@ -309,6 +309,9 @@ class CreateShippingOutRequestInput:
         deprecation_reason="Ignored since #493; the server mints the number from the project counter.",
     )
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    # #1552: minted when the dialog opens and re-sent on a retry, so a create that committed behind a
+    # lost reply returns that request instead of reserving the stock a second time. Blank: no check.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -845,6 +848,9 @@ class CreateShipmentReturnInput:
     warehouse_id: strawberry.ID
     reference: str | None = None
     items: list[ShipmentReturnItemInput] = strawberry.field(default_factory=list)
+    # #1552: minted when the dialog opens and re-sent on a retry, so a return that committed behind a
+    # lost reply is handed back instead of booked a second time. Blank: no check.
+    idempotency_key: str = ""
 
 
 @strawberry.input
