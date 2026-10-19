@@ -706,6 +706,23 @@ export const DESTOCK_INVENTORY = gql`
   }
 `;
 
+// #1647: where a pool row's units can go on a project - the schedule's pairs with what each still needs,
+// whether the pool row is schedule hardware at all, and whether the project has a schedule yet.
+export const GET_ALLOCATION_TARGETS = gql`
+  query GetAllocationTargets($stockItemId: ID!, $projectId: ID!) {
+    allocationTargets(stockItemId: $stockItemId, projectId: $projectId) {
+      scheduleHardware
+      hasSchedule
+      pairs {
+        hardwareCategory
+        productCode
+        requiredQuantity
+        stillNeededQuantity
+      }
+    }
+  }
+`;
+
 export const ALLOCATE_STOCK_TO_PROJECT = gql`
   mutation AllocateStockToProject($input: AllocateStockToProjectInput!) {
     allocateStockToProject(input: $input) {

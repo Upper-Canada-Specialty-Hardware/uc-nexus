@@ -4,7 +4,7 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import AllocateStockModal from '../stock/AllocateStockModal';
 import { ToastProvider } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
-import { ALLOCATE_STOCK_TO_PROJECT, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
+import { ALLOCATE_STOCK_TO_PROJECT, GET_ALLOCATION_TARGETS, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import type { StockItem } from '../StockPoolView';
 
 // A MUI Dialog with three Autocompletes is slow to render under the full parallel suite, so lift the
@@ -71,6 +71,33 @@ const registryMock: MockedResponse = {
   },
 };
 
+// #1647: what the project's schedule offers. These tests' projects have none unless one says so, so the
+// free-text pair stays - the units land as floating inventory.
+type Pair = [category: string, code: string, stillNeeded: number];
+function targetsMock(projectId: string, pairs: Pair[] = [], scheduleHardware = true): MockedResponse {
+  return {
+    request: { query: GET_ALLOCATION_TARGETS, variables: { stockItemId: 's1', projectId } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        allocationTargets: {
+          __typename: 'AllocationTargets',
+          scheduleHardware,
+          hasSchedule: pairs.length > 0,
+          pairs: pairs.map(([hardwareCategory, productCode, stillNeededQuantity]) => ({
+            __typename: 'AllocationPair',
+            hardwareCategory,
+            productCode,
+            requiredQuantity: stillNeededQuantity,
+            stillNeededQuantity,
+          })),
+        },
+      },
+    },
+  };
+}
+const noSchedule = [targetsMock('p1'), targetsMock('p2')];
+
 const item: StockItem = {
   id: 's1',
   warehouseId: 'w1',
@@ -91,7 +118,7 @@ const item: StockItem = {
 
 function renderModal(prefillProjectId?: string) {
   render(
-    <MockedProvider mocks={[projectsMock, registryMock]}>
+    <MockedProvider mocks={[projectsMock, registryMock, ...noSchedule]}>
       <ToastProvider>
         <AllocateStockModal item={item} onClose={vi.fn()} onSuccess={vi.fn()} prefillProjectId={prefillProjectId} />
       </ToastProvider>
@@ -157,6 +184,7 @@ describe('AllocateStockModal keyboard (#1548)', () => {
         mocks={[
           projectsMock,
           registryMock,
+          ...noSchedule,
           { request: { query: ALLOCATE_STOCK_TO_PROJECT, variables: () => true }, result },
         ]}
       >
@@ -176,6 +204,8 @@ describe('AllocateStockModal keyboard (#1548)', () => {
     project.focus();
     fireEvent.change(project, { target: { value: '24101' } });
     fireEvent.click(await screen.findByText('Royal Inland Hospital'));
+    // #1647: the project's schedule is read before Allocate can go.
+    await waitFor(() => expect(screen.queryByText("Reading the project's schedule.")).toBeNull());
 
     fireEvent.change(qty, { target: { value: '6' } });
     expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Enter a whole number from 1 to 5.');
@@ -189,5 +219,81 @@ describe('AllocateStockModal keyboard (#1548)', () => {
     await waitFor(() => expect(result).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(result).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AllocateStockModal schedule pairs (#1647)', () => {
+  function renderFor(mocks: MockedResponse[]) {
+    const onSuccess = vi.fn();
+    render(
+      <MockedProvider mocks={[projectsMock, registryMock, ...mocks]}>
+        <ToastProvider>
+          <AllocateStockModal item={item} onClose={vi.fn()} onSuccess={onSuccess} prefillProjectId="p1" />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+    return { onSuccess };
+  }
+
+  it("preselects the pool row's code, split across the categories it is scheduled under", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const allocate: MockedResponse = {
+      request: { query: ALLOCATE_STOCK_TO_PROJECT, variables: () => true },
+      maxUsageCount: 2,
+      result: (vars) => {
+        calls.push((vars as { input: Record<string, unknown> }).input);
+        return { data: { allocateStockToProject: null } };
+      },
+    };
+    const { onSuccess } = renderFor([
+      targetsMock('p1', [
+        ['LOCK', 'HG-100', 1],
+        ['HINGE', 'HG-100', 3],
+        ['CLOSER', 'CL-1', 2],
+      ]),
+      allocate,
+    ]);
+
+    // Its own category first, each given what it still needs.
+    const first = await screen.findByRole('combobox', { name: /Schedule product 1/ });
+    expect(first).toHaveTextContent('HINGE / HG-100');
+    expect(screen.getByRole('combobox', { name: /Schedule product 2/ })).toHaveTextContent('LOCK / HG-100');
+    expect(screen.getByLabelText('Quantity 1')).toHaveValue(3);
+    expect(screen.getByLabelText('Quantity 2')).toHaveValue(1);
+    // No free-text pair to type a code the schedule does not have.
+    expect(screen.queryByLabelText(/Target product code/)).toBeNull();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Allocate' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Allocate' }));
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(calls.map((c) => [c.targetHardwareCategory, c.targetProductCode, c.quantity])).toEqual([
+      ['HINGE', 'HG-100', 3],
+      ['LOCK', 'HG-100', 1],
+    ]);
+  });
+
+  it('asks for a schedule product when the code is not on the schedule', async () => {
+    renderFor([targetsMock('p1', [['CLOSER', 'CL-1', 2]])]);
+
+    const first = await screen.findByRole('combobox', { name: /Schedule product 1/ });
+    expect(first).not.toHaveTextContent('HG-100');
+    expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Pick a schedule product for every line.');
+    expect(screen.getByRole('button', { name: 'Allocate' })).toBeDisabled();
+  });
+
+  it('says a project with no schedule takes the units as floating inventory', async () => {
+    renderFor([targetsMock('p1')]);
+
+    expect(await screen.findByText(/floating inventory/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Target product code/)).toHaveValue('HG-100');
+  });
+
+  it('keeps the free-text pair for a type-code pool row', async () => {
+    renderFor([targetsMock('p1', [['HINGE', 'HG-100', 3]], false)]);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Allocate' })).toBeEnabled());
+    expect(screen.getByLabelText(/Target product code/)).toBeInTheDocument();
+    expect(screen.queryByText(/floating inventory/)).toBeNull();
   });
 });
