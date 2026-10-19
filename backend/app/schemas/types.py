@@ -26,6 +26,7 @@ from .enums import (
     RequestStage,
     ReturnDisposition,
     ShipmentContainerType,
+    ShipmentPhotoKind,
     ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyBatchStatus,
@@ -1286,6 +1287,8 @@ class PackingSlip:
     containers: list["ShipmentContainer"]
     # The truck trip it rides (#1720). Null only on a slip written outside the confirm path.
     load: "ShipmentLoadRef | None" = None
+    # Every photo of it (#1728): its containers as loaded, then the delivery.
+    photos: list["ShipmentPhoto"] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -1520,6 +1523,30 @@ class ShipmentContainer:
     created_at: datetime
     updated_at: datetime
     items: list[ShipmentContainerItem]
+    # Photos of it as it was loaded (#1728). Empty when read as part of a slip, which carries every
+    # photo of the shipment itself.
+    photos: list["ShipmentPhoto"] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class ShipmentPhoto:
+    """A photo of a shipment (#1728): a container as it was loaded, or the load at the site."""
+
+    id: strawberry.ID
+    kind: ShipmentPhotoKind
+    container_id: strawberry.ID | None
+    packing_slip_id: strawberry.ID | None
+    file_name: str
+    taken_by: str
+    taken_at: datetime
+    s3_key: strawberry.Private[str]
+
+    @strawberry.field
+    def url(self) -> str:
+        """A link to the image good for an hour, signed only when asked for."""
+        from app.services import storage
+
+        return storage.generate_presigned_url(self.s3_key)
 
 
 @strawberry.type

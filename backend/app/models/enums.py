@@ -78,6 +78,14 @@ class PullPickLineState(str, enum.Enum):
     APPLIED = "APPLIED"
 
 
+class ShipmentPhotoKind(str, enum.Enum):
+    """When a shipment photo was taken (#1728): of a container as it was loaded, or at the site on
+    delivery. The two answer different disputes - what left the dock, and what arrived."""
+
+    LOADING = "LOADING"
+    DELIVERY = "DELIVERY"
+
+
 class ShipmentContainerType(str, enum.Enum):
     """What the warehouse physically loads a shipment into (#451).
 

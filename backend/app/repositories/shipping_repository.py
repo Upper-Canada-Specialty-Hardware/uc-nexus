@@ -576,6 +576,7 @@ def _packing_slip_loads():
         selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
         selectinload(PackingSlip.project),
+        selectinload(PackingSlip.photos),
         # #1724: the load with every slip on it, for the Delivery Request's "riding with" line.
         selectinload(PackingSlip.load).selectinload(ShipmentLoad.slips).selectinload(PackingSlip.project),
     )

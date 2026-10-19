@@ -26,6 +26,7 @@ from app.repositories import (
     shipment_containers,
     shipment_loads,
     shipment_method_repository,
+    shipment_photos,
     shipping_repository,
     shipping_requests,
     tenancy,
@@ -36,10 +37,12 @@ from .converters import (
     packing_slip_to_type,
     project_to_type,
     shipment_load_to_type,
+    shipment_photo_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
 from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
+from .enums import ShipmentPhotoKind as ShipmentPhotoKindEnum
 from .enums import ShipmentStatus as ShipmentStatusEnum
 from .enums import ShippingOutRequestStatus
 from .inputs import (
@@ -60,6 +63,7 @@ from .types import (
     ShipmentDriver,
     ShipmentLoad,
     ShipmentMethod,
+    ShipmentPhoto,
     ShipmentReturn,
     ShippingOutRequest,
     ShippingOutRequestReservedProduct,
@@ -526,9 +530,12 @@ class ShippingMutations:
         """Break an open container back down; its contents return to the unplaced pool."""
         with SessionLocal() as session:
             tenancy.require_container_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            shipment_containers.delete_container(session, uuid.UUID(str(id)))
+            photo_keys = shipment_containers.delete_container(session, uuid.UUID(str(id)))
             session.commit()
-            return True
+        # #1728: its photos' rows went with it; their images go once that has committed.
+        for key in photo_keys:
+            shipment_photos.discard_object(key)
+        return True
 
     @strawberry.mutation
     def set_container_items(self, info: strawberry.Info, input: SetContainerItemsInput) -> ShipmentContainer:
@@ -729,6 +736,60 @@ class ShippingMutations:
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def add_shipment_photo(
+        self,
+        info: strawberry.Info,
+        kind: ShipmentPhotoKindEnum,
+        file_name: str,
+        content_type: str,
+        file_data_base64: str,
+        container_id: strawberry.ID | None = None,
+        packing_slip_id: strawberry.ID | None = None,
+    ) -> ShipmentPhoto:
+        """Add a photo (#1728): a LOADING photo of a container, or a DELIVERY photo of a shipment that has
+        left the dock. Images only. Recorded against the signed-in caller."""
+        from app.models.enums import ShipmentPhotoKind as ShipmentPhotoKindDB
+
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        cid = uuid.UUID(str(container_id)) if container_id else None
+        sid = uuid.UUID(str(packing_slip_id)) if packing_slip_id else None
+        with SessionLocal() as session:
+            if cid is not None:
+                tenancy.require_container_in_scope(session, cid, tenant_scope(info))
+            if sid is not None:
+                tenancy.require_packing_slip_in_scope(session, sid, tenant_scope(info))
+                _refuse_another_drivers_shipment(info, session, sid, auth["user_id"])
+            photo = shipment_photos.add_photo(
+                session,
+                kind=ShipmentPhotoKindDB(kind.value),
+                container_id=cid,
+                packing_slip_id=sid,
+                file_name=file_name,
+                content_type=content_type,
+                file_data_base64=file_data_base64,
+                taken_by=actor,
+                taken_by_user_id=auth["user_id"],
+            )
+            s3_key = photo.s3_key
+            try:
+                session.commit()
+            except Exception:
+                shipment_photos.discard_object(s3_key)
+                raise
+            return shipment_photo_to_type(photo)
+
+    @strawberry.mutation
+    def delete_shipment_photo(self, info: strawberry.Info, id: strawberry.ID) -> bool:
+        """Remove a photo taken by mistake (#1728)."""
+        with SessionLocal() as session:
+            tenancy.require_shipment_photo_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            key = shipment_photos.delete_photo(session, uuid.UUID(str(id)))
+            session.commit()
+        shipment_photos.discard_object(key)
+        return True
 
     @strawberry.mutation
     def move_shipment_to_load(

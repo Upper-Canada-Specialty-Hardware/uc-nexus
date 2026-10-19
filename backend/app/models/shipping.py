@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .project import Project
     from .shipment_container import ShipmentContainer
     from .shipment_load import ShipmentLoad
+    from .shipment_photo import ShipmentPhoto
 
 
 class PackingSlip(Base):
@@ -138,6 +139,11 @@ class PackingSlip(Base):
     # that leaves archived projects out.
     project: Mapped["Project"] = relationship(viewonly=True)
     load: Mapped["ShipmentLoad | None"] = relationship("ShipmentLoad", back_populates="slips")
+    # Every photo of the shipment (#1728): its containers' loading photos, stamped with the slip when
+    # they shipped, and the delivery photos. Read-only; photos are written through their own repository.
+    photos: Mapped[list["ShipmentPhoto"]] = relationship(
+        "ShipmentPhoto", viewonly=True, order_by="ShipmentPhoto.taken_at"
+    )
 
 
 class PackingSlipItem(Base):

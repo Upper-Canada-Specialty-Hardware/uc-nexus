@@ -335,6 +335,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updateShipmentDetails": SIGNED_IN,
     # Which truck a scheduled shipment rides (#1723) is part of the same paperwork, so the same callers.
     "moveShipmentToLoad": SIGNED_IN,
+    # Photos of containers as loaded and loads as delivered (#1728). Whoever loads a truck or drives it
+    # takes them, so the same callers as loading and the lifecycle; a driver-only account is held to its
+    # own shipments in the body.
+    "addShipmentPhoto": SIGNED_IN,
+    "deleteShipmentPhoto": SIGNED_IN,
     "markShipmentPickedUp": SIGNED_IN,
     "markShipmentDelivered": SIGNED_IN,
     # Calling off a scheduled shipment nothing can be returned from (#1176). Same callers as the

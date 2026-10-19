@@ -79,6 +79,7 @@ from .types import (
     ShipmentLoad,
     ShipmentLoadRef,
     ShipmentLoadSlip,
+    ShipmentPhoto,
     ShipmentReturn,
     ShipmentReturnItem,
     ShippingOutRequest,
@@ -1016,7 +1017,20 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
     )
 
 
-def container_to_type(c) -> ShipmentContainer:
+def shipment_photo_to_type(p) -> ShipmentPhoto:
+    return ShipmentPhoto(
+        id=strawberry.ID(str(p.id)),
+        kind=p.kind,
+        container_id=strawberry.ID(str(p.container_id)) if p.container_id else None,
+        packing_slip_id=strawberry.ID(str(p.packing_slip_id)) if p.packing_slip_id else None,
+        file_name=p.file_name,
+        taken_by=p.taken_by,
+        taken_at=p.taken_at,
+        s3_key=p.s3_key,
+    )
+
+
+def container_to_type(c, *, include_photos: bool = True) -> ShipmentContainer:
     """One container and its contents, in load order (#451).
 
     Items are sorted by `position` here rather than left in whatever order the relationship loaded
@@ -1046,6 +1060,9 @@ def container_to_type(c) -> ShipmentContainer:
             )
             for i in sorted(c.items, key=lambda i: i.position)
         ],
+        # #1728: the staging floor reads a container's photos here; a slip's read passes False, since the
+        # slip carries every photo itself and walking each container's would be a query per container.
+        photos=[shipment_photo_to_type(p) for p in c.photos] if include_photos else [],
     )
 
 
@@ -1083,7 +1100,8 @@ def packing_slip_to_type(ps) -> PackingSlip:
         driver_user_id=ps.driver_user_id,
         driver_name=ps.driver_name,
         items=[packing_slip_item_to_type(i) for i in ps.items],
-        containers=[container_to_type(c) for c in ps.containers],
+        containers=[container_to_type(c, include_photos=False) for c in ps.containers],
+        photos=[shipment_photo_to_type(p) for p in ps.photos],
         load=(
             ShipmentLoadRef(
                 id=strawberry.ID(str(ps.load.id)),

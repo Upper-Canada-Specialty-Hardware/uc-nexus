@@ -9,6 +9,7 @@ from . import Base
 from .enums import ShipmentContainerType
 
 if TYPE_CHECKING:
+    from .shipment_photo import ShipmentPhoto
     from .shipping import PackingSlip
 
 
@@ -62,6 +63,11 @@ class ShipmentContainer(Base):
         back_populates="container", cascade="all, delete-orphan"
     )
     packing_slip: Mapped["PackingSlip | None"] = relationship("PackingSlip", back_populates="containers")
+    # Photos of it as it was loaded (#1728). Read-only; the rows go with the container when it is broken
+    # down (the foreign key cascades), and `delete_container` removes their images from storage.
+    photos: Mapped[list["ShipmentPhoto"]] = relationship(
+        "ShipmentPhoto", viewonly=True, order_by="ShipmentPhoto.taken_at"
+    )
 
 
 class ShipmentContainerItem(Base):

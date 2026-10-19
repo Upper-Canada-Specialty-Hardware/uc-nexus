@@ -72,7 +72,7 @@ def get_containers(session: Session, project_id: uuid.UUID, *, open_only: bool =
     """
     stmt = (
         select(ShipmentContainer)
-        .options(selectinload(ShipmentContainer.items))
+        .options(selectinload(ShipmentContainer.items), selectinload(ShipmentContainer.photos))
         .where(ShipmentContainer.project_id == project_id)
         .order_by(ShipmentContainer.created_at.asc())
     )
@@ -125,15 +125,22 @@ def rename_container(session: Session, container_id: uuid.UUID, name: str) -> Sh
     return container
 
 
-def delete_container(session: Session, container_id: uuid.UUID) -> None:
+def delete_container(session: Session, container_id: uuid.UUID) -> list[str]:
     """Break a container back down. Its contents return to the unplaced pool.
 
     Open only. A shipped container is part of a slip's record of what went on the truck, and there
     is nothing to undo about it here - that is what a return is for.
+
+    Returns the storage keys of its loading photos (#1728): their rows go with it, and the caller removes
+    the images once the delete has committed.
     """
+    from app.repositories import shipment_photos
+
     container = _open_container(session, container_id)
+    keys = shipment_photos.container_photo_keys(session, container_id)
     session.delete(container)
     session.flush()
+    return keys
 
 
 def set_container_items(
@@ -319,6 +326,10 @@ def confirm_shipment_from_containers(
     )
     for container in containers:
         container.packing_slip_id = slip.id
+    # #1728: the loading photos go with their containers onto the slip, so the slip's read finds them.
+    from app.repositories import shipment_photos
+
+    shipment_photos.stamp_slip(session, [c.id for c in containers], slip.id)
     session.flush()
     return slip
 
@@ -399,7 +410,7 @@ def build_staging_overview(session: Session, *, company: str | None) -> list[dic
 
     stmt = (
         select(ShipmentContainer)
-        .options(selectinload(ShipmentContainer.items))
+        .options(selectinload(ShipmentContainer.items), selectinload(ShipmentContainer.photos))
         .where(ShipmentContainer.packing_slip_id.is_(None))
     )
     if company is not None:
@@ -467,7 +478,7 @@ def _open_container(session: Session, container_id: uuid.UUID) -> ShipmentContai
     container = (
         session.scalars(
             select(ShipmentContainer)
-            .options(selectinload(ShipmentContainer.items))
+            .options(selectinload(ShipmentContainer.items), selectinload(ShipmentContainer.photos))
             .where(ShipmentContainer.id == container_id)
             .with_for_update()
             .execution_options(populate_existing=True)
