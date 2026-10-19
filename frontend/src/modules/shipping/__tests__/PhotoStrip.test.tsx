@@ -24,13 +24,13 @@ const photo: ShipmentPhoto = {
 };
 
 it('opens each photo full size and removes one taken by mistake', async () => {
+  const onRemoved = vi.fn(() => ({ data: { deleteShipmentPhoto: true } }));
   const removed: MockedResponse = {
     request: { query: DELETE_SHIPMENT_PHOTO, variables: { id: 'ph-1' } },
-    result: { data: { deleteShipmentPhoto: true } },
+    result: onRemoved,
   };
-  const onRemoved = vi.fn(() => removed.result);
   render(
-    <MockedProvider mocks={[{ ...removed, result: onRemoved }]}>
+    <MockedProvider mocks={[removed]}>
       <ToastProvider>
         <PhotoStrip photos={[photo]} removeRefetchQueries={[]} />
       </ToastProvider>
