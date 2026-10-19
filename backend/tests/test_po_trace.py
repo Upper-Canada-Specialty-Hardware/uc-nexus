@@ -38,6 +38,7 @@ def _po_row(session, project, po_number, code="HG-100"):
         product_code=code,
         ordered_quantity=10,
         received_quantity=10,
+        unit_cost=1,
     )
     session.add(line)
     session.flush()
