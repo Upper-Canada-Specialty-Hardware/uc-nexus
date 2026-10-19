@@ -45,6 +45,7 @@ import { pdf } from '@react-pdf/renderer';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PACKING_SLIPS,
+  GET_SLIP_PO_TRACE,
   MARK_SHIPMENT_DELIVERED,
   CANCEL_SHIPMENT,
   MARK_SHIPMENT_PICKED_UP,
@@ -586,40 +587,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         >
                           Material description ({slip.items.length})
                         </Typography>
-                        <Table size="small" sx={{ mb: 2 }}>
-                          <TableHead>
-                            <TableRow>
-                              <TableCell sx={HUG_SX}>Opening</TableCell>
-                              <TableCell>Product code</TableCell>
-                              <TableCell sx={HUG_SX}>Hardware category</TableCell>
-                              <TableCell align="right" sx={HUG_SX}>
-                                Qty
-                              </TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {slip.items.map((item) => (
-                              <TableRow key={item.id}>
-                                <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
-                                <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
-                                <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
-                                <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
-                                  {netQuantity(item)}
-                                  {(item.returnedQuantity ?? 0) > 0 && (
-                                    <Typography
-                                      component="span"
-                                      variant="caption"
-                                      color="text.secondary"
-                                      sx={{ display: 'block' }}
-                                    >
-                                      of {item.quantity}, {item.returnedQuantity} returned
-                                    </Typography>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
+                        <SlipMaterial slip={slip} />
 
                         {/* How the load was arranged (#451). Absent on slips cut before
                             containers existed, which is why this is conditional rather than an
@@ -848,5 +816,58 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         </Dialog>
       )}
     </FadeIn>
+  );
+}
+
+/**
+ * What a shipment carried, line by line, with the POs each line could have come in on (#1732) - the last
+ * step of the drill-down from the load. Read when the shipment is opened: the expansion mounts this only
+ * then, so the list itself never pays for it.
+ */
+function SlipMaterial({ slip }: { slip: PackingSlip }) {
+  const { data } = useQuery<{ slipPoTrace: { packingSlipItemId: string; poNumbers: string[] }[] }>(
+    GET_SLIP_PO_TRACE,
+    { variables: { packingSlipId: slip.id } },
+  );
+  const posOf = new Map((data?.slipPoTrace ?? []).map((t) => [t.packingSlipItemId, t.poNumbers]));
+  return (
+    <Table size="small" sx={{ mb: 2 }}>
+      <TableHead>
+        <TableRow>
+          <TableCell sx={HUG_SX}>Opening</TableCell>
+          <TableCell>Product code</TableCell>
+          <TableCell sx={HUG_SX}>Hardware category</TableCell>
+          <TableCell title="The POs this product was picked from for the project. More than one means it came from one or more of them.">
+            Came in on
+          </TableCell>
+          <TableCell align="right" sx={HUG_SX}>
+            Qty
+          </TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {slip.items.map((item) => {
+          const pos = posOf.get(item.id) ?? [];
+          return (
+            <TableRow key={item.id}>
+              <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
+              <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
+              <TableCell sx={{ ...monoSx, ...SLACK_SX }} title={pos.join(', ') || undefined}>
+                {pos.length > 0 ? pos.join(', ') : '-'}
+              </TableCell>
+              <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
+                {netQuantity(item)}
+                {(item.returnedQuantity ?? 0) > 0 && (
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                    of {item.quantity}, {item.returnedQuantity} returned
+                  </Typography>
+                )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }

@@ -1312,6 +1312,14 @@ class ProductRackLocations:
 
 
 @strawberry.type
+class SlipLinePoTrace:
+    """The POs one slip line's product could have come in on (#1732): candidates, not a single answer."""
+
+    packing_slip_item_id: strawberry.ID
+    po_numbers: list[str]
+
+
+@strawberry.type
 class ShipmentDriver:
     """An account that can drive a shipment (#1726)."""
 

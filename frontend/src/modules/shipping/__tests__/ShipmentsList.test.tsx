@@ -7,6 +7,7 @@ import ShipmentsList from '../ShipmentsList';
 import {
   CANCEL_SHIPMENT,
   GET_PACKING_SLIPS,
+  GET_SLIP_PO_TRACE,
   MARK_SHIPMENT_DELIVERED,
   MARK_SHIPMENT_PICKED_UP,
 } from '../../../graphql/shipping';
@@ -263,6 +264,24 @@ describe('ShipmentsList', () => {
   it('shows a courier tracking number under the carrier (#1725)', async () => {
     renderList([packingSlipsMock([slip({ trackingNumber: '1Z999AA10123456784' })])]);
     expect(await screen.findByText('Tracking 1Z999AA10123456784')).toBeInTheDocument();
+  });
+
+  it('names the POs each line of an opened shipment could have come in on (#1732)', async () => {
+    const trace: MockedResponse = {
+      request: { query: GET_SLIP_PO_TRACE, variables: { packingSlipId: 'ps-1' } },
+      result: {
+        data: {
+          slipPoTrace: [
+            { __typename: 'SlipLinePoTrace', packingSlipItemId: 'psi-1', poNumbers: ['PO-1001', 'PO-1002'] },
+            { __typename: 'SlipLinePoTrace', packingSlipItemId: 'psi-2', poNumbers: [] },
+          ],
+        },
+      },
+    };
+    renderList([packingSlipsMock([slip()]), trace]);
+    await screen.findByText('PS-0019');
+    await expandRow('PS-0019');
+    expect(await screen.findByText('PO-1001, PO-1002')).toBeInTheDocument();
   });
 
   it('names its project filter for a screen reader (#1547)', async () => {

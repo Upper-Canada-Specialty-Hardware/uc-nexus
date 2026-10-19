@@ -359,6 +359,16 @@ export const GET_PROJECT_RACK_LOCATIONS = gql`
   }
 `;
 
+// The POs each line of a shipment could have come in on (#1732), read when the shipment is opened.
+export const GET_SLIP_PO_TRACE = gql`
+  query GetSlipPoTrace($packingSlipId: ID!) {
+    slipPoTrace(packingSlipId: $packingSlipId) {
+      packingSlipItemId
+      poNumbers
+    }
+  }
+`;
+
 // The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
 // selection as every other read, so marking one picked up updates it in place.
 export const GET_MY_DELIVERIES = gql`

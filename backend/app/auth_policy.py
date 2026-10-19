@@ -294,6 +294,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Where a project's hardware sits (#1730): read by the request composer, the accept queue and the
     # return dialog, each of which the signed-in users of the project's company already open.
     "projectRackLocations": SIGNED_IN,
+    # The POs behind a shipment's lines (#1732), opened from the same Shipments page as the slip itself.
+    "slipPoTrace": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.

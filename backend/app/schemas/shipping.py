@@ -22,6 +22,7 @@ from app.models.project import Project as ProjectModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.repositories import (
     drivers,
+    po_trace,
     rack_locations,
     request_composer,
     shipment_containers,
@@ -72,6 +73,7 @@ from .types import (
     ShippingOutRequestReservedProduct,
     ShipReadyItems,
     ShipReadyLooseItem,
+    SlipLinePoTrace,
     StagedLooseItem,
     StagingPool,
     StagingProjectSummary,
@@ -235,6 +237,18 @@ class ShippingQueries:
                     locations=[RackLocation(**loc) for loc in p["locations"]],
                 )
                 for p in rack_locations.project_rack_locations(session, pid)
+            ]
+
+    @strawberry.field
+    def slip_po_trace(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[SlipLinePoTrace]:
+        """Each line of a shipment with the POs its product could have come in on (#1732). Read when a
+        shipment is opened, not with the list - it is a drill-down, and most rows are never opened."""
+        with SessionLocal() as session:
+            sid = uuid.UUID(str(packing_slip_id))
+            tenancy.require_packing_slip_in_scope(session, sid, tenant_scope(info))
+            return [
+                SlipLinePoTrace(packing_slip_item_id=strawberry.ID(str(item_id)), po_numbers=numbers)
+                for item_id, numbers in po_trace.slip_candidate_pos(session, sid).items()
             ]
 
     @strawberry.field
