@@ -43,6 +43,8 @@ _SLIP_IDENTITY_COLUMNS = {
     "shipped_by",
     "shipped_at",
     "created_at",
+    # #1720: the truck trip it rides - which load, not what the paper says.
+    "load_id",
 }
 _SLIP_LIFECYCLE_COLUMNS = {"picked_up_at", "picked_up_by", "delivered_at", "delivered_by"}
 
@@ -88,6 +90,8 @@ def test_both_mutation_inputs_carry_the_whole_header():
         "containerIds",
         # #1583: what the dialog's manifest showed, so a changed container is refused, not shipped.
         "expectedContents",
+        # #1720: the load it joins; omitted starts a new one.
+        "loadId",
     }
     assert _input_fields("UpdateShipmentDetailsInput") == header | {"id"}
 
