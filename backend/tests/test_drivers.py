@@ -46,3 +46,29 @@ def test_resolving_a_driver_gives_the_id_and_the_name_to_keep():
 def test_an_account_that_is_not_one_of_the_companys_drivers_is_refused(uid):
     with pytest.raises(ValidationError, match="not one of this company's drivers"):
         drivers.resolve_driver(ROSTER, "TUBC", uid)
+
+
+# --- what a driver-only account may do (#1727) -------------------------------------------------
+
+
+def _info(*roles):
+    from types import SimpleNamespace
+
+    from app.auth import _ROLES_KEY
+
+    return SimpleNamespace(context={_ROLES_KEY: list(roles)})
+
+
+def test_a_driver_only_account_is_refused_the_shipping_departments_changes():
+    from app.auth import ForbiddenError
+    from app.schemas.shipping import _refuse_driver_only
+
+    with pytest.raises(ForbiddenError, match="booking and changing shipments"):
+        _refuse_driver_only(_info("Driver"))
+
+
+@pytest.mark.parametrize("roles", [("Driver", "Shipping Out"), ("Shipping Out",), ("Warehouse Staff",)])
+def test_anybody_else_keeps_what_they_had(roles):
+    from app.schemas.shipping import _refuse_driver_only
+
+    _refuse_driver_only(_info(*roles))

@@ -410,7 +410,7 @@ def build_staging_overview(session: Session, *, company: str | None) -> list[dic
 
     stmt = (
         select(ShipmentContainer)
-        .options(selectinload(ShipmentContainer.items), selectinload(ShipmentContainer.photos))
+        .options(selectinload(ShipmentContainer.items))
         .where(ShipmentContainer.packing_slip_id.is_(None))
     )
     if company is not None:

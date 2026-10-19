@@ -1,11 +1,19 @@
 import { useRef } from 'react';
 import { Button, CircularProgress, IconButton, Tooltip } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import { Camera } from 'lucide-react';
 import { ADD_SHIPMENT_PHOTO } from '../../graphql/shipping';
 import { userMessage } from '../../graphql/userMessage';
 import { useToast } from '../../components/Toast';
 import { fileToBase64, MAX_PHOTO_BYTES } from './photos';
+
+/** The file's type, or one read off its extension when the browser gave none - never a guess. An unknown
+ *  one is sent as it is and the server says which photos it takes. */
+function photoType(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : '';
+}
 
 interface Props {
   kind: 'LOADING' | 'DELIVERY';
@@ -26,9 +34,11 @@ interface Props {
 export default function PhotoCapture({ kind, containerId, packingSlipId, refetchQueries, label, disabled }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const { showToast } = useToast();
-  const [addPhoto, { loading }] = useMutation(ADD_SHIPMENT_PHOTO, { refetchQueries });
+  const client = useApolloClient();
+  const [addPhoto, { loading }] = useMutation(ADD_SHIPMENT_PHOTO);
 
   const upload = async (files: FileList | null) => {
+    let added = 0;
     for (const file of Array.from(files ?? [])) {
       if (file.size > MAX_PHOTO_BYTES) {
         showToast(`${file.name} is larger than ${MAX_PHOTO_BYTES / (1024 * 1024)} MB`, 'error');
@@ -41,16 +51,20 @@ export default function PhotoCapture({ kind, containerId, packingSlipId, refetch
             containerId: containerId ?? null,
             packingSlipId: packingSlipId ?? null,
             fileName: file.name,
-            contentType: file.type || 'image/jpeg',
+            contentType: photoType(file),
             fileDataBase64: await fileToBase64(file),
           },
         });
+        added += 1;
       } catch (e) {
         showToast(userMessage(e), 'error');
         break;
       }
     }
     if (input.current) input.current.value = '';
+    // Once for the batch, not once per photo: a driver adding six photos over a cab's signal should not
+    // read the whole list back six times.
+    if (added > 0 && refetchQueries.length > 0) void client.refetchQueries({ include: refetchQueries });
   };
 
   const busy = disabled || loading;
@@ -58,7 +72,9 @@ export default function PhotoCapture({ kind, containerId, packingSlipId, refetch
     <input
       ref={input}
       type="file"
-      accept="image/*"
+      // The three types every office browser shows. Listing them (not image/*) is also what makes an
+      // iPhone hand a HEIC photo from its library over as a JPEG.
+      accept="image/jpeg,image/png,image/webp"
       capture="environment"
       multiple
       hidden

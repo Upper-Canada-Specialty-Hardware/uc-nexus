@@ -9,7 +9,7 @@ from datetime import date
 
 import pytest
 
-from app.errors import InvalidStateTransitionError, ValidationError
+from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import PullRequestSource, PullRequestStatus, ShipmentStatus
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
@@ -135,13 +135,24 @@ def test_a_load_whose_only_slip_was_cancelled_cannot_be_joined(db_session):
     assert first.load_id not in {load.id for load in shipment_loads.joinable_loads(db_session, "TUBC")}
 
 
-def test_another_companys_load_is_refused(db_session):
+def test_another_companys_load_reads_as_absent(db_session):
     ours = _project(db_session, company="TUBC")
     theirs = _project(db_session, company="UBC")
     first = _ship(db_session, theirs)
-    with pytest.raises(ValidationError, match="another company"):
+    # Not found, the way tenancy answers: naming it would give away the other company's job and date.
+    with pytest.raises(NotFoundError):
         _ship(db_session, ours, load_id=first.load_id)
     assert first.load_id not in {load.id for load in shipment_loads.joinable_loads(db_session, "TUBC")}
+
+
+def test_two_companies_with_the_same_job_number_each_get_the_bare_number(db_session):
+    # A project number is only unique within a company: UBC and TUBC can both have a job 22713.
+    number = f"J{uuid.uuid4().hex[:6]}"
+    ubc = _project(db_session, number=number, company="UBC")
+    tubc = _project(db_session, number=number, company="TUBC")
+    day = date(2026, 10, 15)
+    assert _ship(db_session, ubc, pickup=day).load.load_number == f"{number}-10152026"
+    assert _ship(db_session, tubc, pickup=day).load.load_number == f"{number}-10152026"
 
 
 def test_a_demo_load_is_marked_so_it_never_takes_a_real_number():
@@ -182,6 +193,16 @@ def test_a_picked_up_slip_stays_on_its_load(db_session):
     shipping_repository.mark_shipment_picked_up(db_session, first.id, "driver")
     with pytest.raises(InvalidStateTransitionError, match="stays on its load"):
         shipment_loads.move_slip_to_load(db_session, first, None, "tester")
+
+
+def test_a_slip_alone_on_its_load_is_not_moved_to_a_new_one(db_session):
+    # That would only renumber its truck - and the number may already be with the dock and the driver.
+    project = _project(db_session)
+    first = _ship(db_session, project)
+    number = first.load.load_number
+    with pytest.raises(ValidationError, match="load of its own"):
+        shipment_loads.move_slip_to_load(db_session, first, None, "tester")
+    assert first.load.load_number == number
 
 
 def test_moving_onto_its_own_load_is_refused(db_session):

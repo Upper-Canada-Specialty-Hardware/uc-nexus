@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, ForeignKey, Index, String
+from sqlalchemy import Date, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -29,10 +29,14 @@ class ShipmentLoad(Base):
     """
 
     __tablename__ = "shipment_loads"
-    __table_args__ = (Index("ix_shipment_loads_company_ship_date", "company", "ship_date"),)
+    __table_args__ = (
+        Index("ix_shipment_loads_company_ship_date", "company", "ship_date"),
+        # Per company: a project number is only unique within one.
+        UniqueConstraint("company", "load_number", name="uq_shipment_loads_company_number"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    load_number: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
+    load_number: Mapped[str] = mapped_column(String(60), nullable=False)
     company: Mapped[str] = mapped_column(String(15), nullable=False)
     # The project whose number names the load, and the day it names. Both are fixed when the load is
     # started: a number people have already said on the phone must not change under them when the

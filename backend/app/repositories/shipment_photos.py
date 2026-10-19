@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 # A phone photo is a few megabytes; this leaves room for a large one without letting a video through.
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 
-# What a phone camera or a desktop file picker hands over for a photo. HEIC is an iPhone's own format.
-_PHOTO_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"})
+# What every browser in the office can show. HEIC (an iPhone's own format) is left out: Chrome and Firefox
+# on a desktop cannot render it, so a delivery photo stored as HEIC is a broken thumbnail for everybody
+# but the driver. An iPhone's camera, opened from the page, hands over a JPEG anyway.
+_PHOTO_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 
 def _decode(file_data_base64: str) -> bytes:
@@ -48,7 +50,11 @@ def _decode(file_data_base64: str) -> bytes:
 def _photo_type(content_type: str | None) -> str:
     normalised = (content_type or "").split(";", 1)[0].strip().lower()
     if normalised not in _PHOTO_TYPES:
-        raise ValidationError("Only photos can be added here (JPEG, PNG, WebP or HEIC).", field="file")
+        raise ValidationError(
+            "Only JPEG, PNG or WebP photos can be added. An iPhone photo saved as HEIC: take it with the "
+            "camera from this page instead, or share it as a JPEG.",
+            field="file",
+        )
     return normalised
 
 

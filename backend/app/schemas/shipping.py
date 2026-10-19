@@ -19,6 +19,7 @@ from app.errors import NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
+from app.models.shipment_photo import ShipmentPhoto as ShipmentPhotoModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.repositories import (
     drivers,
@@ -137,18 +138,30 @@ def _resolve_driver(info: strawberry.Info, session, project_id: uuid.UUID, drive
     return drivers.resolve_driver(user_roster(info.context), company, driver_user_id)
 
 
-def _refuse_another_drivers_shipment(info: strawberry.Info, session, packing_slip_id: uuid.UUID, user_id: str) -> None:
-    """An account that is only a driver moves only the shipments it drives (#1727).
+def _driver_only(info: strawberry.Info) -> bool:
+    """Whether the caller holds the Driver role and nothing else (#1727).
 
-    Anybody else working shipments - shipping, the warehouse, the office - still marks any of them, as
-    before; the driver page is a narrower door, not a new rule for them.
+    Such an account reaches what the driver page does and no further: its own shipments marked picked up
+    and delivered, delivery photos of them, and the photos it took. Anybody else working shipments -
+    shipping, the warehouse, the office - keeps what they had; the rule narrows the driver, not them.
     """
-    roles = set(caller_roles(info.context))
-    if roles != {DRIVER_ROLE}:
+    return set(caller_roles(info.context)) == {DRIVER_ROLE}
+
+
+def _refuse_another_drivers_shipment(info: strawberry.Info, session, packing_slip_id: uuid.UUID, user_id: str) -> None:
+    """A driver-only account moves only the shipments it drives (#1727)."""
+    if not _driver_only(info):
         return
     driver = session.scalar(select(PackingSlipModel.driver_user_id).where(PackingSlipModel.id == packing_slip_id))
     if driver != user_id:
         raise ForbiddenError("This shipment is another driver's.")
+
+
+def _refuse_driver_only(info: strawberry.Info) -> None:
+    """Booking, correcting, moving and calling off a shipment are the shipping department's, not a
+    driver's (#1727): a driver-only account is refused them outright."""
+    if _driver_only(info):
+        raise ForbiddenError("Drivers mark their own deliveries; booking and changing shipments is shipping's.")
 
 
 def _requests_to_types(session, reqs) -> list[ShippingOutRequest]:
@@ -757,14 +770,23 @@ class ShippingMutations:
         touched."""
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
-            project_id = session.scalar(
-                select(PackingSlipModel.project_id).where(PackingSlipModel.id == uuid.UUID(str(input.id)))
-            )
+            _refuse_driver_only(info)
+            project_id, stored_id, stored_name = session.execute(
+                select(
+                    PackingSlipModel.project_id, PackingSlipModel.driver_user_id, PackingSlipModel.driver_name
+                ).where(PackingSlipModel.id == uuid.UUID(str(input.id)))
+            ).one()
+            # The driver it already names stays as named: a driver who has since lost the role must not
+            # make the rest of the form uneditable, and the name kept is the one from when they were chosen.
+            if input.driver_user_id and input.driver_user_id == stored_id:
+                driver = (stored_id, stored_name)
+            else:
+                driver = _resolve_driver(info, session, project_id, input.driver_user_id)
             ps = shipping_repository.update_shipment_details(
                 session,
                 uuid.UUID(str(input.id)),
                 _site_form_details(input),
-                driver=_resolve_driver(info, session, project_id, input.driver_user_id),
+                driver=driver,
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -792,6 +814,8 @@ class ShippingMutations:
         with SessionLocal() as session:
             if cid is not None:
                 tenancy.require_container_in_scope(session, cid, tenant_scope(info))
+                # A loading photo is the floor's, taken at staging.
+                _refuse_driver_only(info)
             if sid is not None:
                 tenancy.require_packing_slip_in_scope(session, sid, tenant_scope(info))
                 _refuse_another_drivers_shipment(info, session, sid, auth["user_id"])
@@ -816,9 +840,16 @@ class ShippingMutations:
 
     @strawberry.mutation
     def delete_shipment_photo(self, info: strawberry.Info, id: strawberry.ID) -> bool:
-        """Remove a photo taken by mistake (#1728)."""
+        """Remove a photo taken by mistake (#1728). A driver-only account removes only its own."""
+        user_id = current_user(info)["user_id"]
         with SessionLocal() as session:
             tenancy.require_shipment_photo_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            if _driver_only(info):
+                taker = session.scalar(
+                    select(ShipmentPhotoModel.taken_by_user_id).where(ShipmentPhotoModel.id == uuid.UUID(str(id)))
+                )
+                if taker != user_id:
+                    raise ForbiddenError("Drivers can remove only the photos they took.")
             key = shipment_photos.delete_photo(session, uuid.UUID(str(id)))
             session.commit()
         shipment_photos.discard_object(key)
@@ -836,6 +867,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_driver_only(info)
             ps = shipping_repository.lock_packing_slip(session, uuid.UUID(str(id)))
             shipment_loads.move_slip_to_load(session, ps, uuid.UUID(str(load_id)) if load_id else None, actor)
             session.commit()
@@ -865,6 +897,7 @@ class ShippingMutations:
         lines, which a return cannot reach. Moves no inventory."""
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            _refuse_driver_only(info)
             ps = shipping_repository.cancel_shipment(session, uuid.UUID(str(id)))
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)

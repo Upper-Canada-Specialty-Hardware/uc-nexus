@@ -1,16 +1,17 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { ListItemText, MenuItem, TextField } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_JOINABLE_LOADS } from '../../graphql/shipping';
 import { monoSx } from '../../theme';
 import { fmtShipDate, NEW_LOAD } from './loads';
+import type { SlipLoad } from './shipmentSiteForm';
 
 interface JoinableLoad {
   id: string;
   loadNumber: string;
   shipDate: string;
   leadProjectNumber: string;
-  slips: { id: string; packingSlipNumber: string; projectNumber: string }[];
+  slips: { id: string; packingSlipNumber: string; projectNumber: string; status?: string }[];
 }
 
 interface Props {
@@ -21,6 +22,11 @@ interface Props {
   disabled?: boolean;
   /** The slip being edited, which the picker leaves out of each load's list of what is already on it. */
   slipId?: string;
+  /**
+   * The load the edited slip is on now. Always offered, even when it is no longer joinable (another slip
+   * on it has been picked up), so the select shows what will actually be saved.
+   */
+  currentLoad?: SlipLoad | null;
 }
 
 /**
@@ -28,16 +34,38 @@ interface Props {
  * still on the dock. Each load is listed with the slips already on it, because "22713-10152026" alone
  * does not say whether it is the truck the person at the dock means.
  */
-export default function LoadPicker({ projectId, value, onChange, disabled, slipId }: Props) {
+export default function LoadPicker({ projectId, value, onChange, disabled, slipId, currentLoad }: Props) {
   const { data, loading } = useQuery<{ joinableLoads: JoinableLoad[] }>(GET_JOINABLE_LOADS, {
     variables: { projectId },
     fetchPolicy: 'network-only',
   });
-  const loads = useMemo(() => data?.joinableLoads ?? [], [data]);
+  const loads = useMemo(() => {
+    const joinable = data?.joinableLoads ?? [];
+    if (!currentLoad || joinable.some((l) => l.id === currentLoad.id)) return joinable;
+    // The edited slip's own load, though it can take no more slips: it is where the slip is now.
+    return [
+      {
+        id: currentLoad.id,
+        loadNumber: currentLoad.loadNumber,
+        shipDate: currentLoad.shipDate,
+        leadProjectNumber: '',
+        slips: currentLoad.slips,
+      },
+      ...joinable,
+    ];
+  }, [data, currentLoad]);
 
-  // A value the list no longer offers (its truck was picked up meanwhile) reads as a new load rather
-  // than as a blank select, and the confirm then starts one instead of joining a truck that has gone.
+  // Moving a slip that is alone on its load to a new one would only renumber its truck (#1723), and the
+  // server refuses it; so for that slip the choice is not offered.
+  const aloneOnCurrent = !!currentLoad && currentLoad.slips.every((s) => s.id === slipId);
+
+  // A value the list no longer offers (in the confirm dialog: a truck picked up meanwhile) has to be
+  // replaced, not shown as something it is not: the select falls back to a new load and says so upward,
+  // so what is displayed is what is saved.
   const known = value === NEW_LOAD || loads.some((l) => l.id === value);
+  useEffect(() => {
+    if (!loading && data && !known) onChange(NEW_LOAD);
+  }, [loading, data, known, onChange]);
 
   return (
     <TextField
@@ -55,9 +83,11 @@ export default function LoadPicker({ projectId, value, onChange, disabled, slipI
         inputLabel: { shrink: true },
       }}
     >
-      <MenuItem value={NEW_LOAD}>
-        <ListItemText primary="New load" secondary="Named for this project and its pick-up date" />
-      </MenuItem>
+      {!aloneOnCurrent && (
+        <MenuItem value={NEW_LOAD}>
+          <ListItemText primary="New load" secondary="Named for this project and its pick-up date" />
+        </MenuItem>
+      )}
       {loads.map((load) => {
         const others = load.slips.filter((s) => s.id !== slipId);
         return (

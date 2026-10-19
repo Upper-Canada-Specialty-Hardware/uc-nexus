@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["lead_project_id"], ["projects.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("load_number"),
+        sa.UniqueConstraint("company", "load_number", name="uq_shipment_loads_company_number"),
     )
     op.create_index("ix_shipment_loads_company_ship_date", "shipment_loads", ["company", "ship_date"])
     op.add_column("packing_slips", sa.Column("load_id", sa.Uuid(), nullable=True))
@@ -71,14 +71,15 @@ def upgrade() -> None:
         sa.column("created_by", sa.String()),
         sa.column("created_at", sa.DateTime()),
     )
-    seen: dict[str, int] = {}
+    seen: dict[tuple[str, str], int] = {}
     for slip in slips:
         day = slip.pickup_date or slip.shipped_at.replace(tzinfo=UTC).astimezone(_TORONTO).date()
         base = f"{slip.project_number.strip()}-{day:%m%d%Y}"
         if (slip.company or "").strip().upper() == "DEMO":
             base = f"D-{base}"
-        count = seen.get(base, 0) + 1
-        seen[base] = count
+        key = (slip.company, base)
+        count = seen.get(key, 0) + 1
+        seen[key] = count
         load_id = uuid.uuid4()
         bind.execute(
             loads.insert().values(

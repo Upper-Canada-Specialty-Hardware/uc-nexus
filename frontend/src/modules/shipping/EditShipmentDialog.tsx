@@ -127,6 +127,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
             onChange={setLoadId}
             disabled={loading}
             slipId={slip.id}
+            currentLoad={slip.load}
           />
           <DriverPicker
             projectId={slip.projectId}

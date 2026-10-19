@@ -102,3 +102,26 @@ it('reads a ship date as the calendar day it names, whatever the timezone', () =
     new Date(2026, 9, 15).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
   );
 });
+
+it('keeps showing the edited slip on its own load when that load can take no more (#1723)', async () => {
+  const currentLoad = {
+    id: 'load-gone',
+    loadNumber: '23001-10142026',
+    shipDate: '2026-10-14',
+    slips: [
+      { id: 'ps-9', packingSlipNumber: 'PS-00409', projectNumber: '23001', projectDescription: null, status: 'SCHEDULED' as const },
+      { id: 'ps-8', packingSlipNumber: 'PS-00408', projectNumber: '23001', projectDescription: null, status: 'PICKED_UP' as const },
+    ],
+  };
+  function Editing() {
+    const [value, setValue] = useState('load-gone');
+    return <LoadPicker projectId="proj-1" value={value} onChange={setValue} slipId="ps-9" currentLoad={currentLoad} />;
+  }
+  render(
+    <MockedProvider mocks={[loadsMock]}>
+      <Editing />
+    </MockedProvider>,
+  );
+  // Not in the joinable list (a slip on it was picked up), yet it is where the slip is: shown, not "New load".
+  expect(await screen.findByText(`23001-10142026 · ${fmtShipDate('2026-10-14')}`)).toBeInTheDocument();
+});

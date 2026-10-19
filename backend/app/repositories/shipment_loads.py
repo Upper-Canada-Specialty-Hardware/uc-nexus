@@ -40,17 +40,20 @@ def load_number_base(project_number: str, ship_date: date, company: str | None) 
     return f"D-{base}" if is_demo_company(company) else base
 
 
-def mint_load_number(session: Session, base: str) -> str:
-    """Claim `base`, or the next free `base-N` when a load has it already.
+def mint_load_number(session: Session, base: str, company: str) -> str:
+    """Claim `base`, or the next free `base-N` when a load of `company` has it already.
 
-    Serialised on an advisory lock held to the end of the transaction, so two confirms starting the
-    same project's load on the same day cannot both take the bare number.
+    Per company, because a project number is only unique within one: UBC and TUBC can both have a job
+    22713, and one company's truck must not push the other's onto a `-2`. Serialised on an advisory lock
+    held to the end of the transaction, so two confirms starting the same project's load on the same day
+    cannot both take the bare number.
     """
     session.execute(select(func.pg_advisory_xact_lock(_LOAD_NUMBER_LOCK_KEY)))
     taken = set(
         session.scalars(
             select(ShipmentLoad.load_number).where(
-                (ShipmentLoad.load_number == base) | ShipmentLoad.load_number.like(f"{base}-%")
+                ShipmentLoad.company == company,
+                (ShipmentLoad.load_number == base) | ShipmentLoad.load_number.like(f"{base}-%"),
             )
         )
     )
@@ -67,7 +70,9 @@ def start_load(session: Session, project: Project, ship_date: date | None, creat
     day = ship_date or local_today()
     load = ShipmentLoad(
         id=uuid.uuid4(),
-        load_number=mint_load_number(session, load_number_base(project.project_id, day, project.company)),
+        load_number=mint_load_number(
+            session, load_number_base(project.project_id, day, project.company), project.company
+        ),
         company=project.company,
         lead_project_id=project.id,
         ship_date=day,
@@ -107,14 +112,14 @@ def join_load(session: Session, load_id: uuid.UUID, project: Project) -> Shipmen
     when the load is another company's (a truck never carries two companies' paperwork) or has left.
     """
     locked = lock_rows(session, ShipmentLoad, [load_id])
-    if not locked:
+    # Another company's load reads as absent, the way tenancy answers everywhere else: naming it would
+    # tell the caller another company's project number and ship date.
+    if not locked or locked[0].company != project.company:
         raise NotFoundError(f"Load {load_id} not found")
     load = locked[0]
-    if load.company != project.company:
-        raise ValidationError(
-            f"Load {load.load_number} is another company's; a slip can only join a load of its own company.",
-            field="load_id",
-        )
+    # The slips too: a pickup locks its slip, not the load, so this is what makes it wait for the join
+    # (or the join wait for it) rather than land between the check below and the commit.
+    lock_rows(session, PackingSlip, list(session.scalars(select(PackingSlip.id).where(PackingSlip.load_id == load.id))))
     joinable = session.scalar(select(ShipmentLoad.id).where(ShipmentLoad.id == load.id, _joinable_clause()))
     if joinable is None:
         raise InvalidStateTransitionError(
@@ -137,6 +142,14 @@ def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | 
         )
     if load_id is not None and load_id == slip.load_id:
         raise ValidationError("The shipment is already on that load.", field="load_id")
+    if load_id is None and slip.load_id is not None:
+        others = session.scalar(
+            select(func.count(PackingSlip.id)).where(PackingSlip.load_id == slip.load_id, PackingSlip.id != slip.id)
+        )
+        if not others:
+            # A new load would only be this one under a new number - and a number already given to the
+            # dock and the driver must not change under them.
+            raise ValidationError("The shipment is already on a load of its own.", field="load_id")
     project = session.get(Project, slip.project_id)
     old_load_id = slip.load_id
     if load_id is None:
