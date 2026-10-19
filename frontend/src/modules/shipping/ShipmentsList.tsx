@@ -500,7 +500,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         Load {load.loadNumber}
                       </Typography>
                       <Typography variant="body2" component="span" color="text.secondary" sx={{ ml: 1 }}>
-                        {fmtShipDate(load.shipDate)} · {load.slips.length} shipments on this truck
+                        {fmtShipDate(load.shipDate)} · {truckCount(load.slips)}
                       </Typography>
                     </TableCell>
                   </TableRow>
@@ -870,4 +870,13 @@ function SlipMaterial({ slip }: { slip: PackingSlip }) {
       </TableBody>
     </Table>
   );
+}
+
+/** "2 shipments on this truck", and how many of the load's slips were called off, which stay on it as
+ *  history but are not on the truck (#1720). */
+function truckCount(slips: { status: string }[]): string {
+  const cancelled = slips.filter((s) => s.status === 'CANCELLED').length;
+  const aboard = slips.length - cancelled;
+  const main = `${aboard} ${aboard === 1 ? 'shipment' : 'shipments'} on this truck`;
+  return cancelled > 0 ? `${main} · ${cancelled} cancelled` : main;
 }
