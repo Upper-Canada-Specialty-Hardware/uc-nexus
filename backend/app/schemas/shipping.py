@@ -5,13 +5,15 @@ import uuid
 import strawberry
 from sqlalchemy import func, select
 
-from app.auth import current_user, resolve_display_name, tenant_scope
+from app.auth import current_user, resolve_display_name, tenant_scope, user_roster
 from app.database import SessionLocal
 from app.errors import NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
+from app.models.shipping import PackingSlip as PackingSlipModel
 from app.repositories import (
+    drivers,
     request_composer,
     shipment_containers,
     shipment_loads,
@@ -47,6 +49,7 @@ from .types import (
     RequestCoverageLine,
     ReturnableLine,
     ShipmentContainer,
+    ShipmentDriver,
     ShipmentLoad,
     ShipmentMethod,
     ShipmentReturn,
@@ -106,6 +109,15 @@ def _delivery_details(input) -> dict:
     and the columns cannot drift apart: a field added to the header reaches both mutations or neither.
     """
     return {field: getattr(input, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+
+
+def _resolve_driver(info: strawberry.Info, session, project_id: uuid.UUID, driver_user_id: str | None):
+    """The driver a write names (#1726), checked against the Clerk roster: (user id, name), or None.
+    The roster is only fetched when a driver is named - most shipments go by courier."""
+    if not driver_user_id:
+        return None
+    company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+    return drivers.resolve_driver(user_roster(info.context), company, driver_user_id)
 
 
 def _requests_to_types(session, reqs) -> list[ShippingOutRequest]:
@@ -179,6 +191,20 @@ class ShippingQueries:
             if project is None:
                 raise NotFoundError(f"Project {project_id} not found")
             return [shipment_load_to_type(load) for load in shipment_loads.joinable_loads(session, project.company)]
+
+    @strawberry.field
+    def shipment_drivers(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ShipmentDriver]:
+        """Who can drive a shipment of `projectId` (#1726): the Driver accounts of its company."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == pid))
+            if company is None:
+                raise NotFoundError(f"Project {project_id} not found")
+        return [
+            ShipmentDriver(user_id=u["id"], name=drivers.display_name(u))
+            for u in drivers.drivers_for(user_roster(info.context), company)
+        ]
 
     @strawberry.field
     def packing_slip_count(
@@ -542,6 +568,7 @@ class ShippingMutations:
                     }
                 ),
                 load_id=uuid.UUID(str(input.load_id)) if input.load_id else None,
+                driver=_resolve_driver(info, session, uuid.UUID(str(input.project_id)), input.driver_user_id),
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, slip.id)
@@ -660,10 +687,14 @@ class ShippingMutations:
         touched."""
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
+            project_id = session.scalar(
+                select(PackingSlipModel.project_id).where(PackingSlipModel.id == uuid.UUID(str(input.id)))
+            )
             ps = shipping_repository.update_shipment_details(
                 session,
                 uuid.UUID(str(input.id)),
                 _delivery_details(input),
+                driver=_resolve_driver(info, session, project_id, input.driver_user_id),
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)

@@ -1080,6 +1080,8 @@ def packing_slip_to_type(ps) -> PackingSlip:
         picked_up_by=ps.picked_up_by,
         delivered_at=ps.delivered_at,
         delivered_by=ps.delivered_by,
+        driver_user_id=ps.driver_user_id,
+        driver_name=ps.driver_name,
         items=[packing_slip_item_to_type(i) for i in ps.items],
         containers=[container_to_type(c) for c in ps.containers],
         load=(

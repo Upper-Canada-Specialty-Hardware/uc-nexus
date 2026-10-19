@@ -191,6 +191,8 @@ export interface DeliveryRequestDocumentProps {
   loadNumber?: string | null;
   /** The other slips on that load, as "PS-00413 (23001)", so the driver knows what else is aboard. */
   ridingWith?: string[];
+  /** Who drives it (#1726), when it goes on one of the company's trucks. */
+  driverName?: string | null;
 }
 
 export default function DeliveryRequestDocument({
@@ -206,6 +208,7 @@ export default function DeliveryRequestDocument({
   returnedNote = [],
   loadNumber = null,
   ridingWith = [],
+  driverName = null,
 }: DeliveryRequestDocumentProps) {
   const divisionLines = divisionAddress.split('\n').filter((l) => l.trim() !== '');
   // The material block keeps a few spare lines: a partial ship gets items added at the dock.
@@ -277,6 +280,7 @@ export default function DeliveryRequestDocument({
         <Field label="SHIPMENT METHOD:" value={values.shipmentMethod} />
         <Field label="CARRIER/TAG/BOL:" value={values.carrierTagBol} />
         <Field label="TRACKING NUMBER:" value={values.trackingNumber} />
+        <Field label="DRIVER:" value={driverName} />
 
         <View style={styles.sectionRow}>
           <Text style={styles.sectionLabel}>MATERIAL DESCRIPTION:</Text>

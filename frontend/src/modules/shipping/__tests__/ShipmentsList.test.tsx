@@ -47,6 +47,8 @@ const HEADER = {
   shipmentMethod: 'Our truck',
   carrierTagBol: 'BOL-8891',
   trackingNumber: null,
+  driverUserId: null,
+  driverName: null,
   weightLbs: 420,
   deliveryAddress: '6775 Bell McKinnon Rd., Duncan, BC',
   specialInstructions: null,

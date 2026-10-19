@@ -756,6 +756,9 @@ class DeliveryRequestHeaderInput:
     shipment_method: str | None = None
     carrier_tag_bol: str | None = None
     tracking_number: str | None = None
+    # #1726: the Driver account driving it, by Clerk user id; null for none. Not a header column - the
+    # server checks the account and writes its name beside it.
+    driver_user_id: str | None = None
     weight_lbs: float | None = None
     delivery_address: str | None = None
     special_instructions: str | None = None

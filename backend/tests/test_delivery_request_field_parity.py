@@ -47,6 +47,8 @@ _SLIP_IDENTITY_COLUMNS = {
     "load_id",
 }
 _SLIP_LIFECYCLE_COLUMNS = {"picked_up_at", "picked_up_by", "delivered_at", "delivered_by"}
+# #1726: who drives it - written by the server from the account the client names, not typed.
+_SLIP_DRIVER_COLUMNS = {"driver_user_id", "driver_name"}
 
 _FRONTEND_FIELD_LIST = Path(__file__).resolve().parents[2] / "frontend" / "src" / "types" / "deliveryRequestFields.ts"
 
@@ -71,7 +73,7 @@ def test_the_tuple_names_every_header_column_and_nothing_else():
     """The repository tuple is what writes and clears the header, so a column it does not name is a
     column the form can display and never change."""
     columns = {c.name for c in PackingSlipModel.__table__.columns}
-    header = columns - _SLIP_IDENTITY_COLUMNS - _SLIP_LIFECYCLE_COLUMNS
+    header = columns - _SLIP_IDENTITY_COLUMNS - _SLIP_LIFECYCLE_COLUMNS - _SLIP_DRIVER_COLUMNS
 
     assert header == set(DELIVERY_REQUEST_FIELDS)
 
@@ -92,8 +94,10 @@ def test_both_mutation_inputs_carry_the_whole_header():
         "expectedContents",
         # #1720: the load it joins; omitted starts a new one.
         "loadId",
+        # #1726: the driver, named by account on both inputs.
+        "driverUserId",
     }
-    assert _input_fields("UpdateShipmentDetailsInput") == header | {"id"}
+    assert _input_fields("UpdateShipmentDetailsInput") == header | {"id", "driverUserId"}
 
 
 def test_the_packing_slip_type_returns_the_whole_header():

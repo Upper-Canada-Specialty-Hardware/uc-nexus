@@ -105,6 +105,9 @@ export type PackingSlipHeader = {
   pickedUpBy: string | null;
   deliveredAt: string | null;
   deliveredBy: string | null;
+  /** The Driver account driving it, and its name as kept for the reprint (#1726). */
+  driverUserId?: string | null;
+  driverName?: string | null;
   /** The truck trip it rides (#1720). Null only on a slip written outside the confirm path. */
   load?: SlipLoad | null;
 } & DeliveryRequestValues;

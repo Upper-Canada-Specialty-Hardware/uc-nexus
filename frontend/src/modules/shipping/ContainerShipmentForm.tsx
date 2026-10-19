@@ -21,6 +21,7 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import DeliveryRequestFields from './DeliveryRequestFields';
 import LoadPicker from './LoadPicker';
+import DriverPicker from './DriverPicker';
 import { NEW_LOAD } from './loads';
 import { useShipmentMethods } from './useShipmentMethods';
 import {
@@ -66,6 +67,7 @@ export default function ContainerShipmentForm({
   const shipmentMethods = useShipmentMethods(!open);
   const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
   const [loadId, setLoadId] = useState<string>(NEW_LOAD);
+  const [driverUserId, setDriverUserId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const totalUnits = useMemo(
@@ -128,6 +130,7 @@ export default function ContainerShipmentForm({
           expectedContents: containers.map((c) => ({ containerId: c.id, itemIds: c.items.map((i) => i.id) })),
           // #1720: omitted, the server starts a new load for this shipment.
           loadId: loadId === NEW_LOAD ? null : loadId,
+          driverUserId: driverUserId || null,
           ...deliveryDetailsInput(details),
         },
       },
@@ -178,7 +181,12 @@ export default function ContainerShipmentForm({
             </Stack>
           </Box>
 
-          {open && <LoadPicker projectId={projectId} value={loadId} onChange={setLoadId} disabled={loading} />}
+          {open && (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ '& > *': { flex: 1, minWidth: 0 } }}>
+              <LoadPicker projectId={projectId} value={loadId} onChange={setLoadId} disabled={loading} />
+              <DriverPicker projectId={projectId} value={driverUserId} onChange={setDriverUserId} disabled={loading} />
+            </Stack>
+          )}
 
           <DeliveryRequestFields
             details={details}

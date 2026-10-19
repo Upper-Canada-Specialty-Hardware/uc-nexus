@@ -231,7 +231,15 @@ const SLIP_IDENTITY_FIELDS = [
   'createdAt',
 ] as const;
 
-const SLIP_LIFECYCLE_FIELDS = ['pickedUpAt', 'pickedUpBy', 'deliveredAt', 'deliveredBy'] as const;
+const SLIP_LIFECYCLE_FIELDS = [
+  'pickedUpAt',
+  'pickedUpBy',
+  'deliveredAt',
+  'deliveredBy',
+  // #1726: who drives it, by account and by the name kept for the reprint.
+  'driverUserId',
+  'driverName',
+] as const;
 
 // Every field of the Delivery Request a shipment carries (#447), in one place. The confirm, the
 // list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
@@ -293,6 +301,16 @@ export const GET_JOINABLE_LOADS = gql`
         projectDescription
         status
       }
+    }
+  }
+`;
+
+// Who can drive a shipment of this project (#1726): its company's Driver accounts.
+export const GET_SHIPMENT_DRIVERS = gql`
+  query GetShipmentDrivers($projectId: ID!) {
+    shipmentDrivers(projectId: $projectId) {
+      userId
+      name
     }
   }
 `;

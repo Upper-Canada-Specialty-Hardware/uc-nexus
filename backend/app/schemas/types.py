@@ -1276,6 +1276,9 @@ class PackingSlip:
     picked_up_by: str | None
     delivered_at: datetime | None
     delivered_by: str | None
+    # Who drives it (#1726): the Driver account and its name as it was when chosen.
+    driver_user_id: str | None
+    driver_name: str | None
     items: list[PackingSlipItem]
     # How the load was physically arranged (#451). Empty for a slip cut before containers existed, so
     # the Delivery Request falls back to a flat material list rather than printing nothing. `items` is
@@ -1283,6 +1286,14 @@ class PackingSlip:
     containers: list["ShipmentContainer"]
     # The truck trip it rides (#1720). Null only on a slip written outside the confirm path.
     load: "ShipmentLoadRef | None" = None
+
+
+@strawberry.type
+class ShipmentDriver:
+    """An account that can drive a shipment (#1726)."""
+
+    user_id: str
+    name: str
 
 
 @strawberry.type

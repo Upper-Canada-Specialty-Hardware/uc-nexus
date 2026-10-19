@@ -8,6 +8,7 @@ import { MOVE_SHIPMENT_TO_LOAD, UPDATE_SHIPMENT_DETAILS } from '../../graphql/sh
 import { SHIPPING_REFETCH_QUERIES } from '../../graphql/refetch';
 import DeliveryRequestFields from './DeliveryRequestFields';
 import LoadPicker from './LoadPicker';
+import DriverPicker from './DriverPicker';
 import { NEW_LOAD } from './loads';
 import { useShipmentMethods } from './useShipmentMethods';
 import {
@@ -48,6 +49,8 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
   });
   const loading = saving || moving;
   const loadChanged = loadId !== storedLoadId;
+  const storedDriver = slip.driverUserId ?? '';
+  const [driverUserId, setDriverUserId] = useState(storedDriver);
 
   // Twenty fields against the shipment as it is stored. Anything typed here is gone the moment the
   // dialog unmounts, so a stray click on the backdrop or an Escape aimed at something else would
@@ -55,8 +58,11 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
   // dialog swallow the key once they hold entry. In flight counts as dirty too: the save is the
   // thing that would be abandoned.
   const dirty = useMemo(
-    () => loadChanged || (Object.keys(stored) as (keyof DeliveryDetails)[]).some((k) => details[k] !== stored[k]),
-    [details, stored, loadChanged],
+    () =>
+      loadChanged ||
+      driverUserId !== storedDriver ||
+      (Object.keys(stored) as (keyof DeliveryDetails)[]).some((k) => details[k] !== stored[k]),
+    [details, stored, loadChanged, driverUserId, storedDriver],
   );
   const blockDismissal = dirty || loading;
 
@@ -73,7 +79,8 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
         await moveShipment({ variables: { id: slip.id, loadId: loadId === NEW_LOAD ? null : loadId } });
       }
       await updateShipment({
-        variables: { input: { id: slip.id, ...deliveryDetailsInput(details) } },
+        // Full replace: the driver goes on every save, null clearing it, like the header beside it.
+        variables: { input: { id: slip.id, driverUserId: driverUserId || null, ...deliveryDetailsInput(details) } },
       });
       showToast(`Delivery Request ${slip.packingSlipNumber} updated`, 'success');
       onClose();
@@ -113,13 +120,22 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
     >
       <Stack spacing={2}>
         {error && <Alert severity="error">{error}</Alert>}
-        <LoadPicker
-          projectId={slip.projectId}
-          value={loadId}
-          onChange={setLoadId}
-          disabled={loading}
-          slipId={slip.id}
-        />
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ '& > *': { flex: 1, minWidth: 0 } }}>
+          <LoadPicker
+            projectId={slip.projectId}
+            value={loadId}
+            onChange={setLoadId}
+            disabled={loading}
+            slipId={slip.id}
+          />
+          <DriverPicker
+            projectId={slip.projectId}
+            value={driverUserId}
+            onChange={setDriverUserId}
+            disabled={loading}
+            storedName={slip.driverName}
+          />
+        </Stack>
         <DeliveryRequestFields
           details={details}
           onChange={(patch) => setDetails((prev) => ({ ...prev, ...patch }))}

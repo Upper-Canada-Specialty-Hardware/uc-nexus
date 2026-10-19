@@ -241,6 +241,11 @@ def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> 
         setattr(packing_slip, field, value)
 
 
+def _apply_driver(packing_slip: PackingSlip, driver: tuple[str, str] | None) -> None:
+    """Name the slip's driver (#1726), or clear it. Full replace, like the header beside it."""
+    packing_slip.driver_user_id, packing_slip.driver_name = driver if driver else (None, None)
+
+
 def confirm_shipment(
     session: Session,
     project_id: uuid.UUID,
@@ -248,6 +253,7 @@ def confirm_shipment(
     items: list[dict],
     details: dict | None = None,
     load_id: uuid.UUID | None = None,
+    driver: tuple[str, str] | None = None,
 ) -> PackingSlip:
     """Cut a packing slip against what a completed shipping-out pull staged.
 
@@ -270,6 +276,8 @@ def confirm_shipment(
         details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
             the form is filled in against whatever the site has said, and a blank is a real answer.
         load_id: the load (#1720) the slip joins. None starts a new one, led by this project.
+        driver: (user id, name) of the Driver account driving it (#1726), already resolved and
+            checked by the caller; None for no driver.
     """
     # 0. #425: quarantine gate. Shipping out is the last thing a project does, and it is the point of
     # no return - hardware leaves the building against a job whose costs cannot be booked. Blocked
@@ -345,6 +353,7 @@ def confirm_shipment(
         status=ShipmentStatus.SCHEDULED,
     )
     _apply_delivery_details(packing_slip, details)
+    _apply_driver(packing_slip, driver)
 
     # 3b. Put it on its truck (#1720). After the header is applied, so a new load is named for the
     # slip's own pickup date rather than for today when the two differ.
@@ -425,6 +434,7 @@ def update_shipment_details(
     session: Session,
     packing_slip_id: uuid.UUID,
     details: dict,
+    driver: tuple[str, str] | None = None,
 ) -> PackingSlip:
     """Rewrite the Delivery Request header of a shipment that has not left yet (#447).
 
@@ -444,6 +454,7 @@ def update_shipment_details(
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     _apply_delivery_details(ps, details)
+    _apply_driver(ps, driver)
     return ps
 
 

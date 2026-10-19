@@ -47,6 +47,8 @@ class PackingSlip(Base):
     __table_args__ = (
         Index("ix_packing_slips_project", "project_id"),
         Index("ix_packing_slips_load", "load_id"),
+        # The driver page's read (#1727): one driver's shipments still on the road.
+        Index("ix_packing_slips_driver_status", "driver_user_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -103,6 +105,13 @@ class PackingSlip(Base):
     ucsh_contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
     ucsh_contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     sales_order_number: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- Driver (#1726) ---------------------------------------------------------------------------
+    # The account driving it, and its name as it was when chosen: a snapshot, like `shipment_method`,
+    # so the reprint keeps saying who drove after the account is renamed or gone. Not part of the
+    # header tuple - the client names a driver by id and the server writes both.
+    driver_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    driver_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # --- Lifecycle stamps ------------------------------------------------------------------------
     # Who confirmed each leg and when. The actor is the Clerk-authenticated caller (#427), never

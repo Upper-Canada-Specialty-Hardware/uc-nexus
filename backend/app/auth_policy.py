@@ -286,6 +286,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # The loads a confirm can join (#1720). Read by the same confirm dialog every signed-in user loading
     # a truck opens, so it is gated the same as the confirm.
     "joinableLoads": SIGNED_IN,
+    # Who can drive a shipment (#1726): names and ids only, of the project's company, for the same
+    # dialogs that book and correct one.
+    "shipmentDrivers": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.

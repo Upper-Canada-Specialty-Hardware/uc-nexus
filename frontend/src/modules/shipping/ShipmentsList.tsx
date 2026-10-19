@@ -365,6 +365,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             returnedNote={net.returnedNote}
             loadNumber={slip.load?.loadNumber ?? null}
             ridingWith={ridingWith(slip)}
+            driverName={slip.driverName ?? null}
           />,
         ).toBlob();
         tab.show(blob);
@@ -554,6 +555,12 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                     {slip.trackingNumber && (
                       <Typography variant="caption" component="div" color="text.secondary" sx={monoSx} noWrap>
                         Tracking {slip.trackingNumber}
+                      </Typography>
+                    )}
+                    {/* #1726: who drives it, on a company truck. */}
+                    {slip.driverName && (
+                      <Typography variant="caption" component="div" color="text.secondary" noWrap>
+                        Driver {slip.driverName}
                       </Typography>
                     )}
                   </TableCell>

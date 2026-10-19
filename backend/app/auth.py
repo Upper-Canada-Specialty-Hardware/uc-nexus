@@ -73,6 +73,9 @@ WAREHOUSE_MANAGER_ROLE = "Warehouse Manager"
 # UC Nexus Admin module. `updateUserRoles` enforces both halves - only a DB Admin may grant or remove
 # it, and a roles list carrying it without UC Nexus Admin is refused.
 DB_ADMIN_ROLE = "DB Admin"
+# The person who drives a shipment to site (#1726). Named on the shipment, and the role the driver page
+# (#1727) opens for, so a driver marks their own deliveries picked up and delivered from the cab.
+DRIVER_ROLE = "Driver"
 
 # The tiers, named once so ROOT_FIELD_POLICY reads as the rulings rather than as repeated set
 # literals. Each is an ANY-OF: holding one of the names satisfies the requirement. There is still no
