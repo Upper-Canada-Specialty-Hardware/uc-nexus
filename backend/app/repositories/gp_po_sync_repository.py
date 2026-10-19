@@ -67,6 +67,14 @@ def _to_int_qty(value: float, *, po_number: str, ord_: int, field: str) -> int:
     return rounded
 
 
+def _gp_unit_cost(value: float | None) -> Decimal:
+    """GP's line cost as the Decimal the Numeric(19,5) column holds (#1744). The relay sends it as a
+    float, and a float such as 12.34 never compares equal to the stored Decimal('12.34000'), so assigning
+    it raw marked every line dirty and rewrote the whole open book on every pass. str() gives the float's
+    shortest round-trip form, which is GP's own value at any cost a PO line carries."""
+    return Decimal(str(value or 0)).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+
+
 def _net_ordered(line: dict) -> float:
     """Receivable quantity for a line: ordered minus cancelled, floored at zero."""
     return max(0.0, (line.get("qty") or 0) - (line.get("qty_cancelled") or 0))
@@ -225,7 +233,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
         # and the persist will add it again (+=). Hold received where Nexus has it until that lands.
         if li is not None and receipt_in_flight:
             received_qty = li.received_quantity
-        unit_cost = ln.get("unit_cost") or 0
+        unit_cost = _gp_unit_cost(ln.get("unit_cost"))
         ordered_qty = _to_int_qty(net, po_number=po.po_number, ord_=ord_, field="ordered") if net > 0 else 0
 
         if ordered_qty < 1:

@@ -139,6 +139,36 @@ def test_received_qty_is_authoritative_on_reupsert(db_session, project):
     assert row.status == POStatus.PARTIALLY_RECEIVED
 
 
+def test_a_pass_gp_has_not_changed_rewrites_no_line(db_session, project):
+    # #1744: the relay sends unit_cost as a float, and 12.34 as a float never equals the Decimal the
+    # column stores, so every open line was rewritten on every pass and po_line_items bloated to 14x its
+    # live size. A pass over the same GP data must leave every line alone.
+    from sqlalchemy import event
+
+    pm = _project_map(db_session)
+    lines = [_line(16384, "IT1", 5, received=1, unit_cost=12.34), _line(32768, "IT2", 3, unit_cost=199.99)]
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO104", lines), pm)
+    db_session.flush()
+    # Each pass runs in its own session, so the next one reads the stored Decimals back.
+    db_session.expire_all()
+    assert {li.unit_cost for li in _get(db_session, "PO104").line_items} == {Decimal("12.34"), Decimal("199.99")}
+
+    updates = []
+    connection = db_session.connection()
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE PO_LINE_ITEMS"):
+            updates.append(statement)
+
+    event.listen(connection, "before_cursor_execute", _record)
+    try:
+        sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO104", lines), pm)
+        db_session.flush()
+    finally:
+        event.remove(connection, "before_cursor_execute", _record)
+    assert updates == []
+
+
 def test_converges_into_nexus_row_without_touching_overlay(db_session, project):
     # A Nexus-registered PO already exists for this (company, po_number), with overlay fields set.
     nexus = PurchaseOrder(
