@@ -771,3 +771,47 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     token_resp.raise_for_status()
     data = token_resp.json()
     return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
+
+
+@app.post("/webhooks/clerk/email")
+async def clerk_email_webhook(request: Request):
+    """Clerk's signed `email.created` event: send the sign-in code it carries (#1690).
+
+    No session in front of it: Clerk calls it, and the Svix signature over the raw body is the auth,
+    checked before the body is even parsed (app/services/clerk_email.py). Any non-2xx makes Clerk retry,
+    so a send that fails answers 502 or 503 and a retry of one that worked answers `duplicate`."""
+    from app.services import clerk_email, clerk_email_delivery
+
+    body = bytearray()
+    # Streamed with a cap, so a missing or lying Content-Length cannot make it buffer more.
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > clerk_email.MAX_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"error": "webhook body is too large"})
+        body.extend(chunk)
+    raw = bytes(body)
+
+    secret = clerk_email.signing_secret()
+    if not secret:
+        return JSONResponse(status_code=503, content={"error": "webhook is not configured"})
+    try:
+        message_id, timestamp, signatures = clerk_email.signature_headers(request.headers)
+        clerk_email.verify_signature(raw, message_id, timestamp, signatures, secret)
+    except clerk_email.WebhookAuthError:
+        return JSONResponse(status_code=401, content={"error": "invalid webhook signature"})
+    try:
+        email = clerk_email.parse_event(raw)
+    except clerk_email.WebhookPayloadError:
+        return JSONResponse(status_code=400, content={"error": "invalid webhook payload"})
+    if email is None:
+        return {"status": "ignored"}
+
+    try:
+        # The send and the receipt are blocking (HTTP and the database), so they run off the event loop.
+        status = await asyncio.to_thread(clerk_email_delivery.deliver, email)
+    except clerk_email_delivery.DeliveryError:
+        logger.warning("Clerk email %s not sent", email.email_id, exc_info=True)
+        return JSONResponse(status_code=502, content={"error": "email delivery failed"})
+    except Exception:
+        logger.exception("Clerk email %s: delivery failed before or after the send", email.email_id)
+        return JSONResponse(status_code=503, content={"error": "email delivery failed"})
+    return {"status": status}

@@ -164,6 +164,7 @@ _ROUTE_GATES = frozenset({"require_admin_request"})
 _ROUTE_EXEMPT: dict[str, str] = {
     "health": "public liveness probe; deploy healthchecks call it anonymously, and it reads no database",
     "relay_link": "authenticated by the enrolled relay's Bearer secret on the websocket handshake, not Clerk",
+    "clerk_email_webhook": "Clerk calls it with no session; its Svix signature over the raw body is the auth (#1690)",
 }
 
 
@@ -201,7 +202,7 @@ def test_every_main_py_route_was_collected():
     """Guard the guard, same shape as the root-field count above: if the decorator predicate
     regressed, the parametrized test below would silently shrink instead of failing."""
     collected = {fn.name for fn in _ROUTES}
-    expected = {"health", "relay_link", "reset_data", "get_clerk_sign_in_token"}
+    expected = {"health", "relay_link", "reset_data", "get_clerk_sign_in_token", "clerk_email_webhook"}
     missing = expected - collected
     assert not missing, f"known main.py routes were not collected; the AST walk likely regressed: {sorted(missing)}"
 
