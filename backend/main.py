@@ -23,7 +23,7 @@ from app.config import cors_allow_origins
 from app.database import SessionLocal
 from app.errors import AppError
 from app.models.enums import RelayEventKind
-from app.repositories import relay_repository
+from app.repositories import company_letterhead_repository, relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
 from app.services import (
@@ -313,6 +313,31 @@ def health():
     }
 
 
+# Writes of GP's company names, held so a task is not collected before it finishes.
+_gp_name_writes: set[asyncio.Task] = set()
+
+
+def _write_gp_company_names(names: dict[str, str]) -> None:
+    try:
+        with SessionLocal() as session:
+            company_letterhead_repository.record_gp_names(session, names)
+            session.commit()
+    except Exception:  # noqa: BLE001 - logged; the next hello writes them again
+        logger.warning("relay hello: GP company names not kept", exc_info=True)
+
+
+def _keep_gp_company_names() -> None:
+    """Keep the GP company names this hello reported, so they outlive the connection (#1689): a document
+    printed while the relay is down still names its company. Off the read loop, which has to keep
+    answering job replies while the database write runs."""
+    names = relay_gateway.company_names
+    if not names:
+        return
+    task = asyncio.create_task(asyncio.to_thread(_write_gp_company_names, names))
+    _gp_name_writes.add(task)
+    task.add_done_callback(_gp_name_writes.discard)
+
+
 async def _relay_read_loop(websocket: WebSocket) -> None:
     """Feed each frame the relay sends to relay_gateway: a {"type": "hello"} advertises the relay's build,
     op-set, discovered GP companies and features on connect (issue #315, #654), a {"type": "pong"} answers
@@ -333,6 +358,7 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("company_names"),
                 message.get("companies_error"),
             )
+            _keep_gp_company_names()
             # And the first GP SYNC STATE goes out now rather than up to a push interval later, so the
             # relay window's NEXUS GP TRAFFIC tab has something to show the moment it connects (#679).
             gp_sync_state.wake()
@@ -398,6 +424,7 @@ async def _await_hello(websocket: WebSocket) -> bool:
         message.get("company_names"),
         message.get("companies_error"),
     )
+    _keep_gp_company_names()
     # The same immediate GP SYNC STATE push the read loop's hello branch asks for (#679): an adopted
     # relay's NEXUS GP TRAFFIC tab must not wait out a push interval that a re-enrolled one does not.
     gp_sync_state.wake()

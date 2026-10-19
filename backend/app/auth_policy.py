@@ -169,6 +169,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Lean company-scale receiving picker list (gp-owned-po mirror).
     "openPosSummary": SIGNED_IN,
     "poDocumentDownloadUrl": SIGNED_IN,
+    "companyLetterhead": SIGNED_IN,
     "poDocumentSettings": SIGNED_IN,
     "poStatistics": SIGNED_IN,
     "priorOrderAsValues": SIGNED_IN,
@@ -195,6 +196,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updatePoNotes": SIGNED_IN,
     # The PO module's own settings - what the generated PO document says and looks like. PO MANAGER
     # owns them (#729), with the tenant owners beside them as an any-of.
+    "setCompanyAddress": PO_MANAGERS,
     "updatePoDocumentSettings": PO_MANAGERS,
     "updatePoLineItemOrderAs": SIGNED_IN,
     "updatePoLineItemUnitCost": SIGNED_IN,
