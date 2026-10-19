@@ -2,7 +2,8 @@
 
 ucsh-mailer is the org's mail service: one HTTPS call, sent on through Microsoft 365. It delivers
 inside the company and nowhere else, which is the org's rule for any mail to a ucsh.com address. A
-vendor is outside, so the PO email (`app/services/email.py`, SMTP) is not this.
+vendor is outside, so the PO email (`app/services/email.py`, SMTP) is not this. Clerk's sign-in codes
+come through here too (#1690, `app/services/clerk_email_delivery.py`).
 
 Two settings on the backend service: `MAILER_URL`, and `MAILER_KEY`, the key the mailer issued to the
 nexus product. Unconfigured means disabled.
@@ -25,7 +26,19 @@ _RETRY_DELAY_SECONDS = 1.0
 
 
 class MailerError(Exception):
-    """The mailer refused the message or could not be reached."""
+    """The mailer refused the message or could not be reached.
+
+    `code` is the mailer's own error code (`recipient_not_internal`, `hve_unavailable`, ...) when it
+    answered with one, and None when it could not be reached at all."""
+
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+# The mailer's refusal of an address outside the company. The caller decides what that means - the
+# sign-in code delivery sends it another way - so it is not logged as a failed send.
+RECIPIENT_NOT_INTERNAL = "recipient_not_internal"
 
 
 @dataclass(frozen=True)
@@ -46,8 +59,8 @@ def is_configured() -> bool:
     return get_config() is not None
 
 
-def send(*, to: list[str], subject: str, text: str, html: str | None = None, idempotency_key: str) -> None:
-    """Send one message. Raises MailerError when it is not sent.
+def send(*, to: list[str], subject: str, text: str | None, html: str | None = None, idempotency_key: str) -> None:
+    """Send one message, with `text`, `html` or both. Raises MailerError when it is not sent.
 
     `idempotency_key` makes a retry safe: within ten minutes the mailer answers the same key and body
     with the first result and sends nothing new, so the retries below can never mail twice.
@@ -55,29 +68,34 @@ def send(*, to: list[str], subject: str, text: str, html: str | None = None, ide
     config = get_config()
     if config is None:
         raise MailerError("Email is not configured on this deployment")
-    body: dict = {"to": to, "subject": subject, "text": text}
+    body: dict = {"to": to, "subject": subject}
+    if text:
+        body["text"] = text
     if html:
         body["html"] = html
     headers = {"Authorization": f"Bearer {config.key}", "Idempotency-Key": idempotency_key}
 
     last = "no attempt made"
+    code: str | None = None
     for attempt in range(1, _ATTEMPTS + 1):
         try:
             resp = httpx.post(f"{config.url}/v1/send", json=body, headers=headers, timeout=30.0)
         except httpx.HTTPError as exc:
             last = f"the mailer could not be reached: {exc}"
+            code = None
         else:
             if resp.status_code < 400:
                 return
             try:
-                error = resp.json().get("error") or resp.text
-            except ValueError:
-                error = resp.text
-            last = f"the mailer refused it: {resp.status_code} {error}"
+                code = resp.json().get("error") or None
+            except (ValueError, AttributeError):
+                code = None
+            last = f"the mailer refused it: {resp.status_code} {code or resp.text}"
             if resp.status_code != _RETRYABLE_STATUS:
                 break
         if attempt < _ATTEMPTS:
             time.sleep(_RETRY_DELAY_SECONDS * attempt)
-    # The recipients are logged, the body is not: a report carries what a user typed.
-    logger.warning("Mail to %s not sent: %s", ", ".join(to), last)
-    raise MailerError(last)
+    if code != RECIPIENT_NOT_INTERNAL:
+        # The recipients are logged, the body is not: a report carries what a user typed.
+        logger.warning("Mail to %s not sent: %s", ", ".join(to), last)
+    raise MailerError(last, code=code)
