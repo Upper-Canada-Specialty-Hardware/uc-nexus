@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Box, Button, Chip, IconButton, LinearProgress, Stack, Tooltip, Typography } from '@mui/material';
 import { Trash2, X } from 'lucide-react';
 import {
@@ -13,6 +14,11 @@ import { plural } from '../../../utils/plural';
 import { AnimatePresence } from 'motion/react';
 import { PresenceItem } from '../../../motion';
 import QuantityField from '../../../components/QuantityField';
+import ArrangeControls from './ArrangeControls';
+import { arrange, type ArrangeKey } from './arrange';
+
+// #1733: a cart this long is worth filtering and sorting; a short one is read at a glance.
+const ARRANGE_FROM = 5;
 
 interface Props {
   cart: CartLine[];
@@ -53,9 +59,14 @@ export default function RequestWorkspaceCartRail({
   onClose,
   closeButtonRef,
 }: Props) {
-  const groups = cartGroups(cart, headroom);
+  const [filter, setFilter] = useState('');
+  const [sort, setSort] = useState<ArrangeKey>('product');
+  const allGroups = cartGroups(cart, headroom);
+  const arranging = allGroups.length >= ARRANGE_FROM;
+  // The counts and the over-commit check read every group; only what is listed is filtered.
+  const groups = arranging ? arrange(allGroups, filter, sort, (g) => g.total) : allGroups;
   const units = totalUnits(cart);
-  const anyOver = groups.some((g) => g.overCommitted);
+  const anyOver = allGroups.some((g) => g.overCommitted);
   const canSubmit = cart.length > 0 && !submitting;
 
   return (
@@ -73,7 +84,7 @@ export default function RequestWorkspaceCartRail({
           <Typography variant="caption" color="text.secondary" sx={{ ...tabularSx, ml: 'auto' }}>
             {cart.length === 0
               ? 'empty'
-              : `${plural(groups.length, 'product')} · ${plural(units, 'unit')}`}
+              : `${plural(allGroups.length, 'product')} · ${plural(units, 'unit')}`}
           </Typography>
           {onClose && (
             <IconButton
@@ -89,8 +100,26 @@ export default function RequestWorkspaceCartRail({
         </Stack>
       </Box>
 
+      {arranging && (
+        <Box sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <ArrangeControls
+            filter={filter}
+            onFilterChange={setFilter}
+            sort={sort}
+            onSortChange={setSort}
+            what="the request cart"
+          />
+        </Box>
+      )}
+
       <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-        {groups.length === 0 ? (
+        {arranging && groups.length === 0 ? (
+          <Box sx={{ p: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+              Nothing in the cart matches &ldquo;{filter}&rdquo;.
+            </Typography>
+          </Box>
+        ) : groups.length === 0 ? (
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" color="text.secondary">
               {mode === 'edit'

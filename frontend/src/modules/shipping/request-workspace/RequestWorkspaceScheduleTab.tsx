@@ -43,6 +43,8 @@ import FitTable, { type FitTableColumn } from '../../../components/FitTable';
 import LoadError from '../../../components/LoadError';
 import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
 import QuantityField from '../../../components/QuantityField';
+import ArrangeControls from './ArrangeControls';
+import { arrange, type ArrangeKey } from './arrange';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
  *  counts, none of the HardwareItem detail the wizard's full schedule read materializes. */
@@ -212,6 +214,9 @@ export default function RequestWorkspaceScheduleTab({
   // Whether the nothing-to-add products are shown. Collapsed by default: the dead rows (no
   // suggestion, or no stock behind the suggestion) are the noise the composer drowns in.
   const [showDeadRows, setShowDeadRows] = useState(false);
+  // #1733: filter and sort over both lanes at once, as the inventory tab beside them does.
+  const [filter, setFilter] = useState('');
+  const [sort, setSort] = useState<ArrangeKey>('product');
   const navigate = useNavigate();
   const location = useLocation();
   // #1290: every per-row cart lookup below reads this, not a fresh scan of the cart.
@@ -452,8 +457,20 @@ export default function RequestWorkspaceScheduleTab({
           </Alert>
         ) : (
           <Stack spacing={2}>
+            <ArrangeControls
+              filter={filter}
+              onFilterChange={setFilter}
+              sort={sort}
+              onSortChange={setSort}
+              what="the schedule lines"
+            />
             {(() => {
-              const shownAggs = showDeadRows ? aggregates : visibleAggs;
+              const shownAggs = arrange(
+                showDeadRows ? aggregates : visibleAggs,
+                filter,
+                sort,
+                (agg) => agg.suggestedQuantity,
+              );
               const shownSite = shownAggs.filter((agg) => laneOf(agg) === 'site');
               const shownShop = shownAggs.filter((agg) => laneOf(agg) === 'shop');
               const allSite = aggregates.filter((agg) => laneOf(agg) === 'site');
