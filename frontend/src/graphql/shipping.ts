@@ -341,6 +341,24 @@ export const GET_JOINABLE_LOADS = gql`
   }
 `;
 
+// Where each of a project's products sits on the racks (#1730), for the request composer, the accept
+// queue and the return dialog.
+export const GET_PROJECT_RACK_LOCATIONS = gql`
+  query GetProjectRackLocations($projectId: ID!) {
+    projectRackLocations(projectId: $projectId) {
+      hardwareCategory
+      productCode
+      locations {
+        warehouseCode
+        aisle
+        row
+        bay
+        quantity
+      }
+    }
+  }
+`;
+
 // The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
 // selection as every other read, so marking one picked up updates it in place.
 export const GET_MY_DELIVERIES = gql`

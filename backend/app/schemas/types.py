@@ -1292,6 +1292,26 @@ class PackingSlip:
 
 
 @strawberry.type
+class RackLocation:
+    """One rack holding some of a product (#1730), with how many usable units are on it."""
+
+    warehouse_code: str
+    aisle: str
+    row: str | None
+    bay: str | None
+    quantity: int
+
+
+@strawberry.type
+class ProductRackLocations:
+    """Where one of a project's products sits on the racks (#1730)."""
+
+    hardware_category: str
+    product_code: str
+    locations: list[RackLocation]
+
+
+@strawberry.type
 class ShipmentDriver:
     """An account that can drive a shipment (#1726)."""
 

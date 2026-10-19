@@ -524,6 +524,7 @@ function Composer({
           loading={availabilityLoading}
           error={availabilityRows.length === 0 && !!availabilityError}
           scheduledByProduct={scheduledByProduct}
+          projectId={project.id}
         />
       </Stack>
 

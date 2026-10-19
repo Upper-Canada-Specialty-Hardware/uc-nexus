@@ -31,6 +31,7 @@ import {
 import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import FitTable, { type FitTableColumn } from '../../../components/FitTable';
+import { rackLabel, racksCaption, useProjectRacks } from '../racks';
 import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
 import QuantityField from '../../../components/QuantityField';
 
@@ -44,6 +45,8 @@ interface Props {
   /** Per productKey, the selected openings that still owe it (#610). A loose row whose product is on
    *  schedule for a picked opening shows a nudge toward the tagged path above. */
   scheduledByProduct: Map<string, string[]>;
+  /** #1730: the project, for where each product sits on the racks. */
+  projectId: string;
 }
 
 type SortKey = 'product' | 'free';
@@ -94,7 +97,9 @@ export default function RequestWorkspaceInventoryTab({
   loading,
   error,
   scheduledByProduct,
+  projectId,
 }: Props) {
+  const racksOf = useProjectRacks(projectId);
   const [search, setSearch] = useState('');
   // #1290: the cart indexed once per render, for the per-row lookups below.
   const cartIndex = useMemo(() => indexCart(cart), [cart]);
@@ -276,6 +281,17 @@ export default function RequestWorkspaceInventoryTab({
                                 </Box>
                                 {classificationChip(row.classification)}
                               </Stack>
+                              {/* #1730: the bins, under the product rather than as a column of their own. */}
+                              {racksOf(row.hardwareCategory, row.productCode).length > 0 && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ display: 'block', ...monoSx }}
+                                  title={racksOf(row.hardwareCategory, row.productCode).map(rackLabel).join(', ')}
+                                >
+                                  {racksCaption(racksOf(row.hardwareCategory, row.productCode))}
+                                </Typography>
+                              )}
                               {onSchedule && onSchedule.length > 0 && (
                                 <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
                                   on schedule for {formatOpenings(onSchedule)} - tag it above

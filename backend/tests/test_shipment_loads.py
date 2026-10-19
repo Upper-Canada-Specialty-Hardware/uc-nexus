@@ -228,3 +228,63 @@ def test_a_driver_sees_their_own_shipments_still_on_the_road_next_pickup_first(d
 
     mine = shipping_repository.list_driver_shipments(db_session, "u_dan", company="TUBC")
     assert [s.id for s in mine] == [sooner.id, later.id]
+
+
+# --- rack locations (#1730) ---------------------------------------------------------------------
+
+
+def test_a_projects_racks_are_listed_per_product_net_of_condemned_units(db_session):
+    from datetime import datetime
+
+    from app.models.inventory import InventoryLocation
+    from app.models.stock_item import StockItem
+    from app.models.warehouse import Warehouse
+    from app.repositories.rack_locations import project_rack_locations
+
+    project = _project(db_session)
+    wh = Warehouse(id=uuid.uuid4(), name="Main", code=f"M{uuid.uuid4().hex[:4]}", company="TUBC")
+    db_session.add(wh)
+    db_session.flush()
+
+    def row(aisle, qty, deficient=0, code="HG-100"):
+        stock = StockItem(
+            id=uuid.uuid4(),
+            warehouse_id=wh.id,
+            hardware_category="HINGE",
+            product_code=code,
+            quantity=0,
+            received_at=datetime(2026, 10, 1),
+        )
+        db_session.add(stock)
+        db_session.flush()
+        db_session.add(
+            InventoryLocation(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                stock_item_id=stock.id,
+                warehouse_id=wh.id,
+                hardware_category="HINGE",
+                product_code=code,
+                quantity=qty,
+                deficient_quantity=deficient,
+                aisle=aisle,
+                row="1" if aisle else None,
+                bay="2" if aisle else None,
+                received_at=datetime(2026, 10, 1),
+            )
+        )
+
+    row("A", 4)
+    row("A", 2)
+    row("B", 3, deficient=3)
+    row(None, 9)
+    db_session.flush()
+
+    found = project_rack_locations(db_session, project.id)
+    assert found == [
+        {
+            "hardware_category": "HINGE",
+            "product_code": "HG-100",
+            "locations": [{"warehouse_code": wh.code, "aisle": "A", "row": "1", "bay": "2", "quantity": 6}],
+        }
+    ]

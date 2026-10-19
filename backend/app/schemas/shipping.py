@@ -22,6 +22,7 @@ from app.models.project import Project as ProjectModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.repositories import (
     drivers,
+    rack_locations,
     request_composer,
     shipment_containers,
     shipment_loads,
@@ -57,6 +58,8 @@ from .inputs import (
 )
 from .types import (
     PackingSlip,
+    ProductRackLocations,
+    RackLocation,
     RequestCoverageLine,
     ReturnableLine,
     ShipmentContainer,
@@ -217,6 +220,22 @@ class ShippingQueries:
             if project is None:
                 raise NotFoundError(f"Project {project_id} not found")
             return [shipment_load_to_type(load) for load in shipment_loads.joinable_loads(session, project.company)]
+
+    @strawberry.field
+    def project_rack_locations(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ProductRackLocations]:
+        """Where each of a project's products sits on the racks (#1730), for raising, accepting and returning
+        shipping requests with the bin in front of the person rather than in a spreadsheet."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            return [
+                ProductRackLocations(
+                    hardware_category=p["hardware_category"],
+                    product_code=p["product_code"],
+                    locations=[RackLocation(**loc) for loc in p["locations"]],
+                )
+                for p in rack_locations.project_rack_locations(session, pid)
+            ]
 
     @strawberry.field
     def my_deliveries(self, info: strawberry.Info) -> list[PackingSlip]:
