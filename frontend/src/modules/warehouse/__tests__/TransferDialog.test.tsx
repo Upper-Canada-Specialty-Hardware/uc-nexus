@@ -349,6 +349,7 @@ describe('isAtDestination matches the server rule', () => {
     type: 'STOCK_ITEM',
     id: 'x',
     productCode: 'P',
+    quantity: 1,
     available: 1,
     warehouseId: 'wh-1',
     aisle: 'A9',
