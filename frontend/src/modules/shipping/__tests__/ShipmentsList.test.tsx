@@ -64,6 +64,8 @@ const HEADER = {
   pickedUpBy: null,
   deliveredAt: null,
   deliveredBy: null,
+  // The truck trip it rides (#1720). Every slip read carries it now, so the fixture does too.
+  load: { __typename: 'ShipmentLoadRef', id: 'load-1', loadNumber: '23093-07202026', shipDate: '2026-07-20' },
 };
 
 function slip(overrides: Record<string, unknown> = {}) {

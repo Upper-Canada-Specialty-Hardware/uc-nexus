@@ -256,9 +256,48 @@ const SLIP_CONTAINER_FIELDS = `
     }
   }`;
 
+// The truck trip the slip rides (#1720), for grouping and labelling. Its other slips are not read here;
+// the load picker asks `joinableLoads` for them.
+const SLIP_LOAD_FIELDS = `
+  load {
+    id
+    loadNumber
+    shipDate
+  }`;
+
 const PACKING_SLIP_FIELDS =
   [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
-  SLIP_CONTAINER_FIELDS;
+  SLIP_CONTAINER_FIELDS +
+  SLIP_LOAD_FIELDS;
+
+// The loads a shipment of this project can join (#1720): its company's still on the dock, soonest
+// first. Read fresh each time a picker opens - a load somebody else just picked up must not be offered.
+export const GET_JOINABLE_LOADS = gql`
+  query GetJoinableLoads($projectId: ID!) {
+    joinableLoads(projectId: $projectId) {
+      id
+      loadNumber
+      shipDate
+      leadProjectNumber
+      slips {
+        id
+        packingSlipNumber
+        projectNumber
+        projectDescription
+        status
+      }
+    }
+  }
+`;
+
+// Put a scheduled shipment on another load, or on a new one when loadId is null (#1723).
+export const MOVE_SHIPMENT_TO_LOAD = gql`
+  mutation MoveShipmentToLoad($id: ID!, $loadId: ID) {
+    moveShipmentToLoad(id: $id, loadId: $loadId) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
 
 // One page of the Shipments list (#1107): paged and searched on the server, with the count of
 // everything the filter matches so the list can say how many more there are.

@@ -328,6 +328,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # role's module owns the callers. The lifecycle mutations move nothing - they record where the
     # truck got to - and the edit is refused on state rather than on role.
     "updateShipmentDetails": SIGNED_IN,
+    # Which truck a scheduled shipment rides (#1723) is part of the same paperwork, so the same callers.
+    "moveShipmentToLoad": SIGNED_IN,
     "markShipmentPickedUp": SIGNED_IN,
     "markShipmentDelivered": SIGNED_IN,
     # Calling off a scheduled shipment nothing can be returned from (#1176). Same callers as the

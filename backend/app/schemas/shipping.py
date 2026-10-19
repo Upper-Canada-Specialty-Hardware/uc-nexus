@@ -670,6 +670,24 @@ class ShippingMutations:
             return packing_slip_to_type(refreshed)
 
     @strawberry.mutation
+    def move_shipment_to_load(
+        self, info: strawberry.Info, id: strawberry.ID, load_id: strawberry.ID | None = None
+    ) -> PackingSlip:
+        """Move a scheduled shipment onto another load, or onto a new one when `loadId` is null (#1723).
+
+        For the truck that changed after the paper was written: two projects that turned out to share
+        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            ps = shipping_repository.lock_packing_slip(session, uuid.UUID(str(id)))
+            shipment_loads.move_slip_to_load(session, ps, uuid.UUID(str(load_id)) if load_id else None, actor)
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
     def mark_shipment_picked_up(self, info: strawberry.Info, id: strawberry.ID) -> PackingSlip:
         """The carrier has the load: SCHEDULED -> PICKED_UP (#447).
 

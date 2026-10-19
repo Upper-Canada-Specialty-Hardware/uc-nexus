@@ -121,3 +121,35 @@ def join_load(session: Session, load_id: uuid.UUID, project: Project) -> Shipmen
             f"Load {load.load_number} has already left the dock, so nothing more can join it. {REFRESH_HINT}"
         )
     return load
+
+
+def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | None, moved_by: str) -> ShipmentLoad:
+    """Put a scheduled slip on another load, or on a new one of its own when `load_id` is None (#1723).
+
+    The caller holds the slip locked. Only a scheduled slip moves: once it is picked up it went out on
+    the truck it was on. A load the move leaves with no slips at all is deleted - it was only ever that
+    slip's name, and a load nobody rides is not a truck. One that still carries a cancelled slip stays,
+    as the record of it.
+    """
+    if slip.status != ShipmentStatus.SCHEDULED:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {slip.packing_slip_number} has left the dock, so it stays on its load. {REFRESH_HINT}"
+        )
+    if load_id is not None and load_id == slip.load_id:
+        raise ValidationError("The shipment is already on that load.", field="load_id")
+    project = session.get(Project, slip.project_id)
+    old_load_id = slip.load_id
+    if load_id is None:
+        load = start_load(session, project, slip.pickup_date, moved_by)
+    else:
+        load = join_load(session, load_id, project)
+    slip.load_id = load.id
+    session.flush()
+    if old_load_id is not None:
+        left = session.scalar(select(func.count(PackingSlip.id)).where(PackingSlip.load_id == old_load_id))
+        if not left:
+            old = session.get(ShipmentLoad, old_load_id)
+            if old is not None:
+                session.delete(old)
+                session.flush()
+    return load

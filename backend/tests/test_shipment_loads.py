@@ -13,6 +13,7 @@ from app.errors import InvalidStateTransitionError, ValidationError
 from app.models.enums import PullRequestSource, PullRequestStatus, ShipmentStatus
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
+from app.models.shipment_load import ShipmentLoad
 from app.repositories import shipment_containers as containers
 from app.repositories import shipment_loads, shipping_repository
 from app.services.gp_window import local_today
@@ -146,3 +147,45 @@ def test_another_companys_load_is_refused(db_session):
 def test_a_demo_load_is_marked_so_it_never_takes_a_real_number():
     assert shipment_loads.load_number_base("22713", date(2026, 10, 15), "DEMO") == "D-22713-10152026"
     assert shipment_loads.load_number_base("22713", date(2026, 10, 15), "UBC") == "22713-10152026"
+
+
+# --- moving a slip between loads (#1723) --------------------------------------------------------
+
+
+def test_a_slip_moves_onto_another_load_and_its_empty_load_goes(db_session):
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead)
+    second = _ship(db_session, other)
+    old_load_id = second.load_id
+
+    shipment_loads.move_slip_to_load(db_session, second, first.load_id, "tester")
+    assert second.load_id == first.load_id
+    assert db_session.get(ShipmentLoad, old_load_id) is None
+
+
+def test_a_slip_moves_off_a_shared_load_onto_a_new_one(db_session):
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead)
+    second = _ship(db_session, other, load_id=first.load_id)
+
+    load = shipment_loads.move_slip_to_load(db_session, second, None, "tester")
+    assert load.id != first.load_id
+    assert load.lead_project_id == other.id
+    assert db_session.get(ShipmentLoad, first.load_id) is not None
+
+
+def test_a_picked_up_slip_stays_on_its_load(db_session):
+    project = _project(db_session)
+    first = _ship(db_session, project)
+    shipping_repository.mark_shipment_picked_up(db_session, first.id, "driver")
+    with pytest.raises(InvalidStateTransitionError, match="stays on its load"):
+        shipment_loads.move_slip_to_load(db_session, first, None, "tester")
+
+
+def test_moving_onto_its_own_load_is_refused(db_session):
+    project = _project(db_session)
+    first = _ship(db_session, project)
+    with pytest.raises(ValidationError, match="already on that load"):
+        shipment_loads.move_slip_to_load(db_session, first, first.load_id, "tester")

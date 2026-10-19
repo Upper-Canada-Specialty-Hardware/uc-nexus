@@ -414,6 +414,10 @@ def _locked_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> Packin
     return locked[0]
 
 
+# Public for the load move (#1723), which locks the slip the same way before it changes its load.
+lock_packing_slip = _locked_packing_slip
+
+
 def update_shipment_details(
     session: Session,
     packing_slip_id: uuid.UUID,

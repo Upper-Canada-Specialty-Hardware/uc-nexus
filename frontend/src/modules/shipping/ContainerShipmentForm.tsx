@@ -20,6 +20,8 @@ import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../grap
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import DeliveryRequestFields from './DeliveryRequestFields';
+import LoadPicker from './LoadPicker';
+import { NEW_LOAD } from './loads';
 import { useShipmentMethods } from './useShipmentMethods';
 import {
   deliveryDetailsInput,
@@ -63,6 +65,7 @@ export default function ContainerShipmentForm({
   const { displayName } = useIdentity();
   const shipmentMethods = useShipmentMethods(!open);
   const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
+  const [loadId, setLoadId] = useState<string>(NEW_LOAD);
   const [error, setError] = useState<string | null>(null);
 
   const totalUnits = useMemo(
@@ -123,6 +126,8 @@ export default function ContainerShipmentForm({
           // #1583: the lines the manifest above shows. A container loaded further since is refused,
           // not shipped with lines nobody checked.
           expectedContents: containers.map((c) => ({ containerId: c.id, itemIds: c.items.map((i) => i.id) })),
+          // #1720: omitted, the server starts a new load for this shipment.
+          loadId: loadId === NEW_LOAD ? null : loadId,
           ...deliveryDetailsInput(details),
         },
       },
@@ -172,6 +177,8 @@ export default function ContainerShipmentForm({
               ))}
             </Stack>
           </Box>
+
+          {open && <LoadPicker projectId={projectId} value={loadId} onChange={setLoadId} disabled={loading} />}
 
           <DeliveryRequestFields
             details={details}

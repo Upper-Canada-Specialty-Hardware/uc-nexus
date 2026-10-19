@@ -105,7 +105,16 @@ export type PackingSlipHeader = {
   pickedUpBy: string | null;
   deliveredAt: string | null;
   deliveredBy: string | null;
+  /** The truck trip it rides (#1720). Null only on a slip written outside the confirm path. */
+  load?: SlipLoad | null;
 } & DeliveryRequestValues;
+
+/** A load as a slip names it (#1720). `shipDate` is a calendar day, YYYY-MM-DD. */
+export interface SlipLoad {
+  id: string;
+  loadNumber: string;
+  shipDate: string;
+}
 
 export type PackingSlip = PackingSlipHeader & {
   items: PackingSlipItem[];
