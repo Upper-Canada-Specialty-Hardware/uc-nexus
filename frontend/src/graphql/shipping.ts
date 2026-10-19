@@ -1,5 +1,5 @@
 import { gql } from '@apollo/client/core';
-import { DELIVERY_REQUEST_FIELDS } from '../types/deliveryRequestFields';
+import { SITE_FORM_FIELDS } from '../types/shipmentSiteFormFields';
 
 // The Shipping landing's pipeline gauges (#589): one rollup for the whole home page.
 export const GET_SHIPPING_STATS = gql`
@@ -220,8 +220,8 @@ export const GET_REQUEST_COVERAGE = gql`
   }
 `;
 
-// What shipped, and the journey it went on. The Delivery Request header sits between them, and is
-// spliced in from DELIVERY_REQUEST_FIELDS rather than listed again (#453): a header field missing
+// What shipped, and the journey it went on. The Shipment Site Form header sits between them, and is
+// spliced in from SITE_FORM_FIELDS rather than listed again (#453): a header field missing
 // from this selection saves fine, reads back undefined and prints blank on the form, which is a
 // failure no build or test catches.
 const SLIP_IDENTITY_FIELDS = [
@@ -246,12 +246,12 @@ const SLIP_LIFECYCLE_FIELDS = [
   'driverName',
 ] as const;
 
-// Every field of the Delivery Request a shipment carries (#447), in one place. The confirm, the
+// Every field of the Shipment Site Form a shipment carries (#447), in one place. The confirm, the
 // list read and the three lifecycle mutations all return a PackingSlip, and they have to return the
 // SAME PackingSlip: Apollo normalises on `id`, so a mutation that answered with a narrower selection
 // than the list reads would leave the row it just changed half-stale in the cache.
 // How the load was physically arranged (#451), spliced in for the same reason the header is: a
-// document that read a slip without its containers would print a Delivery Request that silently
+// document that read a slip without its containers would print a Shipment Site Form that silently
 // lost the stacking order, and nothing would fail. Items come back in load order from the server.
 const SLIP_CONTAINER_FIELDS = `
   containers {
@@ -270,7 +270,7 @@ const SLIP_CONTAINER_FIELDS = `
   }`;
 
 // The truck trip the slip rides (#1720), with every slip on it (#1724): the list groups a load's slips
-// under it and the Delivery Request names the others as riding along.
+// under it and the Shipment Site Form names the others as riding along.
 const SLIP_LOAD_FIELDS = `
   load {
     id
@@ -286,7 +286,7 @@ const SLIP_LOAD_FIELDS = `
   }`;
 
 const PACKING_SLIP_FIELDS =
-  [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
+  [...SLIP_IDENTITY_FIELDS, ...SITE_FORM_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
   SLIP_CONTAINER_FIELDS +
   SLIP_LOAD_FIELDS +
   `
@@ -458,7 +458,7 @@ export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
   }
 `;
 
-// The Delivery Request is editable only while the shipment is still SCHEDULED - once it has been
+// The Shipment Site Form is editable only while the shipment is still SCHEDULED - once it has been
 // picked up, the paper is out of the building and the record has to match it. The backend enforces
 // that; the list hides the button.
 export const UPDATE_SHIPMENT_DETAILS = gql`

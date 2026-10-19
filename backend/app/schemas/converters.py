@@ -1035,7 +1035,7 @@ def container_to_type(c, *, include_photos: bool = True) -> ShipmentContainer:
 
     Items are sorted by `position` here rather than left in whatever order the relationship loaded
     them: position 0 is what went on first, which on a skid is the bottom of the stack, and a
-    Delivery Request that printed the stack in a different order every time would be worse than one
+    Shipment Site Form that printed the stack in a different order every time would be worse than one
     that printed no order at all.
     """
     return ShipmentContainer(
@@ -1067,18 +1067,18 @@ def container_to_type(c, *, include_photos: bool = True) -> ShipmentContainer:
 
 
 def packing_slip_to_type(ps) -> PackingSlip:
-    """The shipment and its whole Delivery Request header (#447).
+    """The shipment and its whole Shipment Site Form header (#447).
 
     Shared by the list read, the confirm and the three lifecycle mutations, which is deliberate: they
     all answer with the same PackingSlip, and Apollo normalises on `id`, so a mutation returning a
     narrower shape than the list would leave the row it just changed half-stale in the cache.
 
-    The header is copied off `DELIVERY_REQUEST_FIELDS` rather than named field by field (#453). Named
+    The header is copied off `SITE_FORM_FIELDS` rather than named field by field (#453). Named
     here, a twenty-first field that reached the column and the input but not this function would read
     back as null on every query while the write looked like it had worked - and nothing about that
     fails a build.
     """
-    header = {field: getattr(ps, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+    header = {field: getattr(ps, field) for field in shipping_repository.SITE_FORM_FIELDS}
     # The one header column that is not already a GraphQL scalar: weight_lbs is Numeric(10, 2), which
     # comes back as Decimal, and Strawberry's Float will not take one.
     header["weight_lbs"] = float(header["weight_lbs"]) if header["weight_lbs"] is not None else None

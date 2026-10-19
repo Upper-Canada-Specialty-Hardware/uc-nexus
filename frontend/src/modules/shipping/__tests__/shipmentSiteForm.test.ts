@@ -1,7 +1,7 @@
 import {
   buildMaterialLines,
-  deliveryDetailsInput,
-  EMPTY_DELIVERY_DETAILS,
+  siteFormInput,
+  EMPTY_SITE_FORM,
   isWeightInvalid,
   primaryWarehouse,
   returnableUnits,
@@ -12,8 +12,8 @@ import {
   warehouseAddressLines,
   type PackingSlipItem,
   type SlipContainer,
-} from '../deliveryRequest';
-import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
+} from '../shipmentSiteForm';
+import { SITE_FORM_FIELDS } from '../../../types/shipmentSiteFormFields';
 
 describe('buildMaterialLines', () => {
   it('counts hardware in units, singular at one, and names the opening it was pulled for', () => {
@@ -105,7 +105,7 @@ describe('buildMaterialLines', () => {
   });
 });
 
-describe('containers on the Delivery Request', () => {
+describe('containers on the Shipment Site Form', () => {
   const hinges = {
     id: 'ci-1',
     openingNumber: '0019-EX',
@@ -205,19 +205,19 @@ describe('slipOpeningSummary', () => {
   });
 });
 
-describe('deliveryDetailsInput', () => {
+describe('siteFormInput', () => {
   it('sends every field, blanks as null, so a cleared field clears', () => {
-    const input = deliveryDetailsInput(EMPTY_DELIVERY_DETAILS);
+    const input = siteFormInput(EMPTY_SITE_FORM);
     // Counted off the shared list rather than hard-coded: the point of #453 is that adding a header
     // field reaches every derived shape at once, and a literal here would make each addition look
     // like a regression instead.
-    expect(Object.keys(input).sort()).toEqual([...DELIVERY_REQUEST_FIELDS].sort());
+    expect(Object.keys(input).sort()).toEqual([...SITE_FORM_FIELDS].sort());
     expect(Object.values(input).every((v) => v === null)).toBe(true);
   });
 
   it('trims text and takes the weight as a number', () => {
-    const input = deliveryDetailsInput({
-      ...EMPTY_DELIVERY_DETAILS,
+    const input = siteFormInput({
+      ...EMPTY_SITE_FORM,
       carrierTagBol: '  BOL-8891  ',
       weightLbs: ' 420 ',
       gateNumber: '   ',
@@ -238,7 +238,7 @@ describe('isWeightInvalid', () => {
 
   it('refuses a weight the column cannot hold', () => {
     // weight_lbs is Numeric(10, 2), and the backend refuses the same bounds - catching it here beats
-    // rejecting a Delivery Request that has already been filled in.
+    // rejecting a Shipment Site Form that has already been filled in.
     expect(isWeightInvalid('99999999.99')).toBe(false);
     expect(isWeightInvalid('100000000')).toBe(true);
     expect(isWeightInvalid('-1')).toBe(true);

@@ -302,7 +302,7 @@ def test_receiving_history_is_a_plain_signed_in_read(monkeypatch, signed_in):
 
 
 _SLIP_ID = uuid.uuid4()
-_DELIVERY_REQUEST_MUTATIONS = {
+_SITE_FORM_MUTATIONS = {
     "updateShipmentDetails": f'updateShipmentDetails(input: {{id: "{_SLIP_ID}"}}) {{ id }}',
     "markShipmentPickedUp": f'markShipmentPickedUp(id: "{_SLIP_ID}") {{ id }}',
     "markShipmentDelivered": f'markShipmentDelivered(id: "{_SLIP_ID}") {{ id }}',
@@ -310,8 +310,8 @@ _DELIVERY_REQUEST_MUTATIONS = {
 }
 
 
-@pytest.mark.parametrize("field", sorted(_DELIVERY_REQUEST_MUTATIONS), ids=sorted(_DELIVERY_REQUEST_MUTATIONS))
-def test_the_delivery_request_mutations_are_plain_signed_in_writes(field, monkeypatch, signed_in):
+@pytest.mark.parametrize("field", sorted(_SITE_FORM_MUTATIONS), ids=sorted(_SITE_FORM_MUTATIONS))
+def test_the_site_form_mutations_are_plain_signed_in_writes(field, monkeypatch, signed_in):
     """#447's three new mutations, in both directions through the real schema.
 
     The parametrized pins prove they refuse an anonymous caller because they are in
@@ -325,7 +325,7 @@ def test_the_delivery_request_mutations_are_plain_signed_in_writes(field, monkey
     # first thing the edit touches, so patch both - either one firing means the body started.
     _explodes(monkeypatch, shipping_module, "current_user")
     _explodes(monkeypatch, shipping_module, "SessionLocal")
-    operation = f"mutation {{ {_DELIVERY_REQUEST_MUTATIONS[field]} }}"
+    operation = f"mutation {{ {_SITE_FORM_MUTATIONS[field]} }}"
 
     refused = _execute(operation)
     admitted = _execute(operation, token=signed_in)

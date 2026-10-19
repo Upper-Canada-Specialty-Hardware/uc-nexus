@@ -1,10 +1,10 @@
 import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
 import { COMPANY_LOGO_PDF } from '../../assets/brand/companyLogoPdf';
-import type { DeliveryRequestValues } from './deliveryRequest';
+import type { ShipmentSiteFormValues } from './shipmentSiteForm';
 import { parseServerDay } from '../../utils/serverDate';
 
 /**
- * The Delivery Request (#447), replicating the paper form UC Hardware has always shipped against.
+ * The Shipment Site Form (#447), replicating the paper form UC Hardware has always shipped against.
  *
  * It is a form first and a report second. Every field prints on a ruled line whether or not Nexus
  * knows the answer, because the copy that travels with the driver gets written on: a blank GATE
@@ -93,7 +93,7 @@ const styles = StyleSheet.create({
   signOffLabel: { width: 74, fontFamily: 'Helvetica-Bold', fontSize: 7, paddingBottom: 2 },
 });
 
-const QUESTIONS: { field: keyof DeliveryRequestValues; text: string }[] = [
+const QUESTIONS: { field: keyof ShipmentSiteFormValues; text: string }[] = [
   { field: 'deliveryAddress', text: '1) Delivery address:' },
   { field: 'specialInstructions', text: '2) Special instructions if any :' },
   { field: 'gateNumber', text: '3) Gate Number if applicable :' },
@@ -162,7 +162,7 @@ function StackedField({
   );
 }
 
-export interface DeliveryRequestDocumentProps {
+export interface ShipmentSiteFormDocumentProps {
   packingSlipNumber: string;
   projectName: string;
   /** The job number as GP knows it, which is the project's own business id rather than its uuid. */
@@ -181,7 +181,7 @@ export interface DeliveryRequestDocumentProps {
    * prints an empty box, which is what the paper form does when nobody filled it in.
    */
   divisionAddress: string;
-  values: DeliveryRequestValues;
+  values: ShipmentSiteFormValues;
   /**
    * What has come back off a shipment already picked up (#1304), printed under the material block
    * rather than netted out of it, so the lines still match the signed paper.
@@ -195,7 +195,7 @@ export interface DeliveryRequestDocumentProps {
   driverName?: string | null;
 }
 
-export default function DeliveryRequestDocument({
+export default function ShipmentSiteFormDocument({
   packingSlipNumber,
   projectName,
   jobNumber,
@@ -209,7 +209,7 @@ export default function DeliveryRequestDocument({
   loadNumber = null,
   ridingWith = [],
   driverName = null,
-}: DeliveryRequestDocumentProps) {
+}: ShipmentSiteFormDocumentProps) {
   const divisionLines = divisionAddress.split('\n').filter((l) => l.trim() !== '');
   // The material block keeps a few spare lines: a partial ship gets items added at the dock.
   const material = [...materialLines];
@@ -221,7 +221,7 @@ export default function DeliveryRequestDocument({
         <View style={styles.headerRow}>
           <Image src={COMPANY_LOGO_PDF} style={styles.logo} />
           <View style={styles.titleWrap}>
-            <Text style={styles.title}>Delivery Request</Text>
+            <Text style={styles.title}>Shipment Site Form</Text>
             {/* The shipment this paper belongs to. Not in the SALES ORDER NUMBER box: that is a GP
                 number the office fills in, and a slip number sitting in it would be read as one. */}
             <Text style={styles.titleSlip}>Packing slip {packingSlipNumber}</Text>

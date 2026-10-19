@@ -1,4 +1,4 @@
-import type { PackingSlipHeader } from './deliveryRequest';
+import type { PackingSlipHeader } from './shipmentSiteForm';
 
 /** The load picker's value for "start a new load" (#1720). */
 export const NEW_LOAD = '';

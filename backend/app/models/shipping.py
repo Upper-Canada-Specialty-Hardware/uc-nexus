@@ -27,13 +27,13 @@ if TYPE_CHECKING:
 
 
 class PackingSlip(Base):
-    """One shipment out of the warehouse, and the Delivery Request that goes with it (#447).
+    """One shipment out of the warehouse, and the Shipment Site Form that goes with it (#447).
 
     The header below is the paper form UC Hardware's shipping department fills in and the
     construction site signs off on: when it is being picked up and delivered, who is shipping it and
     how to reach them, where it is being collected from, the questions the site has to answer before
     a truck is worth sending, and the two contacts. It is written once at confirm time and printed
-    from here every time afterwards, so a Delivery Request reprinted a year later says exactly what
+    from here every time afterwards, so a Shipment Site Form reprinted a year later says exactly what
     the driver was handed.
 
     Every header field is nullable. The form is filled in by a human against whatever the site has
@@ -71,7 +71,7 @@ class PackingSlip(Base):
         nullable=False,
     )
 
-    # --- Delivery Request header ---------------------------------------------------------------
+    # --- Shipment Site Form header ---------------------------------------------------------------
     # Dates the truck is expected, as days rather than instants: nobody schedules a pickup to the
     # minute, and printing a timezone-shifted timestamp on a form would be actively misleading.
     pickup_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -126,7 +126,7 @@ class PackingSlip(Base):
 
     # The containers this shipment went out in (#451), empty for a slip cut before containers existed
     # or by any path that did not build one. `items` stays the record of WHAT shipped; this is how it
-    # was physically arranged, which is what the Delivery Request has to print for the person
+    # was physically arranged, which is what the Shipment Site Form has to print for the person
     # unloading it.
     containers: Mapped[list["ShipmentContainer"]] = relationship(
         "ShipmentContainer",
@@ -168,7 +168,7 @@ class PackingSlipItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     # A free-text, off-inventory line the shipping user typed into a container (see
     # ShipmentContainerItem.is_manual): on the truck, never in Nexus inventory. Carried onto the slip
-    # so the Delivery Request prints it, but excluded from the ship-ready arithmetic and never
+    # so the Shipment Site Form prints it, but excluded from the ship-ready arithmetic and never
     # returnable - there is nothing in inventory to restock.
     is_manual: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 

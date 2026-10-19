@@ -100,7 +100,7 @@ function slip(overrides: Record<string, unknown> = {}) {
         __typename: 'PackingSlipItem',
         id: 'psi-1',
         openingNumber: '0019-EX',
-        // Snapshotted at confirm (#452), so a reprinted Delivery Request names the same placement
+        // Snapshotted at confirm (#452), so a reprinted Shipment Site Form names the same placement
         // the driver's copy did.
         building: 'A',
         floor: '1',
@@ -173,7 +173,7 @@ const projectsMock: MockedResponse = {
   },
 };
 
-// The Division Address box on a reprinted Delivery Request comes from the primary warehouse, not
+// The Division Address box on a reprinted Shipment Site Form comes from the primary warehouse, not
 // from the shipment - the list reads it for the same reason the confirm form does.
 const warehousesMock: MockedResponse = {
   request: { query: GET_WAREHOUSES, variables: { includeInactive: false } },
@@ -354,7 +354,7 @@ describe('ShipmentsList', () => {
     await screen.findByText('PS-0019');
 
     expect(screen.queryByText('SIL-40002-228')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delivery Request' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Site Form' })).not.toBeInTheDocument();
 
     await expandRow('PS-0019');
 
@@ -362,7 +362,7 @@ describe('ShipmentsList', () => {
     // One line per item, both owed to the same opening.
     expect(screen.getAllByText('0019-EX')).toHaveLength(2);
     expect(screen.getByText('DOOR-1')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delivery Request' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Site Form' })).toBeInTheDocument();
   });
 
   it('withdraws every action from a cancelled shipment and says why (#973)', async () => {
@@ -376,7 +376,7 @@ describe('ShipmentsList', () => {
     await expandRow('PS-0019');
 
     expect(await screen.findByText(/This shipment was\s+cancelled/)).toBeInTheDocument();
-    for (const name of ['Delivery Request', 'Edit', 'Mark Picked Up', 'Return', 'Cancel Shipment']) {
+    for (const name of ['Site Form', 'Edit', 'Mark Picked Up', 'Return', 'Cancel Shipment']) {
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     }
   });
@@ -405,10 +405,10 @@ describe('ShipmentsList', () => {
     expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Mark Picked Up' })).toHaveLength(1);
 
-    // Delivered: the Delivery Request can still be reprinted, and nothing else moves.
+    // Delivered: the Shipment Site Form can still be reprinted, and nothing else moves.
     await expandRow('PS-0021');
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'Delivery Request' })).toHaveLength(3),
+      expect(screen.getAllByRole('button', { name: 'Site Form' })).toHaveLength(3),
     );
     expect(screen.getAllByRole('button', { name: 'Mark Delivered' })).toHaveLength(1);
   });
@@ -513,11 +513,11 @@ describe('ShipmentsList', () => {
     // Cancel is an explicit dismissal and is never refused.
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     await waitFor(() =>
-      expect(screen.queryByText('Edit Delivery Request PS-0019')).not.toBeInTheDocument(),
+      expect(screen.queryByText('Edit shipment PS-0019')).not.toBeInTheDocument(),
     );
   });
 
-  it('opens the edit dialog on the stored Delivery Request', async () => {
+  it('opens the edit dialog on the stored Shipment Site Form', async () => {
     renderList([packingSlipsMock([slip()])]);
     await screen.findByText('PS-0019');
     await expandRow('PS-0019');
@@ -525,7 +525,7 @@ describe('ShipmentsList', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Edit Delivery Request PS-0019')).toBeInTheDocument();
+    expect(within(dialog).getByText('Edit shipment PS-0019')).toBeInTheDocument();
     expect(within(dialog).getByLabelText(/Carrier \/ Tag \/ BOL/i)).toHaveValue('BOL-8891');
     expect(within(dialog).getByLabelText(/Contractor contact name/i)).toHaveValue('Robert Purcell');
     expect(within(dialog).getByLabelText(/Weight \(lbs\)/i)).toHaveValue(420);

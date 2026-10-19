@@ -143,7 +143,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
       return;
     }
     // #1463: on an edit a blanked address field goes as '', which the server stores as empty; null there
-    // means "leave it" and kept the old line printing on delivery requests. A create has nothing to keep.
+    // means "leave it" and kept the old line printing on shipment site forms. A create has nothing to keep.
     const blank = form.id ? '' : null;
     const payload = {
       name: trimmedName,

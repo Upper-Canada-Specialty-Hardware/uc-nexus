@@ -22,7 +22,7 @@ def get_shipment_methods(
 ) -> list[ShipmentMethod]:
     """The list, in the order the dropdown shows it: sort_order, then name.
 
-    `active_only` is what the Delivery Request form passes. The management screen leaves it off so a
+    `active_only` is what the Shipment Site Form passes. The management screen leaves it off so a
     retired method is still visible to reactivate - hiding it there would make retirement a one-way
     door with no undo.
     """

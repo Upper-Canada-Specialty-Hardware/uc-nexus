@@ -232,7 +232,7 @@ the same event seen from two sides:
   boundary, stated as a boundary rather than approximated.
 - **Shipping out** - the completed pull stages the hardware, and `confirm_shipment` cuts the packing
   slip against that staged pool. The slip is the permanent record of what left; from there the
-  Delivery Request lifecycle (SCHEDULED -> PICKED_UP -> DELIVERED) documents the truck's journey and
+  Shipment Site Form lifecycle (SCHEDULED -> PICKED_UP -> DELIVERED) documents the truck's journey and
   moves no inventory.
 
 Both feed the composer's `sent` term (§3a), which is the only way an exit is ever read back.

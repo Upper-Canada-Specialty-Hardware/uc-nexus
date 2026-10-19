@@ -56,7 +56,7 @@ function GatedControl({ gated, children }: { gated: boolean; children: ReactElem
  * The shipping department's own list of how a load can travel (#451).
  *
  * Kept here rather than in Admin because the people who maintain it are the people who pick from it
- * on the Delivery Request, and a list that needs an admin to extend is a list that gets worked
+ * on the Shipment Site Form, and a list that needs an admin to extend is a list that gets worked
  * around with free text.
  *
  * Retiring is the ordinary action and deleting is the exception: a carrier that comes back should
@@ -132,7 +132,7 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 0.5 }}>
             <Alert severity="info">
-              How a load travels, offered on every Delivery Request. Retiring one keeps it on the
+              How a load travels, offered on every Shipment Site Form. Retiring one keeps it on the
               shipments it already carried and takes it out of the dropdown.
             </Alert>
 
@@ -170,7 +170,7 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
               </Typography>
               {methods.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
-                  None yet. Until one is added the Delivery Request takes the method as free text.
+                  None yet. Until one is added the Shipment Site Form takes the method as free text.
                 </Typography>
               ) : (
                 <Stack spacing={0.5}>

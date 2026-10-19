@@ -119,13 +119,13 @@ def _shipment_method_to_type(m) -> ShipmentMethod:
     )
 
 
-def _delivery_details(input) -> dict:
-    """The Delivery Request header off a mutation input, keyed the way the repository writes it.
+def _site_form_details(input) -> dict:
+    """The Shipment Site Form header off a mutation input, keyed the way the repository writes it.
 
-    Read off `DELIVERY_REQUEST_FIELDS` rather than listed here, so the confirm input, the edit input
+    Read off `SITE_FORM_FIELDS` rather than listed here, so the confirm input, the edit input
     and the columns cannot drift apart: a field added to the header reaches both mutations or neither.
     """
-    return {field: getattr(input, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
+    return {field: getattr(input, field) for field in shipping_repository.SITE_FORM_FIELDS}
 
 
 def _resolve_driver(info: strawberry.Info, session, project_id: uuid.UUID, driver_user_id: str | None):
@@ -425,7 +425,7 @@ class ShippingQueries:
 
     @strawberry.field
     def shipment_methods(self, info: strawberry.Info, active_only: bool = False) -> list[ShipmentMethod]:
-        """How a load can travel (#451). `activeOnly` is what the Delivery Request form passes; the
+        """How a load can travel (#451). `activeOnly` is what the Shipment Site Form passes; the
         management screen leaves it off so a retired method can still be seen and reactivated."""
         with SessionLocal() as session:
             return [
@@ -628,7 +628,7 @@ class ShippingMutations:
                 uuid.UUID(str(input.project_id)),
                 [uuid.UUID(str(cid)) for cid in input.container_ids],
                 shipped_by=actor,
-                details=_delivery_details(input),
+                details=_site_form_details(input),
                 expected_contents=(
                     None
                     if input.expected_contents is None
@@ -748,7 +748,7 @@ class ShippingMutations:
 
     @strawberry.mutation
     def update_shipment_details(self, info: strawberry.Info, input: UpdateShipmentDetailsInput) -> PackingSlip:
-        """Correct the Delivery Request of a shipment that has not left yet (#447).
+        """Correct the Shipment Site Form of a shipment that has not left yet (#447).
 
         Refused once the shipment is past SCHEDULED: from the moment it is picked up a driver holds a
         printed copy, and the stored record has to keep matching the paper the site will sign.
@@ -763,7 +763,7 @@ class ShippingMutations:
             ps = shipping_repository.update_shipment_details(
                 session,
                 uuid.UUID(str(input.id)),
-                _delivery_details(input),
+                _site_form_details(input),
                 driver=_resolve_driver(info, session, project_id, input.driver_user_id),
             )
             session.commit()

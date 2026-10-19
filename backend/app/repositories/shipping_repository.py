@@ -171,10 +171,10 @@ def get_ship_ready_items(
     return {"loose_items": loose_items}
 
 
-# Every column of the Delivery Request header (#447), in the order the paper form asks for them.
+# Every column of the Shipment Site Form header (#447), in the order the paper form asks for them.
 # Named once because two paths write it - `confirm_shipment` fills it in and `update_shipment_details`
 # rewrites it - and a field that reached one but not the other would silently stop being editable.
-DELIVERY_REQUEST_FIELDS = (
+SITE_FORM_FIELDS = (
     "pickup_date",
     "delivery_date",
     "shipper_email",
@@ -207,12 +207,12 @@ DELIVERY_REQUEST_FIELDS = (
 _MAX_WEIGHT_LBS = 100000000
 
 
-def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> None:
-    """Write the whole Delivery Request header onto a slip, blanks included.
+def _apply_site_form(packing_slip: PackingSlip, details: dict | None) -> None:
+    """Write the whole Shipment Site Form header onto a slip, blanks included.
 
     Full replace, every field, every time: a key the caller left out is written as null, not skipped.
     That is what makes clearing a field possible at all - the alternative reading ("absent means
-    unchanged") leaves a Delivery Request that can be corrected but never emptied, so a phone number
+    unchanged") leaves a Shipment Site Form that can be corrected but never emptied, so a phone number
     typed against the wrong shipment could not be taken back off it.
 
     Whitespace-only text is stored as null rather than as a string of spaces, so "blank" has one
@@ -230,11 +230,11 @@ def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> 
             f"weight_lbs must be between 0 and {_MAX_WEIGHT_LBS - 1}.99 pounds",
             field="weight_lbs",
         )
-    # #1438: a Delivery Request that delivers before it is picked up is a typo, not a plan.
+    # #1438: a Shipment Site Form that delivers before it is picked up is a typo, not a plan.
     pickup, delivery = values.get("pickup_date"), values.get("delivery_date")
     if pickup is not None and delivery is not None and delivery < pickup:
         raise ValidationError("The delivery date cannot be before the pick-up date", field="delivery_date")
-    for field in DELIVERY_REQUEST_FIELDS:
+    for field in SITE_FORM_FIELDS:
         value = values.get(field)
         if isinstance(value, str):
             value = value.strip() or None
@@ -257,7 +257,7 @@ def confirm_shipment(
 ) -> PackingSlip:
     """Cut a packing slip against what a completed shipping-out pull staged.
 
-    The slip is born SCHEDULED (#447) and carries the Delivery Request header the shipping
+    The slip is born SCHEDULED (#447) and carries the Shipment Site Form header the shipping
     department filled in. The status is documentation of the truck's journey and nothing else - this
     call is still the moment the hardware is claimed.
 
@@ -273,7 +273,7 @@ def confirm_shipment(
             optional building / floor / location placement, and optional is_manual. A manual line is
             free-text hardware that is on the truck but was never in inventory: it is skipped by the
             staged-pool availability check and stamped is_manual onto the slip.
-        details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
+        details: the Shipment Site Form header (SITE_FORM_FIELDS). Every field is optional -
             the form is filled in against whatever the site has said, and a blank is a real answer.
         load_id: the load (#1720) the slip joins. None starts a new one, led by this project.
         driver: (user id, name) of the Driver account driving it (#1726), already resolved and
@@ -352,7 +352,7 @@ def confirm_shipment(
         shipped_at=now,
         status=ShipmentStatus.SCHEDULED,
     )
-    _apply_delivery_details(packing_slip, details)
+    _apply_site_form(packing_slip, details)
     _apply_driver(packing_slip, driver)
 
     # 3b. Put it on its truck (#1720). After the header is applied, so a new load is named for the
@@ -376,7 +376,7 @@ def confirm_shipment(
                 id=uuid.uuid4(),
                 packing_slip_id=packing_slip.id,
                 opening_number=item["opening_number"],
-                # Where it was going, as the cart named it (#452). The Delivery Request prints these
+                # Where it was going, as the cart named it (#452). The Shipment Site Form prints these
                 # after the opening number, so a reprint says what the driver's copy said.
                 building=item.get("building"),
                 floor=item.get("floor"),
@@ -403,7 +403,7 @@ def confirm_shipment(
 
 
 # ---------------------------------------------------------------------------
-# The Delivery Request lifecycle (#447): SCHEDULED -> PICKED_UP -> DELIVERED.
+# The Shipment Site Form lifecycle (#447): SCHEDULED -> PICKED_UP -> DELIVERED.
 #
 # Documentation of the truck's journey, not of the hardware's. Nothing here moves inventory: the
 # claim was made when the shipment was confirmed, and these three states only record where the load
@@ -436,13 +436,13 @@ def update_shipment_details(
     details: dict,
     driver: tuple[str, str] | None = None,
 ) -> PackingSlip:
-    """Rewrite the Delivery Request header of a shipment that has not left yet (#447).
+    """Rewrite the Shipment Site Form header of a shipment that has not left yet (#447).
 
     Refused unless the shipment is still SCHEDULED. Once it has been picked up a driver is carrying a
     printed copy, and a record that no longer matches the paper in the cab is worse than one with a
     typo in it - the site signs the paper, and any dispute is settled against what it says.
 
-    Full replace over `DELIVERY_REQUEST_FIELDS`: a field given as None is CLEARED. What is
+    Full replace over `SITE_FORM_FIELDS`: a field given as None is CLEARED. What is
     deliberately not editable is everything that is not the paper form - the slip number, the
     project, the items, and who shipped it and when. Those are the record of what left the building,
     which is the one thing an edit must never be able to rewrite.
@@ -450,10 +450,10 @@ def update_shipment_details(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} can only be edited while scheduled; "
+            f"Shipment {ps.packing_slip_number} can only be edited while scheduled; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
-    _apply_delivery_details(ps, details)
+    _apply_site_form(ps, details)
     _apply_driver(ps, driver)
     return ps
 
@@ -471,7 +471,7 @@ def mark_shipment_picked_up(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be scheduled to mark picked up; "
+            f"Shipment {ps.packing_slip_number} must be scheduled to mark picked up; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     ps.status = ShipmentStatus.PICKED_UP
@@ -492,14 +492,14 @@ def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be scheduled to cancel; "
+            f"Shipment {ps.packing_slip_number} must be scheduled to cancel; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     session.refresh(ps, attribute_names=["items"])
     returned = _returned_quantities(session, packing_slip_id)
     if any(not psi.is_manual and returned.get(psi.id, 0) < psi.quantity for psi in ps.items):
         raise ValidationError(
-            f"Delivery Request {ps.packing_slip_number} still has hardware to return. "
+            f"Shipment {ps.packing_slip_number} still has hardware to return. "
             "Return it instead; the shipment is cancelled once nothing is left on it.",
             field="id",
         )
@@ -520,7 +520,7 @@ def mark_shipment_delivered(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.PICKED_UP:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be picked up to mark delivered; "
+            f"Shipment {ps.packing_slip_number} must be picked up to mark delivered; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     ps.status = ShipmentStatus.DELIVERED
@@ -577,7 +577,7 @@ def _packing_slip_loads():
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
         selectinload(PackingSlip.project),
         selectinload(PackingSlip.photos),
-        # #1724: the load with every slip on it, for the Delivery Request's "riding with" line.
+        # #1724: the load with every slip on it, for the Shipment Site Form's "riding with" line.
         selectinload(PackingSlip.load).selectinload(ShipmentLoad.slips).selectinload(PackingSlip.project),
     )
 
@@ -888,7 +888,7 @@ def create_shipment_return(
             )
 
     # #973: a scheduled shipment with nothing left to return never left at all - cancel it, so its
-    # Delivery Request cannot be printed or a truck sent for hardware that is back on the shelf. A
+    # Shipment Site Form cannot be printed or a truck sent for hardware that is back on the shelf. A
     # manual line never entered inventory and is not returnable, so it does not hold the shipment open.
     if ps.status == ShipmentStatus.SCHEDULED:
         session.flush()

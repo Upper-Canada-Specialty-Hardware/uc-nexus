@@ -7,7 +7,7 @@ import { userMessage } from '../../graphql/userMessage';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
-import { shipmentStatusDisplay, type PackingSlip } from '../shipping/deliveryRequest';
+import { shipmentStatusDisplay, type PackingSlip } from '../shipping/shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL } from '../shipping/staging';
 import { fmtShipDate } from '../shipping/loads';
 import { monoSx } from '../../theme';
@@ -19,12 +19,12 @@ type Step = { slip: PackingSlip; action: 'PICKED_UP' | 'DELIVERED' };
 const STEP_PROMPT = {
   PICKED_UP: {
     title: 'Picked up?',
-    body: 'You have the load and the Delivery Request. It can no longer be edited after this.',
+    body: 'You have the load and the Shipment Site Form. It can no longer be edited after this.',
     confirm: 'Mark picked up',
   },
   DELIVERED: {
     title: 'Delivered?',
-    body: 'The site has taken delivery and signed the Delivery Request.',
+    body: 'The site has taken delivery and signed the Shipment Site Form.',
     confirm: 'Mark delivered',
   },
 } as const;

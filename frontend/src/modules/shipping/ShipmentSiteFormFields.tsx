@@ -1,22 +1,22 @@
 import type { ReactNode } from 'react';
 import { Box, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { microLabelSx, monoSx } from '../../theme';
-import type { DeliveryDetails } from './deliveryRequest';
+import type { SiteFormDetails } from './shipmentSiteForm';
 
 /**
- * The Delivery Request form, minus the items and the slip number (#447).
+ * The Shipment Site Form, minus the items and the slip number (#447).
  *
  * One component for both the create path and the edit path, because the paper it produces is one
  * form: a shipment edited the day after it was booked has to be able to change every field the
  * wizard captured, and a field that existed in only one of the two would print blank on whichever
- * Delivery Request was generated from the other.
+ * Shipment Site Form was generated from the other.
  *
  * Every field here is optional. The form is filled in over the phone while the site is worked out,
  * so refusing to book a shipment because nobody has answered "is there a forklift onsite" would
  * simply move the shipment off the system.
  */
 
-const QUESTIONS: { field: keyof DeliveryDetails; label: string; multiline?: boolean }[] = [
+const QUESTIONS: { field: keyof SiteFormDetails; label: string; multiline?: boolean }[] = [
   { field: 'deliveryAddress', label: '1) Delivery address', multiline: true },
   { field: 'specialInstructions', label: '2) Special instructions if any' },
   { field: 'gateNumber', label: '3) Gate number if applicable' },
@@ -41,8 +41,8 @@ function SectionHeading({ children }: { children: ReactNode }) {
 }
 
 interface Props {
-  details: DeliveryDetails;
-  onChange: (patch: Partial<DeliveryDetails>) => void;
+  details: SiteFormDetails;
+  onChange: (patch: Partial<SiteFormDetails>) => void;
   /** The signed-in user, shown read-only: the shipper is whoever is booking this (#427). */
   shipperName: string;
   disabled?: boolean;
@@ -55,7 +55,7 @@ interface Props {
   shipmentMethods?: { id: string; name: string }[];
 }
 
-export default function DeliveryRequestFields({
+export default function ShipmentSiteFormFields({
   details,
   onChange,
   shipperName,
@@ -63,7 +63,7 @@ export default function DeliveryRequestFields({
   leadingShipmentField,
   shipmentMethods = [],
 }: Props) {
-  const set = (field: keyof DeliveryDetails) => (value: string) => onChange({ [field]: value });
+  const set = (field: keyof SiteFormDetails) => (value: string) => onChange({ [field]: value });
 
   return (
     <Stack spacing={2.5}>
@@ -197,7 +197,7 @@ export default function DeliveryRequestFields({
           fullWidth
           multiline
           minRows={3}
-          helperText="Printed on the Delivery Request as written here."
+          helperText="Printed on the Shipment Site Form as written here."
           sx={{ mt: 1.5 }}
         />
       </Box>

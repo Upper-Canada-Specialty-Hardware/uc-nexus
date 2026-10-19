@@ -6,19 +6,19 @@ import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { MOVE_SHIPMENT_TO_LOAD, UPDATE_SHIPMENT_DETAILS } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES } from '../../graphql/refetch';
-import DeliveryRequestFields from './DeliveryRequestFields';
+import ShipmentSiteFormFields from './ShipmentSiteFormFields';
 import LoadPicker from './LoadPicker';
 import DriverPicker from './DriverPicker';
 import { NEW_LOAD } from './loads';
 import { useShipmentMethods } from './useShipmentMethods';
 import {
-  deliveryDetailsInput,
+  siteFormInput,
   detailsFromSlip,
   isWeightInvalid,
   WEIGHT_ERROR,
-  type DeliveryDetails,
+  type SiteFormDetails,
   type PackingSlipHeader,
-} from './deliveryRequest';
+} from './shipmentSiteForm';
 
 interface Props {
   slip: PackingSlipHeader;
@@ -26,7 +26,7 @@ interface Props {
 }
 
 /**
- * Correcting a Delivery Request that has not left yet (#447).
+ * Correcting a Shipment Site Form that has not left yet (#447).
  *
  * Only a SCHEDULED shipment is editable, and the list is what hides the button - but the backend
  * refuses the mutation regardless, because the moment a driver has the paper the record has to
@@ -36,7 +36,7 @@ interface Props {
 export default function EditShipmentDialog({ slip, onClose }: Props) {
   const { showToast } = useToast();
   const stored = useMemo(() => detailsFromSlip(slip), [slip]);
-  const [details, setDetails] = useState<DeliveryDetails>(stored);
+  const [details, setDetails] = useState<SiteFormDetails>(stored);
   const storedLoadId = slip.load?.id ?? NEW_LOAD;
   const [loadId, setLoadId] = useState<string>(storedLoadId);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +61,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
     () =>
       loadChanged ||
       driverUserId !== storedDriver ||
-      (Object.keys(stored) as (keyof DeliveryDetails)[]).some((k) => details[k] !== stored[k]),
+      (Object.keys(stored) as (keyof SiteFormDetails)[]).some((k) => details[k] !== stored[k]),
     [details, stored, loadChanged, driverUserId, storedDriver],
   );
   const blockDismissal = dirty || loading;
@@ -80,9 +80,9 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
       }
       await updateShipment({
         // Full replace: the driver goes on every save, null clearing it, like the header beside it.
-        variables: { input: { id: slip.id, driverUserId: driverUserId || null, ...deliveryDetailsInput(details) } },
+        variables: { input: { id: slip.id, driverUserId: driverUserId || null, ...siteFormInput(details) } },
       });
-      showToast(`Delivery Request ${slip.packingSlipNumber} updated`, 'success');
+      showToast(`Shipment ${slip.packingSlipNumber} updated`, 'success');
       onClose();
     } catch (err) {
       setError(userMessage(err));
@@ -101,7 +101,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
       open
       onClose={handleDismiss}
       disableEscapeKeyDown={blockDismissal}
-      title={`Edit Delivery Request ${slip.packingSlipNumber}`}
+      title={`Edit shipment ${slip.packingSlipNumber}`}
       actions={
         <>
           <Button onClick={onClose} disabled={loading}>
@@ -136,7 +136,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
             storedName={slip.driverName}
           />
         </Stack>
-        <DeliveryRequestFields
+        <ShipmentSiteFormFields
           details={details}
           onChange={(patch) => setDetails((prev) => ({ ...prev, ...patch }))}
           shipperName={slip.shippedBy}

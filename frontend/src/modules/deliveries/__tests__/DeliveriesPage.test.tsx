@@ -5,14 +5,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import DeliveriesPage from '../DeliveriesPage';
 import { GET_MY_DELIVERIES, MARK_SHIPMENT_PICKED_UP } from '../../../graphql/shipping';
-import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
+import { SITE_FORM_FIELDS } from '../../../types/shipmentSiteFormFields';
 
 /**
  * A driver's own deliveries (#1727). Pinned: what the driver needs at the site is on the card, and the
  * one button is the next leg - picked up while scheduled, delivered once picked up.
  */
 
-const blankHeader = Object.fromEntries(DELIVERY_REQUEST_FIELDS.map((f) => [f, null]));
+const blankHeader = Object.fromEntries(SITE_FORM_FIELDS.map((f) => [f, null]));
 
 function slip(overrides: Record<string, unknown> = {}) {
   return {

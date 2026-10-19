@@ -53,7 +53,7 @@ import {
 import { useToast } from '../../components/Toast';
 import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 import EditShipmentDialog from './EditShipmentDialog';
-import DeliveryRequestDocument from './DeliveryRequestDocument';
+import ShipmentSiteFormDocument from './ShipmentSiteFormDocument';
 import {
   netQuantity,
   primaryWarehouse,
@@ -69,7 +69,7 @@ import {
   type PackingSlip,
   type ShipmentStatus,
   type WarehouseAddress,
-} from './deliveryRequest';
+} from './shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
 import { fmtShipDate, ridingWith } from './loads';
 import PageHeader from '../../components/PageHeader';
@@ -110,7 +110,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 const LONG_DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
 
-/** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
+/** A calendar date the way the Shipment Site Form carries it, or a dash when it was left blank. */
 /** The project a shipment belongs to, by name, falling back to its number (#1173). */
 function slipProjectLabel(slip: Pick<PackingSlip, 'projectNumber' | 'projectDescription'>): string {
   return slip.projectDescription || slip.projectNumber;
@@ -187,19 +187,19 @@ type LifecycleAction = 'PICKED_UP' | 'DELIVERED' | 'CANCELLED';
 const LIFECYCLE_PROMPT: Record<LifecycleAction, { title: string; body: string; confirm: string }> = {
   PICKED_UP: {
     title: 'Mark as picked up?',
-    body: 'The carrier has the material and the Delivery Request has left the building. The shipment can no longer be edited after this.',
+    body: 'The carrier has the material and the Shipment Site Form has left the building. The shipment can no longer be edited after this.',
     confirm: 'Mark picked up',
   },
   DELIVERED: {
     title: 'Mark as delivered?',
-    body: 'The site has taken delivery and signed off on the Delivery Request.',
+    body: 'The site has taken delivery and signed off on the Shipment Site Form.',
     confirm: 'Mark delivered',
   },
   // #1176: only offered once nothing on the shipment can come back - a return is how hardware gets
   // back into inventory, and returning the last of it cancels the shipment on its own.
   CANCELLED: {
     title: 'Cancel this shipment?',
-    body: 'Nothing on it can be returned, so no inventory moves. Its Delivery Request is withdrawn and it can no longer be picked up.',
+    body: 'Nothing on it can be returned, so no inventory moves. Its Shipment Site Form is withdrawn and it can no longer be picked up.',
     confirm: 'Cancel shipment',
   },
 };
@@ -213,7 +213,7 @@ const LIFECYCLE_DONE: Record<LifecycleAction, string> = {
 /**
  * Shipments, as a record of where each one has got to (#447).
  *
- * A shipment used to be a row and a Return button. It is now a Delivery Request with a life: booked,
+ * A shipment used to be a row and a Return button. It is now a Shipment Site Form with a life: booked,
  * collected by a carrier, signed for on site. The row carries where it is and the dates it was
  * promised for; everything that acts on it - reprinting the paper, correcting it while it is still
  * only booked, moving it along, returning material off it - lives in the expansion, next to the
@@ -283,7 +283,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // than the table dropping to skeletons between keystrokes.
   const current = data ?? previousData;
 
-  // Only the all-projects view's filter reads this. The project column, the Delivery Request's
+  // Only the all-projects view's filter reads this. The project column, the Shipment Site Form's
   // PROJECT and JOB NUMBER and the return dialog take the project off the slip itself (#1173): this
   // list leaves archived projects out, and their shipments still have to say whose they are.
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isGlobal });
@@ -356,7 +356,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         // after pickup it prints what the driver was handed, with returns noted beside it.
         const net = reprintContents(slip);
         const blob = await pdf(
-          <DeliveryRequestDocument
+          <ShipmentSiteFormDocument
             packingSlipNumber={slip.packingSlipNumber}
             projectName={slipProjectLabel(slip)}
             jobNumber={slip.projectNumber}
@@ -375,7 +375,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         tab.show(blob);
       } catch {
         tab.cancel();
-        showToast('Failed to generate the Delivery Request', 'error');
+        showToast('Failed to generate the Shipment Site Form', 'error');
       } finally {
         setGeneratingFor(null);
       }
@@ -657,7 +657,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         {slip.status === 'CANCELLED' && (
                           <Alert severity="info">
                             This shipment was cancelled before pickup. Anything returnable on it came
-                            back to inventory, and its Delivery Request is withdrawn.
+                            back to inventory, and its Shipment Site Form is withdrawn.
                           </Alert>
                         )}
                         {slip.status !== 'CANCELLED' && (
@@ -669,7 +669,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             disabled={generatingFor === slip.id}
                             onClick={() => handleViewPdf(slip)}
                           >
-                            {generatingFor === slip.id ? 'Generating...' : 'Delivery Request'}
+                            {generatingFor === slip.id ? 'Generating...' : 'Site Form'}
                           </Button>
                           {slip.status === 'SCHEDULED' && (
                             <Button

@@ -1230,7 +1230,7 @@ class PackingSlipItem:
 
 @strawberry.type
 class PackingSlip:
-    """A shipment and the Delivery Request that travels with it (#447).
+    """A shipment and the Shipment Site Form that travels with it (#447).
 
     The header below is the paper form the site signs, so every field of it survives out of
     `packingSlips` unchanged and the document can be reprinted years later exactly as issued. Blanks
@@ -1282,7 +1282,7 @@ class PackingSlip:
     driver_name: str | None
     items: list[PackingSlipItem]
     # How the load was physically arranged (#451). Empty for a slip cut before containers existed, so
-    # the Delivery Request falls back to a flat material list rather than printing nothing. `items` is
+    # the Shipment Site Form falls back to a flat material list rather than printing nothing. `items` is
     # still the record of what shipped; this is what the person unloading the truck reads.
     containers: list["ShipmentContainer"]
     # The truck trip it rides (#1720). Null only on a slip written outside the confirm path.
@@ -1329,7 +1329,7 @@ class ShipmentDriver:
 
 @strawberry.type
 class ShipmentLoadRef:
-    """A load as a slip names it (#1720), with every slip on it (#1724) - the Delivery Request prints the
+    """A load as a slip names it (#1720), with every slip on it (#1724) - the Shipment Site Form prints the
     others as riding with this one, and the list counts them to draw the truck as a group."""
 
     id: strawberry.ID
@@ -1619,7 +1619,7 @@ class StagingProjectSummary:
 class ShipmentMethod:
     """How a load can travel, as the shipping department maintains it (#451).
 
-    Retiring one flips `isActive` rather than deleting it: the Delivery Request form offers only
+    Retiring one flips `isActive` rather than deleting it: the Shipment Site Form offers only
     active methods, while shipments that already went out under it keep printing their own snapshot
     of the name.
     """

@@ -133,7 +133,7 @@ def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | 
     """
     if slip.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {slip.packing_slip_number} has left the dock, so it stays on its load. {REFRESH_HINT}"
+            f"Shipment {slip.packing_slip_number} has left the dock, so it stays on its load. {REFRESH_HINT}"
         )
     if load_id is not None and load_id == slip.load_id:
         raise ValidationError("The shipment is already on that load.", field="load_id")

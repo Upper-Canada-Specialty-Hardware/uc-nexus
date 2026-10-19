@@ -1,4 +1,4 @@
-// The Delivery Request (#447): the shapes and the wording behind the form, the PDF and the
+// The Shipment Site Form (#447): the shapes and the wording behind the form, the PDF and the
 // shipments list, kept out of the components so all three say the same thing.
 //
 // A shipment used to be a packing slip number and a list of items. It is now the whole paper form
@@ -9,10 +9,10 @@
 // captures has to survive into the PDF and back out of `packingSlips` unchanged.
 
 import {
-  DELIVERY_REQUEST_FIELDS,
+  SITE_FORM_FIELDS,
   WEIGHT_FIELD,
-  type DeliveryRequestField,
-} from '../../types/deliveryRequestFields';
+  type ShipmentSiteFormField,
+} from '../../types/shipmentSiteFormFields';
 import type { ShipmentPhoto } from './photos';
 import { CONTAINER_TYPE_LABEL, isStacked, type ContainerType } from './staging';
 
@@ -79,15 +79,15 @@ export interface SlipContainer {
 
 /**
  * The header fields as the server takes them and as the PDF prints them: blanks are null, and the
- * weight is a number. `deliveryDetailsInput` produces exactly this, which is why the same object can
+ * weight is a number. `siteFormInput` produces exactly this, which is why the same object can
  * be spread into a mutation input and handed to the document.
  *
- * Derived from `DELIVERY_REQUEST_FIELDS` rather than typed out (#453), as is every shape below it.
+ * Derived from `SITE_FORM_FIELDS` rather than typed out (#453), as is every shape below it.
  * Adding the twenty-first field to that list is what makes it exist here, in the form state, in the
  * two converters and in the GraphQL selection at once.
  */
-export type DeliveryRequestValues = {
-  [K in Exclude<DeliveryRequestField, typeof WEIGHT_FIELD>]: string | null;
+export type ShipmentSiteFormValues = {
+  [K in Exclude<ShipmentSiteFormField, typeof WEIGHT_FIELD>]: string | null;
 } & { [K in typeof WEIGHT_FIELD]: number | null };
 
 /** Everything a PackingSlip carries apart from its items: what shipped, the header, the journey. */
@@ -113,7 +113,7 @@ export type PackingSlipHeader = {
   load?: SlipLoad | null;
   /** Every photo of it (#1728): its containers as loaded, then the delivery. */
   photos?: ShipmentPhoto[];
-} & DeliveryRequestValues;
+} & ShipmentSiteFormValues;
 
 /** A load as a slip names it (#1720). `shipDate` is a calendar day, YYYY-MM-DD. */
 export interface SlipLoad {
@@ -138,11 +138,11 @@ export type PackingSlip = PackingSlipHeader & {
 };
 
 /** The same fields as form state: every one a string, because that is what an input holds. */
-export type DeliveryDetails = { [K in DeliveryRequestField]: string };
+export type SiteFormDetails = { [K in ShipmentSiteFormField]: string };
 
-export const EMPTY_DELIVERY_DETAILS: DeliveryDetails = Object.fromEntries(
-  DELIVERY_REQUEST_FIELDS.map((field) => [field, '']),
-) as DeliveryDetails;
+export const EMPTY_SITE_FORM: SiteFormDetails = Object.fromEntries(
+  SITE_FORM_FIELDS.map((field) => [field, '']),
+) as SiteFormDetails;
 
 function textOrNull(value: string): string | null {
   const trimmed = value.trim();
@@ -152,7 +152,7 @@ function textOrNull(value: string): string | null {
 /**
  * The widest weight the column can hold: `weight_lbs` is Numeric(10, 2), so eight digits before the
  * point and two after. The backend refuses anything past it, and a shipment rejected on the weight
- * box after the whole Delivery Request has been filled in is the worst place to find that out.
+ * box after the whole Shipment Site Form has been filled in is the worst place to find that out.
  */
 export const MAX_WEIGHT_LBS = 99999999.99;
 
@@ -168,13 +168,13 @@ export function isWeightInvalid(weightLbs: string): boolean {
 export const WEIGHT_ERROR = `Weight must be a number between 0 and ${MAX_WEIGHT_LBS}.`;
 
 /**
- * Form state to the wire. Every key is always present, blanks as null: a Delivery Request field the
+ * Form state to the wire. Every key is always present, blanks as null: a Shipment Site Form field the
  * user cleared has to travel as an explicit null, or an edit could never empty one.
  */
-export function deliveryDetailsInput(details: DeliveryDetails): DeliveryRequestValues {
+export function siteFormInput(details: SiteFormDetails): ShipmentSiteFormValues {
   const values = Object.fromEntries(
-    DELIVERY_REQUEST_FIELDS.map((field) => [field, textOrNull(details[field])]),
-  ) as unknown as DeliveryRequestValues;
+    SITE_FORM_FIELDS.map((field) => [field, textOrNull(details[field])]),
+  ) as unknown as ShipmentSiteFormValues;
   // The weight is the one field the server does not take as text.
   const weight = details[WEIGHT_FIELD].trim();
   values[WEIGHT_FIELD] = weight === '' || !Number.isFinite(Number(weight)) ? null : Number(weight);
@@ -182,17 +182,17 @@ export function deliveryDetailsInput(details: DeliveryDetails): DeliveryRequestV
 }
 
 /** The stored shipment as the edit dialog's form state. */
-export function detailsFromSlip(slip: PackingSlipHeader): DeliveryDetails {
+export function detailsFromSlip(slip: PackingSlipHeader): SiteFormDetails {
   const details = Object.fromEntries(
-    DELIVERY_REQUEST_FIELDS.map((field) => [field, slip[field] ?? '']),
-  ) as DeliveryDetails;
+    SITE_FORM_FIELDS.map((field) => [field, slip[field] ?? '']),
+  ) as SiteFormDetails;
   details[WEIGHT_FIELD] = slip[WEIGHT_FIELD] != null ? String(slip[WEIGHT_FIELD]) : '';
   return details;
 }
 
 /** The stored shipment as the PDF prints it. */
-export function valuesFromSlip(slip: PackingSlipHeader): DeliveryRequestValues {
-  return deliveryDetailsInput(detailsFromSlip(slip));
+export function valuesFromSlip(slip: PackingSlipHeader): ShipmentSiteFormValues {
+  return siteFormInput(detailsFromSlip(slip));
 }
 
 // ---- Material description -------------------------------------------------
@@ -319,7 +319,7 @@ export function reprintContents(slip: {
 }
 
 /**
- * The same block built from a stored shipment's items, for a Delivery Request reprinted later.
+ * The same block built from a stored shipment's items, for a Shipment Site Form reprinted later.
  *
  * The placement comes off the slip's own snapshot rather than the opening it was read from (#452). A
  * reprint is the copy pulled up in a site dispute, so it has to print what the driver was handed -
@@ -428,7 +428,7 @@ export interface WarehouseAddress {
  * name, the street line, then city/province/postal on one line.
  *
  * It is a snapshot on purpose. The warehouse record can be edited or retired years after a shipment
- * left, and the Delivery Request has to keep printing the address the truck was actually sent to.
+ * left, and the Shipment Site Form has to keep printing the address the truck was actually sent to.
  */
 export function warehouseAddressLines(warehouse: WarehouseAddress | undefined): string {
   if (!warehouse) return '';

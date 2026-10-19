@@ -73,7 +73,7 @@ def _subject(session: Session, kind: ShipmentPhotoKind, container_id, packing_sl
         raise NotFoundError(f"Packing slip {packing_slip_id} not found")
     if slip.status not in (ShipmentStatus.PICKED_UP, ShipmentStatus.DELIVERED):
         raise InvalidStateTransitionError(
-            f"Delivery Request {slip.packing_slip_number} has not left the dock yet; "
+            f"Shipment {slip.packing_slip_number} has not left the dock yet; "
             f"a delivery photo is taken at the site. {REFRESH_HINT}"
         )
     return slip.project_id, None, slip.id
