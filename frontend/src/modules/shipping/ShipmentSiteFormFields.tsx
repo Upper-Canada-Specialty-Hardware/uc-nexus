@@ -149,7 +149,9 @@ export default function ShipmentSiteFormFields({
               value={details.weightLbs}
               onChange={(e) => set('weightLbs')(e.target.value)}
               disabled={disabled}
-              sx={{ width: { xs: '100%', sm: 160 } }}
+              // #1745: fixed, not shrunk - the two text boxes beside it share what is left. Squeezed, it
+              // read "Wei..." once the tracking number joined the row.
+              sx={{ width: { xs: '100%', sm: 160 }, flexShrink: 0 }}
             />
           </Stack>
           <TextField
