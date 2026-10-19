@@ -115,8 +115,11 @@ def test_a_delivery_photo_needs_a_shipment_that_has_left_the_dock(db_session, st
 def test_only_images_are_taken(db_session, stored):
     project = _project(db_session)
     skid = _loaded_skid(db_session, project)
-    with pytest.raises(ValidationError, match="Only photos"):
+    with pytest.raises(ValidationError, match="Only JPEG, PNG or WebP"):
         _add(db_session, kind=ShipmentPhotoKind.LOADING, container_id=skid.id, content_type="application/pdf")
+    # HEIC too: office desktops cannot show it, so it would be a broken thumbnail for everybody else.
+    with pytest.raises(ValidationError, match="Only JPEG, PNG or WebP"):
+        _add(db_session, kind=ShipmentPhotoKind.LOADING, container_id=skid.id, content_type="image/heic")
     assert stored == {}
 
 
