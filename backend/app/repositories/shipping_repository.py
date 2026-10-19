@@ -182,6 +182,8 @@ DELIVERY_REQUEST_FIELDS = (
     "pickup_location",
     "shipment_method",
     "carrier_tag_bol",
+    # #1725: a courier's tracking number, its own box rather than squeezed into carrier / tag / BOL.
+    "tracking_number",
     "weight_lbs",
     "delivery_address",
     "special_instructions",

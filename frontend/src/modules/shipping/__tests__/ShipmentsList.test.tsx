@@ -46,6 +46,7 @@ const HEADER = {
   pickupLocation: 'Coast Meridian\n1120 1725 Coast Meridian Road',
   shipmentMethod: 'Our truck',
   carrierTagBol: 'BOL-8891',
+  trackingNumber: null,
   weightLbs: 420,
   deliveryAddress: '6775 Bell McKinnon Rd., Duncan, BC',
   specialInstructions: null,
@@ -253,6 +254,11 @@ describe('ShipmentsList', () => {
     // The lone slip's load is in its cell and gets no header row of its own.
     expect(screen.getByText('23093-07202026')).toBeInTheDocument();
     expect(screen.queryByText('Load 23093-07202026')).not.toBeInTheDocument();
+  });
+
+  it('shows a courier tracking number under the carrier (#1725)', async () => {
+    renderList([packingSlipsMock([slip({ trackingNumber: '1Z999AA10123456784' })])]);
+    expect(await screen.findByText('Tracking 1Z999AA10123456784')).toBeInTheDocument();
   });
 
   it('names its project filter for a screen reader (#1547)', async () => {

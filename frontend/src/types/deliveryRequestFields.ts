@@ -26,6 +26,8 @@ export const DELIVERY_REQUEST_FIELDS = [
   // name, so a method renamed or retired later cannot rewrite an already-shipped slip.
   'shipmentMethod',
   'carrierTagBol',
+  // #1725: the tracking number a courier gives, in its own box.
+  'trackingNumber',
   'weightLbs',
   'deliveryAddress',
   'specialInstructions',

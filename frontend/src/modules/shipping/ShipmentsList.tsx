@@ -547,7 +547,16 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                     />
                   </TableCell>
                   <TableCell title={slip.shipmentMethod || undefined}>{slip.shipmentMethod || '-'}</TableCell>
-                  <TableCell title={slip.carrierTagBol || undefined}>{slip.carrierTagBol || '-'}</TableCell>
+                  <TableCell title={[slip.carrierTagBol, slip.trackingNumber].filter(Boolean).join(' · ') || undefined}>
+                    {slip.carrierTagBol || '-'}
+                    {/* #1725: the courier's tracking number under the carrier, not a column of its own -
+                        most shipments go on a company truck and have none. */}
+                    {slip.trackingNumber && (
+                      <Typography variant="caption" component="div" color="text.secondary" sx={monoSx} noWrap>
+                        Tracking {slip.trackingNumber}
+                      </Typography>
+                    )}
+                  </TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell

@@ -755,6 +755,7 @@ class DeliveryRequestHeaderInput:
     # an id so a shipment keeps printing the method it left under after that method is renamed.
     shipment_method: str | None = None
     carrier_tag_bol: str | None = None
+    tracking_number: str | None = None
     weight_lbs: float | None = None
     delivery_address: str | None = None
     special_instructions: str | None = None

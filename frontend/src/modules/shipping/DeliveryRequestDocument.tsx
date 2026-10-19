@@ -276,6 +276,7 @@ export default function DeliveryRequestDocument({
         <Field label="PHONE NUMBER:" value={values.shipperPhone} />
         <Field label="SHIPMENT METHOD:" value={values.shipmentMethod} />
         <Field label="CARRIER/TAG/BOL:" value={values.carrierTagBol} />
+        <Field label="TRACKING NUMBER:" value={values.trackingNumber} />
 
         <View style={styles.sectionRow}>
           <Text style={styles.sectionLabel}>MATERIAL DESCRIPTION:</Text>

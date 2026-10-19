@@ -134,6 +134,15 @@ export default function DeliveryRequestFields({
               disabled={disabled}
               fullWidth
             />
+            {/* #1725: the number a courier shipment is traced by, kept out of carrier / tag / BOL. */}
+            <TextField
+              label="Tracking number"
+              value={details.trackingNumber}
+              onChange={(e) => set('trackingNumber')(e.target.value)}
+              disabled={disabled}
+              fullWidth
+              slotProps={{ input: { sx: monoSx } }}
+            />
             <TextField
               label="Weight (lbs)"
               type="number"

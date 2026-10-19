@@ -1257,6 +1257,7 @@ class PackingSlip:
     # cannot rewrite what an already-shipped slip says.
     shipment_method: str | None
     carrier_tag_bol: str | None
+    tracking_number: str | None
     weight_lbs: float | None
     delivery_address: str | None
     special_instructions: str | None

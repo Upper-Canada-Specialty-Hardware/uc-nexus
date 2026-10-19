@@ -83,6 +83,9 @@ class PackingSlip(Base):
     # or retired years later and the reprint has to keep saying what the driver was told.
     shipment_method: Mapped[str | None] = mapped_column(String, nullable=True)
     carrier_tag_bol: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A courier's tracking number (#1725), asked for by the outbound supervisor so the one number a
+    # courier shipment is traced by is not lost inside carrier / tag / BOL.
+    tracking_number: Mapped[str | None] = mapped_column(String, nullable=True)
     weight_lbs: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     special_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
