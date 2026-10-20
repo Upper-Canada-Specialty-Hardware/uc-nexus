@@ -1069,6 +1069,8 @@ class POMutations:
 
         # #1207: the costs the persist writes are checked before anything reaches GP.
         po_repository.validate_order_costs(shipping_cost=input.shipping_cost, tariff_amount=input.tariff_amount)
+        # #1394: and every line's unit cost is to the cent, which GP refuses otherwise.
+        po_repository.validate_line_unit_costs(line_items_data)
         # #1379: so is every line's catalog item, against the company the PO registers into (the
         # pre-flight below refuses a gp_company that is not the PO's own).
         await asyncio.to_thread(_validate_line_catalog_items, line_items_data, (input.gp_company or "").strip().upper())

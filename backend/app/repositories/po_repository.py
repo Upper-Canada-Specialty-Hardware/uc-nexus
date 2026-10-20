@@ -320,6 +320,36 @@ def validate_order_costs(*, shipping_cost=None, tariff_amount=None) -> None:
     _coerce_order_cost(tariff_amount, "tariff_amount")
 
 
+# GP keeps a PO line's unit cost to the cent (#1394). A test PO on TUBC at 0.33333 was refused at the line
+# by eConnect taPoLine (6621, "Decimal Places passed in for UNITCOST does not match setup"), and none of
+# GP's own PO lines in any company carries more than two places.
+_UNIT_COST_PLACES = 2
+
+
+def unit_cost_past_cents(unit_cost) -> bool:
+    """Whether a unit cost has more decimal places than GP keeps (#1394). 0.10 and 5 are to the cent."""
+    if unit_cost is None:
+        return False
+    return Decimal(str(unit_cost)).normalize().as_tuple().exponent < -_UNIT_COST_PLACES
+
+
+def validate_line_unit_costs(line_items: list[dict]) -> None:
+    """Refuse a PO whose line unit costs GP would refuse, before anything reaches GP or the outbox (#1394).
+
+    GP holds a line's unit cost to the cent, so 0.33333 fails inside eConnect with an error a buyer can't
+    act on. Refused here instead, naming each line, so the buyer rounds it and registers again."""
+    past = [
+        f"{li.get('product_code') or li.get('hardware_category') or 'a line'} at {li['unit_cost']}"
+        for li in line_items
+        if unit_cost_past_cents(li.get("unit_cost"))
+    ]
+    if past:
+        raise ValidationError(
+            "GP keeps a unit cost to the cent - round these to 2 decimal places: " + "; ".join(past),
+            field="line_items",
+        )
+
+
 def _effective_pool_kind(project_id: uuid.UUID | None, pool_kind: PoolKind | None) -> PoolKind:
     """The pool kind a PO stores (#832): the caller's pick on a PO with no project, STOCK otherwise."""
     if project_id is not None or pool_kind is None:
@@ -1879,6 +1909,8 @@ def update_line_item_unit_cost(
     # #1172: zero is a no-charge line, which drafting and registration already accept.
     if unit_cost < 0:
         raise ValidationError("Unit cost cannot be negative", field="unit_cost")
+    if unit_cost_past_cents(unit_cost):
+        raise ValidationError("GP keeps a unit cost to the cent - use at most 2 decimal places", field="unit_cost")
 
     stmt = select(POLineItem).where(POLineItem.id == line_item_id)
     poli = session.scalars(stmt).first()
