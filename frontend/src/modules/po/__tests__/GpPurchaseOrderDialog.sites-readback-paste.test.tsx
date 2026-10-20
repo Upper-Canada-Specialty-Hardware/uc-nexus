@@ -414,3 +414,18 @@ it('gives pasted rows on a project PO the cost code picked for all lines', async
     screen.getByText(/Added 2 lines from the paste \(1 into an empty row\)\. Every line is ready\./),
   ).toBeInTheDocument();
 });
+
+it('flags a unit cost past the cent, which GP refuses at the line (#1394)', async () => {
+  renderDialog();
+  await waitFor(() => expect(screen.getByLabelText('Unit of measure line 1')).not.toBeDisabled());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Paste from spreadsheet' }));
+  pasteRows(
+    'Item Number\tDescription\tQty\tU of M\tUnit Cost\tOrder As\r\n' +
+      'HINGE\tButt hinge\t3\tbox\t0.33333\t\r\n' +
+      'CLOSER\tDoor closer\t1\tbox\t12.300\t\r\n',
+  );
+
+  expect(screen.getByLabelText('Unit cost line 1')).toHaveValue('0.33333');
+  expect(screen.getAllByText('To the cent')).toHaveLength(1);
+});
