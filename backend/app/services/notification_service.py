@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import NotificationType
@@ -88,6 +88,30 @@ def pull_audience(source) -> str:
     its requester's name only, never a user id, so the person cannot be addressed directly."""
     value = getattr(source, "value", source)
     return SHIPPING_RECIPIENT_ROLE if value == "SHIPPING_OUT" else SHOP_ASSEMBLY_RECIPIENT_ROLE
+
+
+def notify_pull_created(session: Session, pull, why: str) -> Notification:
+    """Tell the warehouse a pull is waiting in its queue (#1391), the moment one is minted: a shipping
+    request accepted, or a shop assembly batch dispatched. The bell takes them to the queue."""
+    return create_notification(
+        session,
+        project_id=pull.project_id,
+        recipient_role=WAREHOUSE_RECIPIENT_ROLE,
+        notification_type=NotificationType.PULL_REQUEST_CREATED,
+        message=f"Pull Request {pull.request_number} is waiting to be picked: {why}.",
+        pull_request_id=pull.id,
+    )
+
+
+def withdraw_pull_created(session: Session, pull_request_id: uuid.UUID) -> None:
+    """Delete the "a pull is waiting" notice of a pull discarded before anyone worked it (#1391). Read
+    rows cascade with it."""
+    session.execute(
+        delete(Notification).where(
+            Notification.pull_request_id == pull_request_id,
+            Notification.type == NotificationType.PULL_REQUEST_CREATED,
+        )
+    )
 
 
 def audiences_for(roles) -> list[str] | None:

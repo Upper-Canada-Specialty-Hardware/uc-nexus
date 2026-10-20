@@ -42,6 +42,8 @@ const NOTIFICATION_LINKS: Record<string, string> = {
   CLASSIFICATION_CHANGED: '/app/shop-assembly/requests',
   // #1242: a shop assembly request was turned down.
   SHOP_ASSEMBLY_REQUEST_REJECTED: '/app/shop-assembly/requests?view=REJECTED',
+  // #1391: a new pull is waiting; the whole warehouse audience works it from the queue.
+  PULL_REQUEST_CREATED: '/app/warehouse/pull-requests',
 };
 
 interface Notification {
