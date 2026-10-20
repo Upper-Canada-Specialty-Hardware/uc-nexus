@@ -1823,5 +1823,8 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
     # IN_PROGRESS - so this is belt and braces against a future path that lets one exist, not a live
     # case. The FK cascades on delete anyway; stating it keeps the session's identity map honest.
     session.execute(delete(PullPickLineModel).where(PullPickLineModel.pull_request_id == pr.id))
+    # #1391: the warehouse was told this pull is waiting; it no longer is, so the notice goes with it
+    # rather than pointing the floor at a queue entry that is not there.
+    notification_service.withdraw_pull_created(session, pr.id)
     session.delete(pr)
     session.flush()
