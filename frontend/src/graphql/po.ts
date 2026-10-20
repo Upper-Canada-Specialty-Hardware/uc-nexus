@@ -738,3 +738,25 @@ export const EMAIL_PO_TO_VENDOR = gql`
     }
   }
 `;
+
+// #1689: what a GP company prints as itself - GP's name for it and its own address. A document names
+// the company it belongs to: a PO its company, a shipment its project.
+export const GET_COMPANY_LETTERHEAD = gql`
+  query GetCompanyLetterhead($company: String, $projectId: ID) {
+    companyLetterhead(company: $company, projectId: $projectId) {
+      company
+      name
+      address
+    }
+  }
+`;
+
+export const SET_COMPANY_ADDRESS = gql`
+  mutation SetCompanyAddress($address: String!, $company: String) {
+    setCompanyAddress(address: $address, company: $company) {
+      company
+      name
+      address
+    }
+  }
+`;

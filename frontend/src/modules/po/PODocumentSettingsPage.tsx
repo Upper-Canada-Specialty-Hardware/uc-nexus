@@ -3,7 +3,11 @@ import {
   Box, Typography, TextField, Button, Stack, Alert, CircularProgress,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_PO_DOCUMENT_SETTINGS, UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/po';
+import {
+  GET_COMPANY_LETTERHEAD, GET_PO_DOCUMENT_SETTINGS, SET_COMPANY_ADDRESS, UPDATE_PO_DOCUMENT_SETTINGS,
+} from '../../graphql/po';
+import type { CompanyLetterhead } from '../../company/letterhead';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import PageHeader from '../../components/PageHeader';
@@ -86,7 +90,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   const [customsBrokerBlock, setCustomsBrokerBlock] = useState(settings.customsBrokerBlock);
   const [fscNote, setFscNote] = useState(settings.fscNote);
   const [usaTariffNote, setUsaTariffNote] = useState(settings.usaTariffNote);
-  const [companyFromAddress, setCompanyFromAddress] = useState(settings.companyFromAddress);
   const [paymentTerms, setPaymentTerms] = useState(settings.paymentTerms);
   const [confirmWith, setConfirmWith] = useState(settings.confirmWith);
   const [footerNotes, setFooterNotes] = useState(settings.footerNotes);
@@ -107,7 +110,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           customsBrokerBlock,
           fscNote,
           usaTariffNote,
-          companyFromAddress,
           paymentTerms,
           confirmWith,
           footerNotes,
@@ -122,11 +124,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
     <Box sx={{ maxWidth: 820 }}>
       <Stack spacing={2.5}>
         <SectionHeading>Company &amp; terms</SectionHeading>
-        <TextField
-          label="Company from-address" value={companyFromAddress}
-          onChange={(e) => setCompanyFromAddress(e.target.value)}
-          fullWidth multiline minRows={3} helperText="Printed top-left of the document, one line each."
-        />
+        <CompanyAddressSection />
 
         <Stack direction="row" spacing={2}>
           <TextField
@@ -190,5 +188,60 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
       </Stack>
     </Box>
     </FadeIn>
+  );
+}
+
+/**
+ * #1689: each GP company prints GP's name for itself and its own address (ruled on #1762). The name is
+ * GP's and changes there; the address is set here, for the company the page is working in.
+ */
+function CompanyAddressSection() {
+  // A scoped user's company is the one the server scopes them to; only an admin, who switches, names one.
+  const { company, canSwitch } = useActingCompany();
+  const { data, loading, error } = useQuery<{ companyLetterhead: CompanyLetterhead }>(GET_COMPANY_LETTERHEAD, {
+    variables: { company: canSwitch ? company : null }, skip: !company,
+  });
+  if (!company) {
+    return <Alert severity="info">Pick a company in the app bar to set the address it prints.</Alert>;
+  }
+  if (error) {
+    return <Alert severity="error">The company's printed address could not be loaded. {userMessage(error, { reading: true })}</Alert>;
+  }
+  if (loading || !data) return <CircularProgress size={20} />;
+  return <CompanyAddressForm key={company} letterhead={data.companyLetterhead} />;
+}
+
+function CompanyAddressForm({ letterhead }: { letterhead: CompanyLetterhead }) {
+  const { showToast } = useToast();
+  const [address, setAddress] = useState(letterhead.address);
+  const [save, { loading: saving }] = useMutation(SET_COMPANY_ADDRESS, {
+    onCompleted: () => showToast(`${letterhead.company}'s printed address saved`, 'success'),
+    onError: (err) => showToast(userMessage(err), 'error'),
+  });
+  return (
+    <Stack spacing={1.5}>
+      <Stack direction="row" spacing={2} sx={{ alignItems: 'flex-start' }}>
+        <TextField
+          label="Printed name" value={letterhead.name} disabled
+          helperText={`GP's name for ${letterhead.company}. It changes in GP.`}
+          sx={{ flex: 2, minWidth: 0 }}
+        />
+        <TextField
+          label={`${letterhead.company} address`} value={address}
+          onChange={(e) => setAddress(e.target.value)}
+          multiline minRows={2}
+          helperText="Printed under the name, top-left of the PO and in the delivery request's Division Address box. One line each."
+          sx={{ flex: 3, minWidth: 0 }}
+        />
+      </Stack>
+      <Box>
+        <Button
+          variant="outlined" disabled={saving}
+          onClick={() => save({ variables: { address, company: letterhead.company } })}
+        >
+          {saving ? 'Saving...' : 'Save address'}
+        </Button>
+      </Box>
+    </Stack>
   );
 }

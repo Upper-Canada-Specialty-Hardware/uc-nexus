@@ -10,6 +10,7 @@ import theme from '../../theme';
 vi.mock('@clerk/clerk-react', () => ({ UserButton: () => null }));
 vi.mock('../NotificationBell', () => ({ default: () => null }));
 vi.mock('../TopBarCompany', () => ({ default: () => null }));
+vi.mock('../CompanyWordmark', () => ({ default: () => 'UC Nexus' }));
 vi.mock('../CompanyGate', () => ({ default: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock('../Sidebar', () => ({ default: () => null, NavRail: () => null }));
 vi.mock('../../relay/GpQueueChip', () => ({ default: () => null }));

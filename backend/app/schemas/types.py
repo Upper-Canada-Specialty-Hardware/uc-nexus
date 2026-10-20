@@ -661,6 +661,18 @@ class PODocumentData:
 
 
 @strawberry.type
+class CompanyLetterhead:
+    """What a GP company prints as itself on a document (#1689): GP's name, and its own address."""
+
+    company: str
+    # GP's name for the company - the live relay's, else the last one it reported, else the code.
+    name: str
+    # The address lines under the name, newline-separated. The company's own, else the shared
+    # PO document settings' from-address below its name line.
+    address: str
+
+
+@strawberry.type
 class PODocumentSettings:
     """Admin-configurable boilerplate for the generated supplier PO document (issue #230)."""
 

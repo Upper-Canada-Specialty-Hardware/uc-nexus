@@ -21,6 +21,7 @@ from app.errors import (
 )
 from app.models.enums import PODocumentType as PODocumentTypeDB
 from app.repositories import (
+    company_letterhead_repository,
     gp_outbox_repository,
     po_document_settings_repository,
     po_repository,
@@ -65,6 +66,7 @@ from .inputs import (
 )
 from .relay import resolve_gp_company
 from .types import (
+    CompanyLetterhead,
     EmailPoResult,
     GpPoSyncResult,
     NexusRegisterPoLinesResult,
@@ -292,6 +294,27 @@ def _known_company_or_refuse(company: str | None) -> str | None:
     if cleaned is not None and not nexus_companies.is_known_company(cleaned):
         raise ValidationError(f"Unknown GP company '{cleaned}'.", field="company")
     return cleaned
+
+
+def _letterhead_company(info: strawberry.Info, company: str | None) -> str:
+    """The company a letterhead is read or set for (#1689). A caller pinned to a company gets its own,
+    and naming another is refused; an unscoped UC NEXUS ADMIN names one an admin may act in."""
+    scope = tenant_scope(info)
+    if scope is not None:
+        named = user_repository.normalize_company(company)
+        if named is not None and named != scope:
+            raise ForbiddenError("A company's letterhead is read and set from inside that company.")
+        return scope
+    named = _known_company_or_refuse(company)
+    if named is None:
+        raise ValidationError("A GP company is required.", field="company")
+    return named
+
+
+def _printed_company_name(company: str) -> str:
+    """GP's name for the company, for text a PO sends out under it (#1689)."""
+    with SessionLocal() as session:
+        return company_letterhead_repository.printed_name(session, company)
 
 
 def _prepare_register_po(
@@ -723,6 +746,26 @@ class POQueries:
             return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0))), labels=labels) for r in rows]
 
     @strawberry.field
+    def company_letterhead(
+        self, info: strawberry.Info, company: str | None = None, project_id: strawberry.ID | None = None
+    ) -> CompanyLetterhead:
+        """What a GP company prints as itself on a document (#1689): GP's name and its own address.
+
+        A document prints the company it belongs to: the PO's names its company, a shipment its project
+        (whose company it is). A caller pinned to a company reads its own; only an unscoped UC NEXUS
+        ADMIN names another."""
+        with SessionLocal() as session:
+            if project_id is not None:
+                pid = uuid.UUID(str(project_id))
+                tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+                company = project_repository.get_project(session, pid).company
+            resolved = _letterhead_company(info, company)
+            letterhead = company_letterhead_repository.get_letterhead(session, resolved)
+            # The shared settings row is created on first read, and the fallback may have read it.
+            session.commit()
+            return CompanyLetterhead(**letterhead)
+
+    @strawberry.field
     def po_document_settings(self, info: strawberry.Info) -> PODocumentSettings:
         """The admin boilerplate for the generated supplier PO document (issue #230). Signed-in, not
         admin: the PO user's generate form reads it to render the document. Get-or-creates the singleton
@@ -922,12 +965,14 @@ class POMutations:
             )
 
         contact_name = (contact or {}).get("contact_name") or "there"
+        # #1689: signed by the PO's own company, GP's name for it, not one fixed company for all of them.
+        signed_by = await asyncio.to_thread(_printed_company_name, company)
         body = (
             f"Hello {contact_name},\n\n"
             f"Please find attached our purchase order {po_number}.\n\n"
             "Reply to this message with your acknowledgement and expected ship date.\n\n"
             "Thank you,\n"
-            "UC Hardware Inc."
+            f"{signed_by}"
         )
 
         try:
@@ -1339,6 +1384,16 @@ class POMutations:
         except Exception:  # noqa: BLE001 - best effort, the row is already deleted
             logger.warning("po document file not removed from storage", extra={"s3_key": s3_key}, exc_info=True)
         return True
+
+    @strawberry.mutation
+    def set_company_address(self, info: strawberry.Info, address: str, company: str | None = None) -> CompanyLetterhead:
+        """Set the address a GP company prints under its name (#1689). A PO manager sets their own
+        company's; an unscoped UC NEXUS ADMIN names the company. Blank goes back to the shared one."""
+        resolved = _letterhead_company(info, company)
+        with SessionLocal() as session:
+            letterhead = company_letterhead_repository.set_address(session, resolved, address)
+            session.commit()
+            return CompanyLetterhead(**letterhead)
 
     @strawberry.mutation
     def update_po_document_settings(

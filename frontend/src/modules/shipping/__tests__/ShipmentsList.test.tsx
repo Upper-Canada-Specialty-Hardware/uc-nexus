@@ -11,14 +11,20 @@ import {
   MARK_SHIPMENT_DELIVERED,
   MARK_SHIPMENT_PICKED_UP,
 } from '../../../graphql/shipping';
-import { GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
+import { GET_PROJECTS } from '../../../graphql/shared';
+import { GET_COMPANY_LETTERHEAD } from '../../../graphql/po';
 
 vi.setConfig({ testTimeout: 30_000 });
 configure({ asyncUtilTimeout: 10_000 });
 
-// jsdom cannot run the PDF layout engine, and none of these tests read the document itself.
+// jsdom cannot run the PDF layout engine. The stub keeps the props the list hands the document, which
+// is where a test reads what would be printed.
+const printed = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 vi.mock('@react-pdf/renderer', () => ({
-  pdf: () => ({ toBlob: () => Promise.resolve(new Blob()) }),
+  pdf: (element: { props: Record<string, unknown> }) => {
+    printed.props = element.props;
+    return { toBlob: () => Promise.resolve(new Blob()) };
+  },
   Document: () => null,
   Page: () => null,
   Text: () => null,
@@ -173,30 +179,19 @@ const projectsMock: MockedResponse = {
   },
 };
 
-// The Division Address box on a reprinted Shipment Site Form comes from the primary warehouse, not
-// from the shipment - the list reads it for the same reason the confirm form does.
-const warehousesMock: MockedResponse = {
-  request: { query: GET_WAREHOUSES, variables: { includeInactive: false } },
+// #1689: the Division Address box on a Shipment Site Form is the shipment's own company as it prints
+// itself - GP's name, then its address - read off the slip's project when the form is printed.
+const letterheadMock: MockedResponse = {
+  request: { query: GET_COMPANY_LETTERHEAD, variables: { projectId: 'proj-1' } },
   maxUsageCount: INFINITE,
   result: {
     data: {
-      warehouses: [
-        {
-          __typename: 'Warehouse',
-          id: 'w-1',
-          name: 'Coast Meridian',
-          code: 'CM',
-          company: 'TUBC',
-          address: '1120 1725 Coast Meridian Road',
-          city: 'Port Coquitlam',
-          province: 'BC',
-          postalCode: 'V3C 3T7',
-          isPrimary: true,
-          isActive: true,
-          createdAt: '2026-01-01T00:00:00Z',
-          updatedAt: '2026-01-01T00:00:00Z',
-        },
-      ],
+      companyLetterhead: {
+        __typename: 'CompanyLetterhead',
+        company: 'TUBC',
+        name: 'Test UBC',
+        address: '1120 1725 Coast Meridian Road\nPort Coquitlam BC V3C 3T7',
+      },
     },
   },
 };
@@ -204,7 +199,7 @@ const warehousesMock: MockedResponse = {
 function renderList(mocks: MockedResponse[], url = '/app/shipping/shipments') {
   render(
     <MemoryRouter initialEntries={[url]}>
-      <MockedProvider mocks={[projectsMock, warehousesMock, ...mocks]}>
+      <MockedProvider mocks={[projectsMock, letterheadMock, ...mocks]}>
         <ToastProvider>
           <ShipmentsList />
         </ToastProvider>
@@ -363,6 +358,21 @@ describe('ShipmentsList', () => {
     expect(screen.getAllByText('0019-EX')).toHaveLength(2);
     expect(screen.getByText('DOOR-1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Site Form' })).toBeInTheDocument();
+  });
+
+  it("prints the shipment's company in the Division Address box (#1689)", async () => {
+    window.open = vi.fn(() => ({ closed: false, location: { href: '' } })) as unknown as typeof window.open;
+    URL.createObjectURL = vi.fn(() => 'blob:site-form');
+    URL.revokeObjectURL = vi.fn();
+    printed.props = null;
+    renderList([packingSlipsMock([slip()])]);
+    await expandRow('PS-0019');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Site Form' }));
+
+    await waitFor(() =>
+      expect(printed.props?.divisionAddress).toBe('Test UBC\n1120 1725 Coast Meridian Road\nPort Coquitlam BC V3C 3T7'),
+    );
   });
 
   it('withdraws every action from a cancelled shipment and says why (#973)', async () => {

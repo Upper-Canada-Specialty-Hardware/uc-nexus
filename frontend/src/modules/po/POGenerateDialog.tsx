@@ -7,7 +7,8 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
+import { GET_COMPANY_LETTERHEAD, GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
+import { letterheadBlock, type CompanyLetterhead } from '../../company/letterhead';
 import { useToast } from '../../components/Toast';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
@@ -122,8 +123,18 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
     GET_PROJECT_SHIP_TO, { variables: { projectId: po.projectId }, skip: !open || !po.projectId },
   );
 
+  // #1689: the from-address is the PO's own company's - GP's name for it and its own address.
+  const {
+    data: letterheadData, loading: lLoading, error: lError, refetch: refetchLetterhead,
+  } = useQuery<{ companyLetterhead: CompanyLetterhead }>(GET_COMPANY_LETTERHEAD, {
+    // Read fresh each time the dialog opens: an address changed in settings this session must print.
+    variables: { company: po.gpCompany ?? po.company }, skip: !open, fetchPolicy: 'network-only',
+  });
+
   const settings = settingsData?.poDocumentSettings;
-  const loading = sLoading || pLoading;
+  const letterhead = letterheadData?.companyLetterhead;
+  const loading = sLoading || pLoading || lLoading;
+  const loadError = sError ?? lError;
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="md" fullWidth>
@@ -133,10 +144,11 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           {poNumber || po.requestNumber}
         </Box>
       </DialogTitle>
-      {open && settings && !loading ? (
+      {open && settings && letterhead && !loading ? (
         <GenerateForm
           po={po}
           settings={settings}
+          letterhead={letterhead}
           buyers={buyersData?.gpBuyers ?? []}
           buyersNote={buyersNote}
           gpTotals={totalsData?.gpPoTotals ?? null}
@@ -146,17 +158,23 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           onClose={onClose}
           onRefetch={onRefetch}
         />
-      ) : open && sError && !settings && !sLoading ? (
+      ) : open && loadError && !(settings && letterhead) && !loading ? (
         // #1279: the document cannot be built without the boilerplate, so say why instead of spinning.
         <>
           <DialogContent dividers>
             <Alert severity="error">
-              The PO document settings could not be loaded, so the document cannot be generated. {sError.message}
+              The PO document settings could not be loaded, so the document cannot be generated. {loadError.message}
             </Alert>
           </DialogContent>
           <DialogActions>
             <Button onClick={onClose}>Close</Button>
-            <Button variant="contained" onClick={() => { void refetchSettings().catch(() => undefined); }}>
+            <Button
+              variant="contained"
+              onClick={() => {
+                void refetchSettings().catch(() => undefined);
+                void refetchLetterhead().catch(() => undefined);
+              }}
+            >
               Retry
             </Button>
           </DialogActions>
@@ -175,6 +193,8 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
 interface GenerateFormProps {
   po: PurchaseOrder;
   settings: PODocumentSettings;
+  /** The PO's company as it prints itself (#1689). */
+  letterhead: CompanyLetterhead;
   buyers: string[];
   /** Why the GP buyer list is missing (relay offline or the read failed), when it is. */
   buyersNote: string | null;
@@ -189,7 +209,7 @@ interface GenerateFormProps {
 }
 
 function GenerateForm({
-  po, settings, buyers, buyersNote, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
+  po, settings, letterhead, buyers, buyersNote, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
 }: GenerateFormProps) {
   const { showToast } = useToast();
   const dd = po.documentData;
@@ -287,7 +307,7 @@ function GenerateForm({
       date: orderDate || new Date().toLocaleDateString(),
       requiredBy: requiredByLabel,
       quotationNumber: quotationNumber || null,
-      companyFromAddress: settings.companyFromAddress,
+      companyFromAddress: letterheadBlock(letterhead),
       vendorName: poVendorName(po) || '-',
       vendorAddress: vendorAddress || null,
       shipTo,
@@ -325,7 +345,7 @@ function GenerateForm({
       includeUsaTariff,
       includeCustoms,
     };
-  }, [po, quotationNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
+  }, [po, quotationNumber, settings, letterhead, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
     requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, includeFsc, includeUsaTariff,
     includeCustoms]);
 

@@ -24,6 +24,7 @@ import {
 import { useIdentity } from '../hooks/useIdentity';
 import { cssSpring } from '../motion/css';
 import companyLogo from '../assets/brand/ucsh-logo-mark.png';
+import CompanyWordmark from './CompanyWordmark';
 
 interface SidebarItem {
   label: string;
@@ -243,7 +244,9 @@ export default function Sidebar({ open, onClose }: MobileNavDrawerProps) {
       <Box sx={{ width: 264 }} role="navigation">
         <Box sx={{ px: 2.5, py: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1.25 }}>
           <Box component="img" src={companyLogo} alt="" sx={{ height: 32, display: 'block' }} />
-          <Typography variant="h6">UC Nexus</Typography>
+          <Typography variant="h6" component="div" sx={{ minWidth: 0 }}>
+            <CompanyWordmark />
+          </Typography>
         </Box>
         <NavContent onNavigate={onClose} />
       </Box>

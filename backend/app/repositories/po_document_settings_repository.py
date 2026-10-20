@@ -4,6 +4,11 @@ INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1107 / #1142,
 there is ONE settings row shared by every GP company, not one per company. Editing it as TUBC
 also changes what UBC and UCSH POs print, and that is meant to be so. Do not scope it by
 company, and do not report the shared row as a finding in later audits.
+
+The one exception is the from-address (product owner ruling, #1689 / #1762, 2026-10-19): each company
+prints GP's name for itself and its own address, kept in `company_letterheads`
+(company_letterhead_repository.py). `company_from_address` here is only the fallback for a company that
+has no address of its own yet, read below its first line.
 """
 
 import uuid
