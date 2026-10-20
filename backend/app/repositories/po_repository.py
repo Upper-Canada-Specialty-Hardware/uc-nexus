@@ -1469,6 +1469,30 @@ def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> No
         raise ConflictError(QUEUED_REGISTRATION_EDIT_REFUSAL)
 
 
+def _update_po_after_receiving_started(
+    po: PurchaseOrder, *, expected_delivery_date, notes: str | None, others: dict[str, bool]
+) -> PurchaseOrder:
+    """What may still change once receiving has started (#1488, ruled option b): the expected delivery date
+    - the vendor's answer for when the rest arrives, which the back-order grid reads its urgency from - and
+    the notes. Everything else stays frozen. `others` names each other field and whether this edit really
+    changes it; only a real change is refused, so a tab resending an unchanged value still saves.
+
+    The expected date is Nexus's own: GP has no copy of it and the mirror never writes it, so nothing goes
+    to GP. The status is left alone - a partially received PO stays partially received."""
+    changed = [name for name, is_change in others.items() if is_change]
+    if changed:
+        raise InvalidStateTransitionError(
+            "Once receiving has started, only the expected delivery date and notes can change - not "
+            + ", ".join(changed)
+            + "."
+        )
+    if expected_delivery_date is not _UNSET:
+        po.expected_delivery_date = expected_delivery_date
+    if notes is not None:
+        po.notes = notes if notes.strip() else None
+    return po
+
+
 def update_po(
     session: Session,
     po_id: uuid.UUID,
@@ -1485,7 +1509,7 @@ def update_po(
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
     - Validate status in (Draft, GP_Registered, Vendor_Confirmed) (InvalidStateTransitionError)
-    - Validate no ReceiveRecords exist (InvalidStateTransitionError)
+    - Once receiving has started, only the expected delivery date and notes (#1488)
     - Validate po_number uniqueness within project if provided
     - Update only provided fields (project_id uses the _UNSET sentinel)
     - Return updated PO
@@ -1495,16 +1519,34 @@ def update_po(
         raise NotFoundError(f"Purchase order {po_id} not found")
     _lock_po_row(session, po)
 
+    receive_count = session.scalar(select(func.count()).select_from(ReceiveRecord).where(ReceiveRecord.po_id == po_id))
+    if po.status == POStatus.PARTIALLY_RECEIVED or (
+        po.status in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED) and receive_count
+    ):
+        return _update_po_after_receiving_started(
+            po,
+            expected_delivery_date=expected_delivery_date,
+            notes=notes,
+            others={
+                "the PO number": po_number is not None and (po_number.strip() or None) != po.po_number,
+                "the vendor quote number": vendor_quote_number is not None
+                and (vendor_quote_number.strip() or None) != po.vendor_quote_number,
+                "the project": project_id is not _UNSET and project_id is not None and project_id != po.project_id,
+                "the preferred delivery date": preferred_delivery_date is not _UNSET
+                and preferred_delivery_date is not None
+                and preferred_delivery_date != po.preferred_delivery_date,
+                "the shipping cost": shipping_cost is not _UNSET
+                and _coerce_order_cost(shipping_cost, "shipping_cost") != po.shipping_cost,
+                "the tariffs": tariff_amount is not _UNSET
+                and _coerce_order_cost(tariff_amount, "tariff_amount") != po.tariff_amount,
+                "Stock or Overhead": pool_kind is not None and po.project_id is None and pool_kind != po.pool_kind,
+            },
+        )
+
     if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(
             f"This PO can no longer be edited - it is {status_label(po.status)}. {REFRESH_HINT}"
         )
-
-    # Check for existing receive records
-    receive_count_stmt = select(func.count()).select_from(ReceiveRecord).where(ReceiveRecord.po_id == po_id)
-    receive_count = session.scalar(receive_count_stmt)
-    if receive_count and receive_count > 0:
-        raise InvalidStateTransitionError("Cannot edit PO after receiving has started")
 
     # #1595: what the queued registration will write back - lines live in their own updates; here the
     # PO number, project, shipping cost and tariff. Notes, vendor quote # and the preferred date are
@@ -1567,8 +1609,8 @@ def update_po(
             po.po_number = None
 
     # Issue #216: the two delivery dates are status-gated. Preferred is the PM's ask, captured on the
-    # DRAFT request; expected is the vendor's answer, only enterable once the PO exists in GP (the
-    # DRAFT/GP_REGISTERED/VENDOR_CONFIRMED guard above already blocks both after receiving starts).
+    # DRAFT request; expected is the vendor's answer, only enterable once the PO exists in GP (and, since
+    # #1488, still after receiving starts - see _update_po_after_receiving_started).
     #
     # #1463: tri-state, like the order costs. Omitted (_UNSET) leaves a date alone, a value sets it, and
     # an explicit null clears it - but only in the status where that date is editable. Outside it a null
