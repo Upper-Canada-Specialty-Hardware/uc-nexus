@@ -84,7 +84,9 @@ def _project(session, company: str, *, ossa: bool = False) -> Project:
     return p
 
 
-def _po_priced_row(session, project, warehouse, *, unit_cost, quantity, age_days=2, code=CODE) -> InventoryLocation:
+def _po_priced_row(
+    session, project, warehouse, *, unit_cost, quantity, age_days=2, code=CODE, currency=None, cost_currency=None
+) -> InventoryLocation:
     """Shelf hardware whose cost lives on its PO line - the ordinary received row.
 
     The PO line AND the receive line are both built because `ck_inventory_locations_has_origin`
@@ -96,6 +98,7 @@ def _po_priced_row(session, project, warehouse, *, unit_cost, quantity, age_days
         project_id=project.id,
         company=project.company,
         status=POStatus.CLOSED,
+        currency=currency,
     )
     session.add(po)
     session.flush()
@@ -133,6 +136,7 @@ def _po_priced_row(session, project, warehouse, *, unit_cost, quantity, age_days
         product_code=code,
         quantity=quantity,
         deficient_quantity=0,
+        cost_currency=cost_currency,
         received_at=datetime.utcnow() - timedelta(days=age_days),
     )
     session.add(row)
@@ -140,7 +144,9 @@ def _po_priced_row(session, project, warehouse, *, unit_cost, quantity, age_days
     return row
 
 
-def _row_priced_row(session, project, warehouse, *, unit_cost, quantity, age_days=1, code=CODE) -> InventoryLocation:
+def _row_priced_row(
+    session, project, warehouse, *, unit_cost, quantity, age_days=1, code=CODE, cost_currency=None
+) -> InventoryLocation:
     """Shelf hardware carrying its own off-PO cost - what the SharePoint migration wrote."""
     stock = StockItem(
         id=uuid.uuid4(),
@@ -163,6 +169,7 @@ def _row_priced_row(session, project, warehouse, *, unit_cost, quantity, age_day
         quantity=quantity,
         deficient_quantity=0,
         unit_cost=unit_cost,
+        cost_currency=cost_currency,
         received_at=datetime.utcnow() - timedelta(days=age_days),
     )
     session.add(row)
@@ -170,7 +177,7 @@ def _row_priced_row(session, project, warehouse, *, unit_cost, quantity, age_day
     return row
 
 
-def _stock_row(session, warehouse, *, quantity, unit_cost, code=CODE) -> StockItem:
+def _stock_row(session, warehouse, *, quantity, unit_cost, code=CODE, cost_currency=None) -> StockItem:
     stock = StockItem(
         id=uuid.uuid4(),
         warehouse_id=warehouse.id,
@@ -179,6 +186,7 @@ def _stock_row(session, warehouse, *, quantity, unit_cost, code=CODE) -> StockIt
         quantity=quantity,
         deficient_quantity=0,
         unit_cost=unit_cost,
+        cost_currency=cost_currency,
         received_at=datetime.utcnow(),
     )
     session.add(stock)
@@ -381,6 +389,95 @@ def test_staged_hardware_nothing_can_price_counts_zero(db_session):
     assert value["non_ossa"]["total_value"] == Decimal("0.00")
 
 
+# --- US dollars, beside the Canadian figure (#1557) ---------------------------------------------------
+
+
+def test_hardware_bought_in_us_dollars_is_its_own_figure(db_session):
+    """US$100 is not C$100. Hardware priced in US dollars is summed apart, unconverted, and is in neither
+    the Canadian hardware figure nor the total. A PO-linked row takes its PO's currency over its own."""
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("10.00"), quantity=4, currency="CAD")
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("100.00"), quantity=3, currency="USD")
+    # Received before the row carried a currency: the PO's USD is the truth.
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("1.00"), quantity=7, currency="USD")
+    # A PO the backfill has not reached yet reads as CAD - no currency is not a foreign one.
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("2.00"), quantity=1, currency=None)
+    # Off-PO units carry their own currency.
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("5.00"), quantity=2, cost_currency="USD")
+
+    _stock_row(db_session, warehouse, quantity=10, unit_cost=Decimal("2.50"))
+    _stock_row(db_session, warehouse, quantity=4, unit_cost=Decimal("20.00"), code="XX-1", cost_currency="USD")
+    db_session.flush()
+
+    value = _value(db_session, company)
+
+    # CAD: 4 x 10.00 + 1 x 2.00. USD: 3 x 100.00 + 7 x 1.00 + 2 x 5.00.
+    assert value["non_ossa"]["hardware_value"] == Decimal("42.00")
+    assert value["non_ossa"]["usd_hardware_value"] == Decimal("317.00")
+    assert value["non_ossa"]["total_value"] == Decimal("42.00")
+    assert value["general_stock"]["hardware_value"] == Decimal("25.00")
+    assert value["general_stock"]["usd_hardware_value"] == Decimal("80.00")
+    assert value["ossa"]["usd_hardware_value"] == Decimal("0.00")
+    assert value["overhead"]["usd_hardware_value"] == Decimal("0.00")
+
+
+def test_a_po_linked_row_is_valued_in_its_pos_currency_not_its_own(db_session):
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+    _po_priced_row(
+        db_session, project, warehouse, unit_cost=Decimal("3.00"), quantity=2, currency="CAD", cost_currency="USD"
+    )
+    db_session.flush()
+
+    value = _value(db_session, company)
+
+    assert value["non_ossa"]["hardware_value"] == Decimal("6.00")
+    assert value["non_ossa"]["usd_hardware_value"] == Decimal("0.00")
+
+
+def test_staged_hardware_is_split_by_the_currency_of_the_rows_it_was_picked_from(db_session):
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("12.50"), quantity=4, age_days=3, currency="USD")
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("7.25"), quantity=3, age_days=1)
+    # Picks all 4 US-dollar units and 1 Canadian one; 3 of the 5 stay staged. Per staged unit that is
+    # US$50.00 / 5 = 10.00 and C$7.25 / 5 = 1.45.
+    _stage_by_picking(db_session, project, quantity=5, ship=2)
+
+    value = _value(db_session, company)
+
+    # Shelf: 2 x 7.25 = 14.50 CAD. Staged: 3 x 1.45 = 4.35 CAD and 3 x 10.00 = 30.00 USD.
+    assert value["non_ossa"]["hardware_value"] == Decimal("18.85")
+    assert value["non_ossa"]["usd_hardware_value"] == Decimal("30.00")
+
+
+def test_the_project_average_fallback_is_split_by_currency_too(db_session):
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    emptied = _row_priced_row(
+        db_session, project, warehouse, unit_cost=Decimal("8.00"), quantity=2, cost_currency="USD"
+    )
+    emptied.quantity = 0
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("4.00"), quantity=1)
+    _stage_without_picking(db_session, project, quantity=5)
+    db_session.flush()
+
+    value = _value(db_session, company)
+
+    # The average of 8.00 and 4.00 is 6.00 a unit: 4.00 of it in US dollars, 2.00 in Canadian.
+    # Shelf 1 x 4.00 CAD; staged 5 x 2.00 = 10.00 CAD and 5 x 4.00 = 20.00 USD.
+    assert value["non_ossa"]["hardware_value"] == Decimal("14.00")
+    assert value["non_ossa"]["usd_hardware_value"] == Decimal("20.00")
+
+
 def test_another_companys_rows_never_reach_this_companys_figures(db_session):
     """Every half of the page scopes through its own root - projects for shelf, staged and doors,
     warehouses for the pool (#637). A single unscoped half would show one tenant another's money."""
@@ -475,9 +572,9 @@ def test_companies_are_listed_from_projects_and_scoped(db_session):
 
 INVENTORY_VALUE_FIELDS = """
   company
-  ossa { hardwareValue doorCount doorValue totalValue }
-  nonOssa { hardwareValue doorCount doorValue totalValue }
-  generalStock { hardwareValue doorCount doorValue totalValue }
+  ossa { hardwareValue doorCount doorValue totalValue usdHardwareValue }
+  nonOssa { hardwareValue doorCount doorValue totalValue usdHardwareValue }
+  generalStock { hardwareValue doorCount doorValue totalValue usdHardwareValue }
   averageDoorCost
   averageDoorCostUpdatedBy
   doorsOnHand { id projectId projectNumber projectName isOssa quantity }

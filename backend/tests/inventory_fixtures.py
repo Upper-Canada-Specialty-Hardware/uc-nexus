@@ -95,6 +95,7 @@ def make_stock_item(
     bay: str | None = None,
     warehouse_id: uuid.UUID | None = None,
     unit_cost=None,
+    cost_currency: str | None = None,
 ) -> StockItem:
     si = StockItem(
         id=uuid.uuid4(),
@@ -107,6 +108,7 @@ def make_stock_item(
         row=row,
         bay=bay,
         unit_cost=unit_cost,
+        cost_currency=cost_currency,
         received_at=datetime.utcnow(),
     )
     session.add(si)
@@ -131,6 +133,7 @@ def make_il(
     shipment_return_item_id: uuid.UUID | None = None,
     warehouse_id: uuid.UUID | None = None,
     unit_cost=None,
+    cost_currency: str | None = None,
 ) -> InventoryLocation:
     """A project InventoryLocation. Defaults to a stock allocation origin unless an origin FK is given."""
     if stock_item_id is None and po_line_item_id is None and shipment_return_item_id is None:
@@ -151,6 +154,7 @@ def make_il(
         row=row,
         bay=bay,
         unit_cost=unit_cost,
+        cost_currency=cost_currency,
         received_at=datetime.utcnow(),
     )
     session.add(il)

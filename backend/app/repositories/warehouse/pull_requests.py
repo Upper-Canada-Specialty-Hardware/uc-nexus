@@ -1354,7 +1354,7 @@ def _return_units_to_project_inventory(
     if il is None:
         from app.models.project import Project as ProjectModel
 
-        from .inventory import resolve_project_combo_cost
+        from .inventory import resolve_project_combo_price
 
         now = datetime.utcnow()
         # Scoped to the project's own company (#1253): unscoped, the lookup picks the oldest primary
@@ -1364,7 +1364,9 @@ def _return_units_to_project_inventory(
         # Every prior row for the combo is gone (that is why this one exists), so the cost is
         # re-resolved from the schedule. It is also the anchor stock row's price key (#942), so the
         # anchor is a pool row at the restored units' own price, never one at some other price.
-        restored_cost = resolve_project_combo_cost(session, project_id, hardware_category, product_code)
+        restored_cost, restored_currency = resolve_project_combo_price(
+            session, project_id, hardware_category, product_code
+        )
         stock_row = _find_or_create_stock_row(
             session,
             warehouse_id=warehouse_id,
@@ -1375,6 +1377,7 @@ def _return_units_to_project_inventory(
             bay=None,
             received_at=now,
             unit_cost=restored_cost,
+            cost_currency=restored_currency,
         )
         il = InventoryLocationModel(
             project_id=project_id,
@@ -1387,6 +1390,7 @@ def _return_units_to_project_inventory(
             deficient_quantity=0,
             # Leaving it null valued the restored units at zero.
             unit_cost=restored_cost,
+            cost_currency=restored_currency,
             received_at=now,
         )
         session.add(il)
