@@ -64,3 +64,20 @@ it.each([true, false])('every count header fits two lines at its floor (anySched
     .filter((h) => h.lines > 2);
   expect(tooTall).toEqual([]);
 });
+
+// #1491: units ordered past the latest schedule are their own figure, read beside Required.
+it('puts Surplus right after Required, and says so in its tooltip', () => {
+  const fields = buildColumns(true).map((c) => c.field);
+  expect(fields.indexOf('surplusQuantity')).toBe(fields.indexOf('requiredQuantity') + 1);
+  const surplus = buildColumns(true).find((c) => c.field === 'surplusQuantity');
+  render(<>{surplus?.renderHeader?.({} as GridColumnHeaderParams)}</>);
+  expect(screen.getByText('Surplus')).toBeInTheDocument();
+  expect(screen.getByLabelText(/^Ordered past what the latest hardware schedule asks for/)).toBeInTheDocument();
+});
+
+it('shows Surplus as not applicable when no selected project has a schedule', () => {
+  const surplus = buildColumns(false).find((c) => c.field === 'surplusQuantity');
+  render(<>{surplus?.renderCell?.({ row: { surplusQuantity: 4 } } as never)}</>);
+  expect(screen.getByText('—')).toBeInTheDocument();
+  expect(screen.queryByText('4')).not.toBeInTheDocument();
+});
