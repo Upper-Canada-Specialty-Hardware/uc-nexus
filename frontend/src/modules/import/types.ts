@@ -267,6 +267,9 @@ export interface ClassificationRow {
   // #1392: the project already has this product as UCH Shop / UCH Site, so By Others is not offered for
   // it (the server refuses it too). Only a product new to the project or never classified may be By Others.
   byOthersLocked?: boolean;
+  // #1443: the product is on the project's classification list, so its answer is the list's, filled in
+  // and read-only. It is changed on the project's Hardware Classifications page, not by an import.
+  listed?: boolean;
 }
 
 export const BY_OTHERS = 'BY_OTHERS';

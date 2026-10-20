@@ -10,6 +10,7 @@ export const GET_PROJECT_HARDWARE_CLASSIFICATIONS = gql`
       quantity
       openingCount
       choice
+      onSchedule
     }
   }
 `;
@@ -53,6 +54,7 @@ export const SET_HARDWARE_CLASSIFICATIONS = gql`
       quantity
       openingCount
       choice
+      onSchedule
     }
   }
 `;

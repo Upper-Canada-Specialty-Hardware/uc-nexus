@@ -27,6 +27,7 @@ from app.models.hardware import HardwareItem
 from app.models.hardware_classification_change import HardwareClassificationChange
 from app.models.project import Opening, Project
 from app.models.project_excluded_item import ProjectExcludedItem
+from app.models.project_product_classification import ProjectProductClassification
 from app.models.pull_request import PullRequest
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 from app.models.shop_assembly import (
@@ -70,6 +71,25 @@ def _item(session, project, opening, code, *, cls=None, qty=2, state=HardwareIte
         )
     )
     session.flush()
+
+
+def _list(session, project, code, cls) -> None:
+    """Put a product on the project's classification list (#1443) directly."""
+    session.add(
+        ProjectProductClassification(
+            project_id=project.id, hardware_category=CAT, product_code=code, classification=cls
+        )
+    )
+    session.flush()
+
+
+def _listed(session, project) -> dict[str, tuple[Classification, str | None]]:
+    return {
+        r.product_code: (r.classification, r.updated_by)
+        for r in session.scalars(
+            select(ProjectProductClassification).where(ProjectProductClassification.project_id == project.id)
+        )
+    }
 
 
 def _choices(session, project) -> dict[str, C]:
@@ -170,6 +190,28 @@ def test_each_product_reads_as_the_import_choice_it_holds(db_session):
         "OTHER-1": C.BY_OTHERS,
     }
     assert (rows["SHOP-1"]["quantity"], rows["SHOP-1"]["opening_count"]) == (5, 2)
+    assert all(r["on_schedule"] for r in rows.values())
+
+
+def test_the_list_holds_a_listed_products_choice_and_its_dropped_products(db_session):
+    """#1443: a listed product reads as the list says, whatever its rows hold, and a product only on the
+    list - one a newer schedule dropped - is still shown, off the schedule with nothing on it."""
+    project = _project(db_session)
+    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
+    _list(db_session, project, "HG-1", Classification.SHOP_HARDWARE)
+    _list(db_session, project, "GONE-1", Classification.SITE_HARDWARE)
+
+    rows = {r["product_code"]: r for r in repo.list_product_classifications(db_session, project.id)}
+
+    assert rows["HG-1"]["choice"] == C.UCH_SHOP and rows["HG-1"]["on_schedule"] is True
+    assert rows["GONE-1"] == {
+        "hardware_category": CAT,
+        "product_code": "GONE-1",
+        "quantity": 0,
+        "opening_count": 0,
+        "choice": C.UCH_SITE,
+        "on_schedule": False,
+    }
 
 
 # --- allowed moves ------------------------------------------------------------------------------
@@ -187,6 +229,36 @@ def test_site_to_shop_writes_every_row_and_logs_it(db_session):
     assert classes == {Classification.SHOP_HARDWARE}
     assert [(w.from_choice, w.to_choice, w.changed_by) for w in written] == [("UCH_SITE", "UCH_SHOP", "Greg")]
     assert repo.list_changes(db_session, project.id)[0].product_code == "HG-1"
+    # #1443: the page writes the project's classification list too, and says who did.
+    assert _listed(db_session, project) == {"HG-1": (Classification.SHOP_HARDWARE, "Greg")}
+
+
+def test_a_product_only_on_the_list_can_be_changed(db_session):
+    """#1443: a product a newer schedule dropped is still the project's to classify; with no rows, the list
+    is all the change writes."""
+    project = _project(db_session)
+    _list(db_session, project, "GONE-1", Classification.SITE_HARDWARE)
+
+    [plan] = repo.plan_product_classifications(db_session, project.id, [(CAT, "GONE-1", C.UCH_SHOP)])
+    assert (plan["blocks"], plan["adjusts"], plan["went_out"]) == ([], [], [])
+
+    written = repo.set_product_classifications(db_session, project.id, [(CAT, "GONE-1", C.UCH_SHOP)], changed_by="Greg")
+
+    assert [(w.from_choice, w.to_choice) for w in written] == [("UCH_SITE", "UCH_SHOP")]
+    assert _listed(db_session, project) == {"GONE-1": (Classification.SHOP_HARDWARE, "Greg")}
+    assert _choices(db_session, project) == {"GONE-1": C.UCH_SHOP}
+
+
+def test_a_product_only_on_the_list_cannot_go_to_by_others(db_session):
+    """#1392 holds for a listed product off the schedule: it is classified."""
+    project = _project(db_session)
+    _list(db_session, project, "GONE-1", Classification.SITE_HARDWARE)
+
+    with pytest.raises(ConflictError) as err:
+        repo.set_product_classifications(db_session, project.id, [(CAT, "GONE-1", C.BY_OTHERS)], changed_by="Greg")
+
+    assert "GONE-1" in err.value.message and "can't be changed to By Others" in err.value.message
+    assert _listed(db_session, project) == {"GONE-1": (Classification.SITE_HARDWARE, None)}
 
 
 def test_by_others_and_back_writes_and_removes_the_exclusion(db_session):
@@ -196,9 +268,11 @@ def test_by_others_and_back_writes_and_removes_the_exclusion(db_session):
 
     repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
     assert _choices(db_session, project)["HG-1"] == C.BY_OTHERS
+    assert _listed(db_session, project) == {}
 
     repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
     assert _choices(db_session, project)["HG-1"] == C.UCH_SITE
+    assert _listed(db_session, project) == {"HG-1": (Classification.SITE_HARDWARE, "Greg")}
     assert (
         db_session.scalars(select(ProjectExcludedItem).where(ProjectExcludedItem.project_id == project.id)).all() == []
     )

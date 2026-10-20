@@ -70,10 +70,19 @@ export interface ProjectHardwareScheduleHardwareItemResponse {
   classification: string | null;
 }
 
+// #1443: one product on the project's classification list - the Site / Shop the project holds for it,
+// kept apart from any schedule.
+export interface ProjectProductClassificationResponse {
+  hardwareCategory: string;
+  productCode: string;
+  classification: string;
+}
+
 export interface ProjectHardwareScheduleResponse {
   project: ProjectHardwareScheduleProjectResponse;
   openings: ProjectHardwareScheduleOpeningResponse[];
   hardwareItems: ProjectHardwareScheduleHardwareItemResponse[];
+  productClassifications: ProjectProductClassificationResponse[];
 }
 
 function mapProject(p: ProjectHardwareScheduleProjectResponse): ParsedProject {

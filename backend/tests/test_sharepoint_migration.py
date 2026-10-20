@@ -627,6 +627,62 @@ def test_classification_written_only_where_null(db_session):
     assert already.classification == Classification.SHOP_HARDWARE
 
 
+def _migrate_classification(session, project, classification: Classification) -> None:
+    wh = warehouse_admin_repository.get_primary_warehouse_id(session)
+    migration_repo.migrate_inventory(
+        session,
+        [_entry(wh)],
+        ACTOR,
+        classifications=[
+            {
+                "project_id": project.id,
+                "hardware_category": CAT,
+                "product_code": CODE,
+                "classification": classification,
+            }
+        ],
+    )
+
+
+def test_a_first_classification_from_the_migration_is_listed(db_session):
+    """#1443: a product whose rows the migration classifies, and that now all agree, joins the project's
+    classification list. One whose rows disagree (the test above) is not listed."""
+    from app.repositories import classification_override_repository
+
+    project = _make_project(db_session)
+    row = _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=1, classification=None)
+
+    _migrate_classification(db_session, project, Classification.SITE_HARDWARE)
+
+    db_session.refresh(row)
+    assert row.classification == Classification.SITE_HARDWARE
+    assert classification_override_repository.listed_classifications(db_session, project.id) == {
+        (CAT, CODE): Classification.SITE_HARDWARE
+    }
+
+
+def test_a_listed_products_rows_take_the_lists_classification(db_session):
+    """#1443: the list holds a listed product's classification, so the migration's answer doesn't change it."""
+    from app.models.project_product_classification import ProjectProductClassification
+
+    project = _make_project(db_session)
+    row = _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=1, classification=None)
+    db_session.add(
+        ProjectProductClassification(
+            project_id=project.id,
+            hardware_category=CAT,
+            product_code=CODE,
+            classification=Classification.SHOP_HARDWARE,
+        )
+    )
+    db_session.flush()
+
+    _migrate_classification(db_session, project, Classification.SITE_HARDWARE)
+
+    db_session.refresh(row)
+    assert row.classification == Classification.SHOP_HARDWARE
+
+
 # --- covered schedule rows flip to IN_PO, greedy floor ------------------------------------------
 
 
