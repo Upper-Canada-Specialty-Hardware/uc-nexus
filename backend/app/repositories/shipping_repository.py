@@ -4,7 +4,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
@@ -962,6 +962,25 @@ def get_shipping_out_request(session: Session, request_id: uuid.UUID) -> Shippin
     return session.scalars(stmt).unique().first()
 
 
+def open_request_clause():
+    """What makes a shipping request "open" (#1197): someone is still waiting on it. A rejected request is
+    finished, and so is an accepted one whose pull has been completed or cancelled. A PENDING request is
+    open on its own status: a cancelled pull sends its request back to PENDING but leaves pull_request_id
+    pointing at the cancelled pull until a re-accept overwrites it. Needs PullRequest outer-joined on the
+    request's pull_request_id.
+
+    The project page's open requests tile counts with it and the requests page's open view lists with it
+    (#1551), so the number and the list can't disagree."""
+    return and_(
+        ShippingOutRequest.status != ShippingOutRequestStatus.REJECTED,
+        or_(
+            ShippingOutRequest.status == ShippingOutRequestStatus.PENDING,
+            PullRequestModel.id.is_(None),
+            PullRequestModel.status.notin_([PullRequestStatus.COMPLETED, PullRequestStatus.CANCELLED]),
+        ),
+    )
+
+
 def get_shipping_out_requests(
     session: Session,
     project_id: uuid.UUID | None = None,
@@ -969,20 +988,29 @@ def get_shipping_out_requests(
     reopenable_only: bool = False,
     *,
     company: str | None = None,
+    open_only: bool = False,
 ) -> list[ShippingOutRequest]:
     """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
     given. Items are eagerly loaded (shipping_out_request_to_type walks them).
 
     reopenable_only (#325): keep only requests still in the reopen window - their minted warehouse
     PullRequest is still PENDING (the warehouse has not started the pull). The Approved view passes this
-    so it lists exactly the requests Reopen can act on, not every request ever accepted."""
+    so it lists exactly the requests Reopen can act on, not every request ever accepted.
+
+    open_only (#1551): every open request whatever its status - pending ones and accepted ones whose pull
+    is still in flight - by the clause the project page's tile counts with. `status` is ignored with it."""
     effective_status = status if status is not None else ShippingOutRequestStatus.PENDING
     stmt = (
         select(ShippingOutRequest)
         .options(selectinload(ShippingOutRequest.items))
-        .where(ShippingOutRequest.status == effective_status)
         .order_by(ShippingOutRequest.created_at.asc())
     )
+    if open_only:
+        stmt = stmt.outerjoin(PullRequestModel, PullRequestModel.id == ShippingOutRequest.pull_request_id).where(
+            open_request_clause()
+        )
+    else:
+        stmt = stmt.where(ShippingOutRequest.status == effective_status)
     if project_id is not None:
         stmt = stmt.where(ShippingOutRequest.project_id == project_id)
     if company is not None:

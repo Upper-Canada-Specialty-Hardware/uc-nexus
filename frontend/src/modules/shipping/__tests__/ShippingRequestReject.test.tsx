@@ -179,3 +179,27 @@ it('follows the url to the rejected tab while the page is already open (#1243)',
 
   expect(await screen.findByText(/Rejected by Rita Rejector/)).toBeInTheDocument();
 });
+
+it('the open view lists pending and in-flight requests, each with its own actions (#1551)', async () => {
+  const pending = (requestsMock.result as { data: { shippingOutRequests: Record<string, unknown>[] } }).data
+    .shippingOutRequests[0];
+  const openMock: MockedResponse = {
+    request: { query: GET_SHIPPING_OUT_REQUESTS, variables: { projectId: 'proj-1', status: null, openOnly: true } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        shippingOutRequests: [
+          pending,
+          { ...pending, id: 'req-2', requestNumber: 'SOR-0002', status: 'APPROVED', stage: 'PULLING', pullRequestId: 'pr-2' },
+        ],
+      },
+    },
+  };
+  renderRequests([openMock], '/app/shipping/requests?project=proj-1&view=OPEN');
+
+  fireEvent.click(await screen.findByText('SOR-0001'));
+  expect(await screen.findByRole('button', { name: 'Accept' })).toBeInTheDocument();
+  fireEvent.click(screen.getByText('SOR-0002'));
+  expect(await screen.findByRole('button', { name: 'Reopen' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Open', pressed: true })).toBeInTheDocument();
+});

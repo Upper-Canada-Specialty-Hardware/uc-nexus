@@ -160,11 +160,11 @@ test('the stats come from adminProjectDetail, not from walking the project', asy
   await expectTile('Purchase orders', '9');
 });
 
-test('the open requests tile opens the requests scoped to this project (#1310)', async () => {
+test('the open requests tile opens the open view scoped to this project (#1310, #1551)', async () => {
   renderPage([detailMock()]);
 
-  const link = await screen.findByRole('link', { name: "Open this project's shipping requests" });
-  expect(link).toHaveAttribute('href', `/app/shipping/requests?project=${PROJECT_ID}`);
+  const link = await screen.findByRole('link', { name: "Open this project's open shipping requests" });
+  expect(link).toHaveAttribute('href', `/app/shipping/requests?project=${PROJECT_ID}&view=OPEN`);
 });
 
 test('the inventory tile opens this project inventory (#1359)', async () => {
