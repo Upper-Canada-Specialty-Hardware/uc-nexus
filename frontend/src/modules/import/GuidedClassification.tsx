@@ -18,7 +18,7 @@ import {
   groupRowsByFields,
   type GroupByField,
 } from './classificationGrouping';
-import { type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
+import { BY_OTHERS, type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ClassificationRowsGrid from './ClassificationRowsGrid';
 
@@ -173,9 +173,12 @@ export default function GuidedClassification({
 
   // #734: one pick answers the card outright (PO's two stored axes ride together), so every answer
   // advances on the same event.
+  // #1392: a card holding a product the project already classified can't be answered By Others.
+  const byOthersLocked = !!currentCard?.rows.some((r) => r.byOthersLocked);
   const classify = useCallback(
     (value: string) => {
       if (!currentCard) return;
+      if (value === BY_OTHERS && currentCard.rows.some((r) => r.byOthersLocked)) return;
       onClassify(uniqueKeys(currentCard.rows), value);
       goNext();
     },
@@ -403,6 +406,7 @@ export default function GuidedClassification({
                 size="small"
                 variant="contained"
                 color={opt.color}
+                disabled={byOthersLocked && opt.value === BY_OTHERS}
                 onClick={() => classify(opt.value)}
               >
                 {opt.label} ({keyForIndex(i)})

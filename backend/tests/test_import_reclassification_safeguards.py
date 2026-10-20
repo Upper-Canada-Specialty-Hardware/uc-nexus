@@ -303,3 +303,48 @@ def test_the_batch_review_flags_a_line_that_is_no_longer_shop_work(db_session):
     reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
     assert reasons["HG-200"] is None
     assert reasons["HG-100"] is not None and "not shop hardware" in reasons["HG-100"]
+
+
+def _replace_with_by_others(session, project, codes: list[str], by_others: list[str]):
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01")],
+            "hardware_items": [_item("A01", code) for code in codes],
+            "excluded_items": [{"hardware_category": CAT, "product_code": code} for code in by_others],
+            "replace_schedule": True,
+        },
+        created_by="Pat PM",
+    )
+    session.flush()
+
+
+def _excluded(session, project) -> set[str]:
+    from app.models.project_excluded_item import ProjectExcludedItem
+
+    return set(
+        session.scalars(select(ProjectExcludedItem.product_code).where(ProjectExcludedItem.project_id == project.id))
+    )
+
+
+def test_a_replace_cannot_take_a_classified_product_to_by_others(db_session):
+    """#1392 ruling: a product the project already has as Shop / Site can't become By Others through a
+    schedule replace either. Nothing is written."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-1": Classification.SITE_HARDWARE})
+
+    with pytest.raises(ValidationError) as err:
+        _replace_with_by_others(db_session, project, ["HG-1"], ["HG-1"])
+
+    assert "HG-1" in err.value.message and "can't be changed to By Others" in err.value.message
+    assert _excluded(db_session, project) == set()
+
+
+def test_a_new_product_may_still_be_by_others_at_import(db_session):
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-1": Classification.SITE_HARDWARE})
+
+    _replace_with_by_others(db_session, project, ["HG-1", "HG-NEW"], ["HG-NEW"])
+
+    assert _excluded(db_session, project) == {"HG-NEW"}

@@ -190,8 +190,9 @@ def test_site_to_shop_writes_every_row_and_logs_it(db_session):
 
 
 def test_by_others_and_back_writes_and_removes_the_exclusion(db_session):
+    """An unclassified product may go to By Others (#1392 refuses only a classified one) and come back."""
     project = _project(db_session)
-    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
+    _item(db_session, project, _opening(db_session, project), "HG-1")
 
     repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
     assert _choices(db_session, project)["HG-1"] == C.BY_OTHERS
@@ -376,16 +377,9 @@ def test_shop_to_site_is_refused_while_an_active_batch_pull_is_unfinished(db_ses
 
 def test_by_others_on_a_po_is_allowed_and_the_rows_stop_counting_as_ordered(db_session):
     """#1050 ruling: the PO does not depend on the classification - it is shown as unaffected, and the
-    schedule rows lose their ordered link."""
+    schedule rows lose their ordered link. Only an unclassified product can get here since #1392."""
     project = _project(db_session)
-    _item(
-        db_session,
-        project,
-        _opening(db_session, project),
-        "HG-1",
-        cls=Classification.SITE_HARDWARE,
-        state=HardwareItemState.IN_PO,
-    )
+    _item(db_session, project, _opening(db_session, project), "HG-1", state=HardwareItemState.IN_PO)
 
     plan = repo.plan_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)])
     assert plan[0]["blocks"] == []
@@ -400,7 +394,7 @@ def test_by_others_on_a_po_is_allowed_and_the_rows_stop_counting_as_ordered(db_s
 
 def test_by_others_with_a_pending_shipping_request_is_allowed_and_leaves_the_request(db_session):
     project = _project(db_session)
-    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
+    _item(db_session, project, _opening(db_session, project), "HG-1")
     req = ShippingOutRequest(
         id=uuid.uuid4(),
         request_number=f"SO-{uuid.uuid4().hex[:6]}",
@@ -431,6 +425,39 @@ def test_by_others_with_a_pending_shipping_request_is_allowed_and_leaves_the_req
     assert db_session.scalars(
         select(ShippingOutRequestItem).where(ShippingOutRequestItem.shipping_out_request_id == req.id)
     ).all()
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        [Classification.SITE_HARDWARE],
+        [Classification.SHOP_HARDWARE],
+        [Classification.SITE_HARDWARE, Classification.SHOP_HARDWARE],
+    ],
+    ids=["site", "shop", "mixed"],
+)
+def test_a_classified_product_cannot_go_to_by_others(db_session, classes):
+    """#1392 ruling: a product that already has a classification can't be changed to By Others. The
+    preview shows why; the save refuses and changes nothing."""
+    project = _project(db_session)
+    opening = _opening(db_session, project)
+    for cls in classes:
+        _item(db_session, project, opening, "HG-1", cls=cls, state=HardwareItemState.IN_PO)
+    before = _choices(db_session, project)["HG-1"]
+
+    [plan] = repo.plan_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)])
+    assert len(plan["blocks"]) == 1 and "can't be changed to By Others" in plan["blocks"][0]
+    assert plan["adjusts"] == [] and plan["unaffected"] == []
+
+    with pytest.raises(ConflictError) as err:
+        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
+    assert "HG-1" in err.value.message
+
+    assert _choices(db_session, project)["HG-1"] == before
+    excluded = db_session.scalars(select(ProjectExcludedItem).where(ProjectExcludedItem.project_id == project.id))
+    assert excluded.all() == []
+    states = set(db_session.scalars(select(HardwareItem.state).where(HardwareItem.project_id == project.id)))
+    assert states == {HardwareItemState.IN_PO}
 
 
 def test_the_plan_writes_nothing(db_session):

@@ -166,13 +166,21 @@ def test_a_product_moved_to_site_after_the_tab_opened_is_refused(db_session):
         _raise_directly(db_session, project)
 
 
+def _exclude(session, project) -> None:
+    """HG-100 By Others while its rows still say SHOP_HARDWARE. The override can no longer make that
+    (#1392 refuses a classified product going to By Others), but a project excluded before the ruling
+    still holds it, so the exclusion row is written directly."""
+    from app.models.project_excluded_item import ProjectExcludedItem
+
+    session.add(ProjectExcludedItem(project_id=project.id, hardware_category="HINGE", product_code="HG-100"))
+    session.flush()
+
+
 def test_a_product_marked_by_others_is_refused_whatever_its_rows_say(db_session):
     """By Others leaves the rows' SHOP_HARDWARE in place; the exclusion is what says it is not ours."""
     project = _project(db_session)
     _schedule_only(db_session, project)
-    classification_override_repository.set_product_classifications(
-        db_session, project.id, [("HINGE", "HG-100", HardwareClassificationChoice.BY_OTHERS)], changed_by="owner"
-    )
+    _exclude(db_session, project)
 
     with pytest.raises(ValidationError, match="By Others on this project") as excinfo:
         _raise_directly(db_session, project)
@@ -193,9 +201,7 @@ def test_the_composer_flags_a_by_others_product(db_session):
     """The composer marks what the server would refuse, so the wizard never offers it."""
     project = _project(db_session)
     _schedule_only(db_session, project)
-    classification_override_repository.set_product_classifications(
-        db_session, project.id, [("HINGE", "HG-100", HardwareClassificationChoice.BY_OTHERS)], changed_by="owner"
-    )
+    _exclude(db_session, project)
 
     rows = request_composer.get_request_coverage(db_session, project.id, ["A01"])
 
