@@ -1107,6 +1107,8 @@ def accept_shipping_out_request(
     req.approved_by = accepted_by
     req.approved_at = now
     req.pull_request_id = pr.id
+
+    notification_service.notify_pull_created(session, pr, f"shipping request accepted by {accepted_by}")
     return req
 
 

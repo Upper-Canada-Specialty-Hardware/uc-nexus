@@ -258,6 +258,10 @@ class NotificationType(str, enum.Enum):
     # A shop assembly request was turned down (#1242). For the shop assembly audience, with the reason,
     # the way a rejected shipping request tells its requester.
     SHOP_ASSEMBLY_REQUEST_REJECTED = "SHOP_ASSEMBLY_REQUEST_REJECTED"
+    # A pull is waiting in the warehouse queue (#1391): a shipping request was accepted, or a shop
+    # assembly batch was dispatched. For the warehouse audience, who otherwise found new pulls only by
+    # watching the queue.
+    PULL_REQUEST_CREATED = "PULL_REQUEST_CREATED"
 
 
 class AuditEntityType(str, enum.Enum):

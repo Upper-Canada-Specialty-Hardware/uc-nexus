@@ -46,7 +46,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequestItem,
     ShopAssemblyRequestOpening,
 )
-from app.services import gp_window
+from app.services import gp_window, notification_service
 from app.status_labels import REFRESH_HINT, status_label
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
@@ -725,6 +725,7 @@ def create_shop_assembly_batch(
         )
 
     batch.pull_request_id = pull.id
+    notification_service.notify_pull_created(session, pull, f"shop assembly batch dispatched by {created_by}")
 
     # One reservation row per combo across the whole batch, over the allocated quantities, so the
     # pull asks for exactly what is reserved and the pick stays all-or-nothing per combo.
@@ -864,8 +865,6 @@ def reject_shop_assembly_request(
             "This request has already been batched, so it cannot be rejected whole. Cancel the "
             "batch's pull to undo it, and dismiss whatever is left."
         )
-
-    from app.services import notification_service
 
     # #1242: a reason is required and the shop is told, as a shipping rejection does (#972).
     # #1208: the column is String(500); an over-long reason is a field error, not an overflow at
