@@ -1547,6 +1547,8 @@ def update_po(
         raise InvalidStateTransitionError(
             f"This PO can no longer be edited - it is {status_label(po.status)}. {REFRESH_HINT}"
         )
+    if receive_count:
+        raise InvalidStateTransitionError("Cannot edit PO after receiving has started")
 
     # #1595: what the queued registration will write back - lines live in their own updates; here the
     # PO number, project, shipping cost and tariff. Notes, vendor quote # and the preferred date are
