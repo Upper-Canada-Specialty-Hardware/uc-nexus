@@ -51,6 +51,11 @@ class StockItem(Base):
     # coalesce(unit_cost, 0). Numeric(19,5) for the same reason as inventory_locations.unit_cost: a
     # destock or a transfer copies that column onto this one, so a GP-fed cost ends up here as well.
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    # The currency unit_cost is in (#1557): a pool row has no PO link to read it from, so it travels
+    # with the cost - set at receipt from the PO's currency and copied wherever unit_cost is copied.
+    # Null means CAD, the functional currency. Part of the merge key with unit_cost, so a row never
+    # holds US-dollar and Canadian-dollar units at once.
+    cost_currency: Mapped[str | None] = mapped_column(String(15), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -40,7 +40,7 @@ from app.models.shipping_out_request import (
 )
 from app.repositories import project_repository, request_return_notes
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
-from app.repositories.warehouse import resolve_project_combo_cost
+from app.repositories.warehouse import resolve_project_combo_price
 from app.services import notification_service
 from app.services.locking import lock_rows
 from app.status_labels import REFRESH_HINT, status_label
@@ -847,7 +847,9 @@ def create_shipment_return(
         # units' cost is re-resolved: the project's newest effective cost for the combo, else the
         # schedule's. Without this every return valued at zero from then on - the shipped units'
         # PO-line or off-PO cost was simply dropped on the floor here.
-        returned_cost = resolve_project_combo_cost(session, ps.project_id, psi.hardware_category, psi.product_code)
+        returned_cost, returned_currency = resolve_project_combo_price(
+            session, ps.project_id, psi.hardware_category, psi.product_code
+        )
 
         if disposition == ReturnDisposition.RETURN_TO_PROJECT:
             # Fresh, unlocated inventory for the origin project — re-enters Put-Away.
@@ -864,6 +866,7 @@ def create_shipment_return(
                 bay=None,
                 shipment_return_item_id=return_item.id,
                 unit_cost=returned_cost,
+                cost_currency=returned_currency,
                 received_at=now,
             )
             session.add(inv_loc)
@@ -891,6 +894,7 @@ def create_shipment_return(
                 bay=None,
                 received_at=now,
                 unit_cost=returned_cost,
+                cost_currency=returned_currency,
             )
             stock_row.quantity += qty
             if disposition == ReturnDisposition.RMA_DEFECTIVE:

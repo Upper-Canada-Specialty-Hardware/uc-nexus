@@ -44,6 +44,7 @@ def _po(
     vendor_name="Acme",
     doc_date="2026-01-05",
     freight=None,
+    currency=None,
 ):
     po = {
         "po_number": po_number,
@@ -57,6 +58,8 @@ def _po(
     }
     if freight is not None:
         po["freight"] = freight
+    if currency is not None:
+        po["currency"] = currency
     return po
 
 
@@ -988,3 +991,101 @@ def test_the_new_po_cursor_is_scoped_to_one_company(db_session, project):
 
 def test_a_company_with_no_gp_number_has_no_cursor(db_session, project):
     assert sync_repo.highest_gp_po_number(db_session, "UBC") is None
+
+
+# --- the PO's currency (#1557) -------------------------------------------------------------------------
+
+
+def test_the_mirror_stores_the_pos_currency(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557A", [_line(16384, "IT1", 5)], currency="usd "), pm)
+    db_session.flush()
+    assert _get(db_session, "PO1557A").currency == "USD"
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557A", [_line(16384, "IT1", 5)], currency=""), pm)
+    db_session.flush()
+    # GP's blank is the functional currency.
+    assert _get(db_session, "PO1557A").currency == "CAD"
+
+
+def test_a_relay_that_sends_no_currency_leaves_the_stored_one_alone(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557B", [_line(16384, "IT1", 5)], currency="USD"), pm)
+    db_session.flush()
+
+    # An older relay's payload: no currency key at all.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557B", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    assert _get(db_session, "PO1557B").currency == "USD"
+
+
+def _on_hand(db_session, po: PurchaseOrder, quantity: int) -> None:
+    """Hardware received off the PO's first line, `quantity` of it still on the shelf."""
+    from app.models.inventory import InventoryLocation
+    from app.models.receiving import ReceiveLineItem, ReceiveRecord
+    from app.repositories import warehouse_admin_repository
+
+    line = po.line_items[0]
+    record = ReceiveRecord(id=uuid.uuid4(), po_id=po.id, received_at=datetime.utcnow(), received_by="receiver")
+    db_session.add(record)
+    db_session.flush()
+    receive_line = ReceiveLineItem(
+        id=uuid.uuid4(),
+        receive_record_id=record.id,
+        po_line_item_id=line.id,
+        hardware_category=line.hardware_category,
+        product_code=line.product_code,
+        quantity_received=max(quantity, 1),
+    )
+    db_session.add(receive_line)
+    db_session.flush()
+    db_session.add(
+        InventoryLocation(
+            id=uuid.uuid4(),
+            project_id=po.project_id,
+            po_line_item_id=line.id,
+            receive_line_item_id=receive_line.id,
+            warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(db_session),
+            hardware_category=line.hardware_category,
+            product_code=line.product_code,
+            quantity=quantity,
+            deficient_quantity=0,
+            received_at=datetime.utcnow(),
+        )
+    )
+    db_session.flush()
+
+
+def test_the_currency_backfill_asks_only_about_pos_behind_on_hand_hardware(db_session, project):
+    pm = _project_map(db_session)
+    for number in ("PO1557C", "PO1557D", "PO1557E", "PO1557F"):
+        sync_repo.upsert_mirrored_po(db_session, COMPANY, _po(number, [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    _on_hand(db_session, _get(db_session, "PO1557C"), 3)  # on hand, currency unknown: asked
+    _on_hand(db_session, _get(db_session, "PO1557D"), 0)  # all of it gone: not asked
+    _on_hand(db_session, _get(db_session, "PO1557E"), 2)  # on hand, currency known: not asked
+    _get(db_session, "PO1557E").currency = "CAD"
+    db_session.flush()  # PO1557F has nothing received at all: not asked
+
+    asked = sync_repo.po_numbers_missing_currency(db_session, COMPANY, limit=100)
+    assert "PO1557C" in asked
+    assert not {"PO1557D", "PO1557E", "PO1557F"} & set(asked)
+    assert "PO1557C" not in sync_repo.po_numbers_missing_currency(
+        db_session, COMPANY, limit=100, exclude=frozenset({"PO1557C"})
+    )
+    assert "PO1557C" not in sync_repo.po_numbers_missing_currency(db_session, "UCSH", limit=100)
+
+
+def test_the_currency_backfill_writes_only_an_unknown_currency(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557G", [_line(16384, "IT1", 5)]), pm)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO1557H", [_line(16384, "IT1", 5)], currency="CAD"), pm)
+    db_session.flush()
+
+    count = sync_repo.set_po_currencies(db_session, COMPANY, {"PO1557G": "usd", "PO1557H": "USD"})
+    db_session.expire_all()
+
+    assert count == 1
+    assert _get(db_session, "PO1557G").currency == "USD"
+    # The mirror's word stands: the backfill only fills a gap.
+    assert _get(db_session, "PO1557H").currency == "CAD"

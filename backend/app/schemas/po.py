@@ -8,6 +8,7 @@ from datetime import date
 import strawberry
 
 from app.auth import ForbiddenError, current_user, resolve_display_name, tenant_scope
+from app.currency import normalize_currency
 from app.database import SessionLocal
 from app.demo import DEMO_BUYER_ID, is_demo_company
 from app.errors import (
@@ -529,7 +530,7 @@ def _persist_register_po(
     project_id=None,
 ) -> PurchaseOrder:
     with SessionLocal() as session:
-        po_repository.register_po_in_gp(
+        registered = po_repository.register_po_in_gp(
             session,
             po_id,
             gp_vendor_id=gp_vendor_id,
@@ -543,6 +544,10 @@ def _persist_register_po(
             tariff_amount=tariff_amount,
             project_id=project_id,
         )
+        # #1557: the currency GP resolved for the PO off its vendor, so the hardware it brings in is
+        # valued in the right currency from the first receipt. The mirror keeps it current from then on.
+        if gp_result.get("currency"):
+            registered.currency = normalize_currency(gp_result["currency"])
         gp_idempotency.stamp_result_id(session, key, "register_po_in_gp", gp_result, str(po_id))
         session.commit()
         return po_to_type(po_repository.reload_po(session, po_id))

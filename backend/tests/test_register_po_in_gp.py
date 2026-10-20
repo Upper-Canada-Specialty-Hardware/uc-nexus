@@ -1447,3 +1447,25 @@ def test_registering_a_line_at_a_higher_quantity_keeps_its_ties(db_session):
     _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 10), (lines["HG-200"], "HINGE", "HG-200", 1)])
 
     assert _tied_units(db_session, hinge.id) == 6
+
+
+# --- the currency GP resolved (#1557) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("answered", "stored"), [("USD", "USD"), ("cad", "CAD"), (None, None)])
+def test_registration_stores_the_currency_gp_resolved(monkeypatch, db_session, answered, stored):
+    """GP picks the PO's currency off its vendor and the relay hands it back with the number. A relay
+    too old to say leaves it unknown for the mirror to fill, rather than guessing CAD."""
+    draft = _stock_draft_po(db_session)
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        answer = {"po_number": "PO1557001", "company": "TUBC"}
+        if answered is not None:
+            answer["currency"] = answered
+        return answer
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    result = _run_register(draft, str(uuid.uuid4()))
+
+    assert result.queued is False
+    assert po_repository.reload_po(db_session, draft.id).currency == stored
