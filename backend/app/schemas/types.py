@@ -2046,7 +2046,11 @@ class HardwareStatusByProduct:
 
     hardware_category: str
     product_code: str
+    # What the latest schedule asks for (#1491).
     required_quantity: int
+    # Units still on a PO that the latest schedule no longer asks for (#1491): ordered before a revision
+    # lowered or dropped the product, kept on its PO (#1123), and not counted as required.
+    surplus_quantity: int
     not_purchased: int
     po_drafted: int
     on_order: int
