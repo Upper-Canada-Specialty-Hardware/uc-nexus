@@ -40,6 +40,10 @@ from .types import ClerkUser
 # authority stops at; DB Admin is the tier above it.
 _CROSS_TENANT_ROLES = (NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE)
 
+# Roles nobody may be given any more (#1390). Literals rather than imports: app/auth.py no longer
+# names them. scripts/retire_schedule_import_role.py takes them off the accounts that held them.
+_RETIRED_ROLES = frozenset({"Hardware Schedule Import"})
+
 
 def _require_target_in_scope(info: strawberry.Info, target_user_id: str) -> str | None:
     """Refuse a caller who is editing an account outside their own company, and return their scope.
@@ -115,6 +119,23 @@ def _enforce_db_admin_grant_rules(info: strawberry.Info, *, target_user_id: str,
         raise ForbiddenError(f"only a {DB_ADMIN_ROLE} may grant or remove {DB_ADMIN_ROLE}")
 
 
+def _refuse_retired_roles(*, target_user_id: str, new_roles: list[str]) -> None:
+    """Refuse a roles list that ADDS a retired role, for every caller.
+
+    Hardware Schedule Import (#1390) was a module role that opened nothing, and the product owner
+    retired it rather than give it a page. The User Management page no longer offers it; this is what
+    stops a direct mutation granting it. A list that still carries it on an account that already holds
+    it is let through, so saving such an account before the strip script reaches it is not refused -
+    only the target's current roles can tell the two apart, so they are read only when the list names
+    a retired role."""
+    named = _RETIRED_ROLES & set(new_roles)
+    if not named:
+        return
+    added = named - set(user_repository.get_user_roles(target_user_id))
+    if added:
+        raise ForbiddenError(f"{', '.join(sorted(added))} is retired and can no longer be granted")
+
+
 @strawberry.type
 class UserQueries:
     @strawberry.field
@@ -168,6 +189,7 @@ class UserMutations:
         else changed in the meantime is refused rather than replacing their grants."""
         _enforce_tenant_owner_grant_rules(info, target_user_id=user_id, new_roles=roles)
         _enforce_db_admin_grant_rules(info, target_user_id=user_id, new_roles=roles)
+        _refuse_retired_roles(target_user_id=user_id, new_roles=roles)
         if expected_roles is None:
             return clerk_user_to_type(user_repository.update_user_roles(user_id, roles))
         return clerk_user_to_type(user_repository.update_user_roles(user_id, roles, expected_roles=expected_roles))
