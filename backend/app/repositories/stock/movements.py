@@ -25,6 +25,7 @@ from app.repositories.warehouse import (
     get_reserved_quantities,
     location_detail,
 )
+from app.repositories.warehouse.inventory import check_expected_quantity
 from app.services.locking import lock_inventory_combo
 
 from .common import (
@@ -51,12 +52,16 @@ def destock_inventory(
     target_bay: str | None,
     performed_by: str,
     destock_cost: DestockCost | None = None,
+    expected_quantity: int | None = None,
 ) -> StockItem:
     """Move quantity units from a project's InventoryLocation row into the stock pool.
 
     `destock_cost` is required (#942): ZERO lands the units at $0 (left behind on a job), KEEP at
     their own effective price. It defaults to None only so a missing choice reaches the caller as a
     ValidationError rather than a TypeError.
+
+    `expected_quantity` is the row's count the dialog showed; a row that moved since is refused, so a
+    resend after a lost reply cannot destock the units twice (#1552).
     """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
@@ -69,6 +74,7 @@ def destock_inventory(
     il = lock_inventory_combo(session, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
+    check_expected_quantity(il.quantity, expected_quantity)
     pool_cost = destock_unit_cost(session, il, destock_cost)
 
     # DEFICIENT_SWAP destocks the deficient units themselves and tightens that flag; every other
@@ -209,11 +215,15 @@ def allocate_stock_to_project(
     target_bay: str | None,
     performed_by: str,
     entry_source: InventoryEntrySource = InventoryEntrySource.STOCK_ALLOCATION,
+    expected_quantity: int | None = None,
 ) -> InventoryLocationModel:
     """Transfer `quantity` units from a stock row into a project's inventory.
 
     `entry_source` (#1699) is what the row says brought it in: an allocate off the pool unless the
     caller is the legacy migration, which lands its project rows through here too.
+
+    `expected_quantity` is the pool row's count the dialog showed; a row that moved since is refused,
+    so a resend after a lost reply cannot allocate the units twice (#1552).
 
     Creates an InventoryLocation whose origin is the stock_items row (stock_item_id set,
     po_line_item_id / receive_line_item_id NULL). The CHECK constraint ck_inventory_locations_has_origin
@@ -237,6 +247,7 @@ def allocate_stock_to_project(
 
     # Locked and re-read (#1156): two allocations off one pool row would otherwise both pass the check.
     si = lock_stock_item(session, stock_item_id)
+    check_expected_quantity(si.quantity, expected_quantity)
     if provided:
         ensure_registered_location(session, si.warehouse_id, target_aisle, target_row, target_bay)
     available = si.quantity - (si.deficient_quantity or 0)
@@ -437,12 +448,16 @@ def transfer_inventory(
     dest_row: str,
     dest_bay: str,
     performed_by: str,
+    expected_quantity: int | None = None,
 ) -> dict:
     """Move `quantity` available units from a source row to a destination location/warehouse.
 
     Partial + immediate. Source keeps the remainder (an InventoryLocation may sit at 0, a fully
     drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
     row (same origin + location) or a new row is created. Same- and cross-warehouse use one path.
+
+    `expected_quantity` is the source row's count the dialog showed; a row that moved since is
+    refused, so a resend after a lost reply cannot move the units twice (#1552).
     """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
@@ -474,6 +489,7 @@ def transfer_inventory(
         il = lock_inventory_combo(session, source_id)
         if il is None:
             raise NotFoundError(f"Inventory location {source_id} not found")
+        check_expected_quantity(il.quantity, expected_quantity)
         available = il.quantity - (il.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
@@ -548,6 +564,7 @@ def transfer_inventory(
             lock=False,
         )
         si = lock_pool_source(session, si.id, dest.id if dest is not None else None)
+        check_expected_quantity(si.quantity, expected_quantity)
         available = si.quantity - (si.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")

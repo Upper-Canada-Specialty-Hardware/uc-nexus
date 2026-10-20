@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { userMessage } from '../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import {
   Box,
   Button,
@@ -12,7 +13,7 @@ import {
   MenuItem,
   Typography,
 } from '@mui/material';
-import { useQuery, useMutation } from '@apollo/client/react';
+import { useApolloClient, useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
@@ -27,6 +28,8 @@ export interface TransferSource {
   type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
   id: string;
   productCode: string;
+  /** The row's count as shown. Sent with the move, so a resend after a lost reply is refused (#1552). */
+  quantity: number;
   available: number;
   warehouseId: string | null;
   aisle?: string | null;
@@ -58,6 +61,7 @@ function sourceLocation(s: TransferSource): string {
 
 export default function TransferDialog({ sources, onClose, onSuccess }: TransferDialogProps) {
   const { showToast } = useToast();
+  const client = useApolloClient();
   const single = sources.length === 1 ? sources[0] : null;
   const multi = sources.length > 1;
 
@@ -161,6 +165,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
               destAisle: aisle.trim(),
               destRow: row.trim(),
               destBay: bay.trim(),
+              expectedQuantity: s.quantity,
             },
           },
         });
@@ -182,8 +187,16 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
       const summary = multi
         ? `${message} — ${done.size} of ${sources.length - alreadyThere.size} transferred. Transfer again to move the rest.`
         : message;
-      setErrorMsg(summary);
       showToast(summary, 'error');
+      if (isStaleRowRefusal(err)) {
+        // A source moved since this opened - or its move landed and only the reply was lost (#1552).
+        // Every count here is that stale snapshot, so close: the refetch redraws the grid, and
+        // reopening starts from what the rows hold now.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+        return;
+      }
+      setErrorMsg(summary);
     } finally {
       setSubmitting(false);
     }
