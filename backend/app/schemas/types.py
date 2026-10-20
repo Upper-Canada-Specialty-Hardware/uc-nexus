@@ -2684,13 +2684,16 @@ class InventoryValueBucket:
     """One of the three INVENTORY VALUE figures: hardware plus doors, in dollars.
 
     `total_value` is the sum of the two halves as they are printed, so the caption under the figure
-    always adds up to the figure.
+    always adds up to the figure. Both are Canadian dollars. `usd_hardware_value` is the hardware
+    bought on USD purchase orders, in US dollars at its PO cost and never converted (#1557): it is in
+    neither of the other two, and the page shows it beside the total as its own figure.
     """
 
     hardware_value: float
     door_count: int
     door_value: float
     total_value: float
+    usd_hardware_value: float
 
 
 @strawberry.type

@@ -43,11 +43,17 @@ vi.mock('../../../hooks/useIdentity', () => ({
   }),
 }));
 
-const bucket = (hardwareValue: number, doorCount: number, doorValue: number) => ({
+const bucket = (
+  hardwareValue: number,
+  doorCount: number,
+  doorValue: number,
+  usdHardwareValue = 0,
+) => ({
   hardwareValue,
   doorCount,
   doorValue,
   totalValue: hardwareValue + doorValue,
+  usdHardwareValue,
   __typename: 'InventoryValueBucket',
 });
 
@@ -73,7 +79,8 @@ const doorRow = (
 const PAGE = {
   company: COMPANY,
   ossa: bucket(59.25, 5, 1250),
-  nonOssa: bucket(24, 2, 500),
+  // #1557: US-dollar hardware sits beside the Canadian figure, never inside it.
+  nonOssa: bucket(24, 2, 500, 1317.5),
   generalStock: bucket(25, 6, 1500),
   // #832: the Overhead half of the pool - hardware only, never doors.
   overhead: bucket(12, 0, 0),
@@ -143,6 +150,18 @@ it('shows the four figures as currency with their hardware/doors split', async (
   expect(screen.queryByText('General stock')).not.toBeInTheDocument();
 
   expect(screen.getByText(/hardware \$59\.25 · doors \$1,250\.00/)).toBeInTheDocument();
+});
+
+it('shows USD PO hardware beside its figure, unconverted, only where there is any (#1557)', async () => {
+  renderPage();
+
+  const usd = await screen.findByText('+ US$1,317.50 on USD POs');
+  // On the Non-OSSA tile, under its caption - and the Canadian total does not include it.
+  expect(usd.closest('.MuiCard-root')).toBeNull();
+  expect(usd.previousElementSibling).toHaveTextContent('hardware $24.00 · doors $500.00');
+  expect(usd.previousElementSibling?.previousElementSibling).toHaveTextContent(currency(524));
+  // The other three tiles buy nothing in US dollars, so they say nothing about it.
+  expect(screen.getAllByText(/on USD POs/)).toHaveLength(1);
 });
 
 it('stacks each figure card above its caption without a flex column to collapse it', async () => {

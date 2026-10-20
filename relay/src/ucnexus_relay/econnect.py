@@ -2736,7 +2736,7 @@ def insert_whrecline_row(
 _PO_HEADER_COLS = (
     "'{src}' AS src, PONUMBER AS po_raw, RTRIM(PONUMBER) AS po, POSTATUS AS status, "
     "RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, "
-    "FRTAMNT AS freight, DEX_ROW_TS AS modified"
+    "FRTAMNT AS freight, RTRIM(CURNCYID) AS currency, DEX_ROW_TS AS modified"
 )
 _MAX_PO_PAGE_SIZE = 1000
 # SQL Server caps a statement at 2100 parameters, and this is the hard ceiling under it. It is no
@@ -2888,7 +2888,7 @@ def _read_received_sums(conn, po_numbers: list[str], *, page_size: int) -> dict[
 
 def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
     """Attach lines + received qty to a list of header rows (each has .src/.po/.status/.vendor/
-    .vendname/.docdate/.freight/.modified). Splits work vs history so each reads its own tables.
+    .vendname/.docdate/.freight/.currency/.modified). Splits work vs history so each reads its own tables.
     `page_size` is the caller's own page, and bounds every IN-list read below it."""
     work_pos = [h.po for h in headers if h.src == "work"]
     hist_pos = [h.po for h in headers if h.src == "history"]
@@ -2931,6 +2931,10 @@ def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
                 # FRTAMNT, the header's freight charge. GP owns it: a PO edited in GP after Nexus
                 # registered it converges to whatever GP ended up holding.
                 "freight": float(h.freight or 0),
+                # CURNCYID, the PO's currency (#1557). Blank is the company's functional currency, CAD,
+                # the same rule the vendor read applies. The backend keeps it so inventory value can
+                # show what was bought in US dollars apart from the Canadian figure.
+                "currency": (h.currency or "").strip().upper() or "CAD",
                 "modified_at": h.modified.isoformat() if h.modified is not None else None,
                 "source_table": "work" if is_work else "history",
                 "lines": lines,
@@ -2981,7 +2985,7 @@ def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | 
         # trailing spaces - the padded 'PO000005         ' compares equal to the trimmed 'PO000005', so
         # `>` excludes exactly that last-seen row and no other. next_cursor is likewise the trimmed po.
         sql = (
-            f"SELECT TOP (?) src, po, status, vendor, vendname, docdate, modified "
+            f"SELECT TOP (?) src, po, status, vendor, vendname, docdate, freight, currency, modified "
             f"FROM ({_po_header_union()}) u WHERE u.po_raw > ? ORDER BY u.po_raw"
         )
         headers = cur.execute(sql, page_size, (cursor or "")).fetchall()
@@ -2990,7 +2994,9 @@ def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | 
         return {"pos": pos, "next_cursor": next_cursor}
 
     union = _po_header_union(history_where="WHERE DEX_ROW_TS >= ?")
-    sql = f"SELECT src, po, status, vendor, vendname, docdate, modified FROM ({union}) u ORDER BY u.po"
+    sql = (
+        f"SELECT src, po, status, vendor, vendname, docdate, freight, currency, modified FROM ({union}) u ORDER BY u.po"
+    )
     headers = cur.execute(sql, _parse_modified_since(modified_since)).fetchall()
     pos = _assemble_pos(conn, headers, page_size=page_size)
     return {"pos": pos, "next_cursor": None}

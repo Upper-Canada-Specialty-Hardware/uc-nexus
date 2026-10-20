@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.currency import cost_currency_of
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     AuditAction,
@@ -294,6 +295,9 @@ def create_receive(
 
         locations = li_input["locations"]
         created_inv_locs: list[InventoryLocationModel] = []
+        # #1557: the units' cost is the PO line's, in the PO's currency, and the currency travels with
+        # the cost onto every row the receipt makes - a pool row has no PO link to read it from later.
+        cost_currency = cost_currency_of(po.currency)
         if is_stock_po:
             # Route into the stock pool. Each location becomes (or merges into) a stock_items row.
             from app.repositories import stock as stock_repository
@@ -316,6 +320,7 @@ def create_receive(
                         kind=po.pool_kind,
                         # Bought into stock: the pool row carries the PO line's price (#942).
                         unit_cost=poli.unit_cost,
+                        cost_currency=cost_currency,
                     )
             else:
                 stock_repository.receive_into_stock(
@@ -333,6 +338,7 @@ def create_receive(
                     po_number=po.po_number,
                     kind=po.pool_kind,
                     unit_cost=poli.unit_cost,
+                    cost_currency=cost_currency,
                 )
         elif locations:
             for loc in locations:
@@ -348,6 +354,7 @@ def create_receive(
                     aisle=loc["aisle"],
                     row=loc["row"],
                     bay=loc["bay"],
+                    cost_currency=cost_currency,
                     received_at=receive_record.received_at,
                 )
                 session.add(inv_loc)
@@ -364,6 +371,7 @@ def create_receive(
                 aisle=None,
                 row=None,
                 bay=None,
+                cost_currency=cost_currency,
                 received_at=receive_record.received_at,
             )
             session.add(inv_loc)

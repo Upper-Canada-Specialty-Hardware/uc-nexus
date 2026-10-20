@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import Numeric, func, literal, select
 from sqlalchemy.orm import Session
 
+from app.currency import cost_currency_of
 from app.errors import NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import AuditAction, AuditEntityType, DestockCost, PoolKind
@@ -88,6 +89,35 @@ def destock_unit_cost(session: Session, il: InventoryLocationModel, destock_cost
     return il.unit_cost
 
 
+def row_cost_currency(session: Session, il: InventoryLocationModel) -> str | None:
+    """The currency a project row's effective unit cost is in, as `cost_currency` stores it (#1557).
+
+    A PO-linked row is priced off its PO line, so its PO's currency is the truth - a row received before
+    cost_currency existed still has it null even when its PO was raised in US dollars - and the row's
+    own is only the answer while the PO's is not known yet. A row with no PO link carries its currency
+    itself. Null means CAD; the same rule inventory value reads by.
+    """
+    if il.po_line_item_id is not None:
+        from app.models.purchase_order import POLineItem, PurchaseOrder
+
+        po = session.execute(
+            select(PurchaseOrder.currency)
+            .join(POLineItem, POLineItem.po_id == PurchaseOrder.id)
+            .where(POLineItem.id == il.po_line_item_id)
+        ).first()
+        if po is not None:
+            return cost_currency_of(po.currency or il.cost_currency)
+    return cost_currency_of(il.cost_currency)
+
+
+def destock_cost_currency(session: Session, il: InventoryLocationModel, destock_cost: DestockCost | None) -> str | None:
+    """The currency of the price `destock_unit_cost` gives the units (#1557): the units' own currency when
+    they keep their cost, and none when they land at $0 - nothing was paid for them in any currency."""
+    if destock_cost == DestockCost.ZERO:
+        return None
+    return row_cost_currency(session, il)
+
+
 def _find_stock_row(
     session: Session,
     *,
@@ -99,6 +129,7 @@ def _find_stock_row(
     bay: str | None,
     kind: PoolKind = PoolKind.STOCK,
     unit_cost: Decimal | None = None,
+    cost_currency: str | None = None,
     lock: bool = True,
 ) -> StockItem | None:
     """The pool row matching (warehouse, category, code, aisle, row, bay, kind, unit cost), or None.
@@ -110,8 +141,9 @@ def _find_stock_row(
     same shelf are two rows and never merge. So is the price (#942): a pool row holds one unit cost,
     so units at different prices - priced and $0 above all - never stack into one row. Null (a cost
     nobody knows) and $0 (left behind on purpose) are two prices too (#957), so a $0 row never hides
-    inside an unknown one. Location fields are normalized here so writes from any entry
-    path (destock, allocate, receive) match canonical form.
+    inside an unknown one. The price's currency is part of it too (#1557): US$5 and C$5 are not the same
+    price, and a row holding both could not be valued. Location fields are normalized here so writes from
+    any entry path (destock, allocate, receive) match canonical form.
     """
     aisle = normalize_location_value(aisle)
     row = normalize_location_value(row)
@@ -128,6 +160,11 @@ def _find_stock_row(
         stmt = stmt.where(StockItem.unit_cost.is_(None))
     else:
         stmt = stmt.where(StockItem.unit_cost == literal(price, Numeric(19, 5)))
+    currency = cost_currency_of(cost_currency)
+    if currency is None:
+        stmt = stmt.where(StockItem.cost_currency.is_(None))
+    else:
+        stmt = stmt.where(StockItem.cost_currency == currency)
     if aisle is None:
         stmt = stmt.where(StockItem.aisle.is_(None))
     else:
@@ -206,6 +243,7 @@ def lock_for_shelf_move(
         bay=bay,
         kind=si.kind,
         unit_cost=si.unit_cost,
+        cost_currency=si.cost_currency,
         lock=False,
     )
     return lock_pool_source(session, si.id, target.id if target is not None else None)
@@ -235,6 +273,7 @@ def fold_into_same_key_row(
         bay=bay,
         kind=si.kind,
         unit_cost=si.unit_cost,
+        cost_currency=si.cost_currency,
     )
     if target is None or target.id == si.id:
         return None
@@ -325,6 +364,7 @@ def _pool_key_text(
     bay: str | None,
     kind: PoolKind,
     unit_cost: Decimal | None,
+    cost_currency: str | None = None,
 ) -> str:
     """A pool row's key as one string, normalized the way `_find_stock_row` matches it, for the lock."""
     parts = (
@@ -336,6 +376,7 @@ def _pool_key_text(
         normalize_location_value(bay),
         kind.value,
         pool_unit_cost(unit_cost),
+        cost_currency_of(cost_currency),
     )
     return "".join("" if p is None else str(p) for p in parts)
 
@@ -352,6 +393,7 @@ def _find_or_create_stock_row(
     received_at: datetime,
     kind: PoolKind = PoolKind.STOCK,
     unit_cost: Decimal | None = None,
+    cost_currency: str | None = None,
 ) -> StockItem:
     """Find an existing pool row matching (warehouse, category, code, aisle, row, bay, kind, unit cost)
     or create one with qty=0 at that cost.
@@ -359,7 +401,8 @@ def _find_or_create_stock_row(
     `kind` defaults to STOCK because every route into the pool lands as stock except a receive off an
     overhead PO (#832); moves of an existing row (transfer, reclassify split) pass the row's own kind so
     the units keep it. `unit_cost` is the moved units' own price (#942), so the row found already
-    carries it and no caller ever has to reconcile two prices. Caller is responsible for incrementing
+    carries it and no caller ever has to reconcile two prices. `cost_currency` is that price's currency
+    (#1557), null for CAD, and keys the row the same way. Caller is responsible for incrementing
     quantity and writing audit events.
     """
 
@@ -374,6 +417,7 @@ def _find_or_create_stock_row(
             bay=bay,
             kind=kind,
             unit_cost=unit_cost,
+            cost_currency=cost_currency,
         )
 
     existing = find()
@@ -403,6 +447,7 @@ def _find_or_create_stock_row(
                         bay=bay,
                         kind=kind,
                         unit_cost=unit_cost,
+                        cost_currency=cost_currency,
                     )
                 ),
             )
@@ -423,6 +468,7 @@ def _find_or_create_stock_row(
         bay=normalize_location_value(bay),
         kind=kind,
         unit_cost=unit_cost,
+        cost_currency=cost_currency_of(cost_currency),
         received_at=received_at,
     )
     session.add(new_row)

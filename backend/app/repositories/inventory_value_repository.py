@@ -18,6 +18,13 @@ company has.
 The four buckets are a partition of the company: a project is OSSA or it is not, and the pool belongs
 to neither because it belongs to no job - it splits Stock / Overhead by each row's own kind (#832).
 Nothing is counted twice and nothing is left out.
+
+Each bucket's hardware is also split by currency (#1557). A unit bought on a USD purchase order costs US
+dollars, and adding US$100 to the Canadian figure as C$100 misstated it. So hardware priced in US
+dollars is summed apart, as `usd_hardware_value`, and is in neither `hardware_value` nor `total_value`.
+There is no conversion and no exchange rate - the product owner ruled the two figures are shown side by
+side, each in its own currency. A row's currency is its PO's when it is priced off a PO line, else its
+own `cost_currency`; null, blank and CAD are all Canadian dollars.
 """
 
 import uuid
@@ -25,10 +32,11 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.currency import USD
 from app.demo import DEMO_COMPANY
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import PoolKind, PullPickLineState, PullRequestSource, PullRequestStatus
@@ -38,6 +46,7 @@ from app.models.project import Project
 from app.models.pull_pick_line import PullPickLine
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.purchase_order import POLineItem as POLineItemModel
+from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse import Warehouse
 from app.repositories import shipping_repository
@@ -61,6 +70,26 @@ _MAX_DOOR_COST = Decimal(10) ** 10
 
 def _cents(value: Decimal | None) -> Decimal:
     return (value or _ZERO).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+def _is_usd(currency):
+    """True where a cost's currency is US dollars (#1557), as a clean boolean to group on.
+
+    Only USD is split out. Every GP company Nexus serves keeps its books in CAD and buys in CAD or USD,
+    so any other currency id would be a surprise rather than a case; it stays in the Canadian figure, as
+    everything did before the split, rather than growing a figure per currency nobody uses."""
+    return func.coalesce(func.upper(func.trim(currency)), "") == USD
+
+
+# A project row's cost currency: its PO's when it is priced off a PO line - the PO is the truth there,
+# and a row received before cost_currency existed has it null - else the row's own. Every read below
+# that prices a project row outer-joins the PO line and its PO for this.
+_ROW_IS_USD = _is_usd(func.coalesce(POModel.currency, InventoryLocationModel.cost_currency))
+
+# A staged product's unit price, split by currency (#1557): (Canadian share, US share). The two add up
+# to the one blended price the page used before the split; each is the part of it paid in that
+# currency, so a staged quantity times each share is the staged value in that currency.
+_Price = tuple[Decimal, Decimal]
 
 
 # --- the two stored rows, get-or-created so a fresh company never renders empty -------------------
@@ -110,9 +139,10 @@ def get_general_row(session: Session, company: str) -> DoorsOnHand:
 # --- the computed halves --------------------------------------------------------------------------
 
 
-def _shelf_value_by_project(session: Session, company: str) -> dict[uuid.UUID, Decimal]:
-    """Hardware on the shelves, per project, at the same coalesce every value view in this codebase
-    applies: the PO line's cost, else the row's own off-PO cost (the SharePoint migration), else 0.
+def _shelf_value_by_project(session: Session, company: str) -> dict[tuple[uuid.UUID, bool], Decimal]:
+    """Hardware on the shelves, per (project, priced in USD), at the same coalesce every value view in
+    this codebase applies: the PO line's cost, else the row's own off-PO cost (the SharePoint
+    migration), else 0.
 
     The full `quantity` counts, deficient units included - that is what the warehouse dashboard's
     total-value tile shows, and two screens naming the same thing must not answer differently.
@@ -122,6 +152,7 @@ def _shelf_value_by_project(session: Session, company: str) -> dict[uuid.UUID, D
     rows = session.execute(
         select(
             InventoryLocationModel.project_id,
+            _ROW_IS_USD,
             func.coalesce(
                 func.sum(
                     InventoryLocationModel.quantity
@@ -132,11 +163,12 @@ def _shelf_value_by_project(session: Session, company: str) -> dict[uuid.UUID, D
         )
         .select_from(InventoryLocationModel)
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .join(Project, InventoryLocationModel.project_id == Project.id)
         .where(Project.company == company)
-        .group_by(InventoryLocationModel.project_id)
+        .group_by(InventoryLocationModel.project_id, _ROW_IS_USD)
     ).all()
-    return {row[0]: Decimal(row[1] or 0) for row in rows}
+    return {(row[0], bool(row[1])): Decimal(row[2] or 0) for row in rows}
 
 
 def _staged_quantities(session: Session, company: str) -> dict[tuple[uuid.UUID, str, str], int]:
@@ -165,7 +197,7 @@ def _staged_quantities(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     return dict(staged)
 
 
-def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, str, str], Decimal]:
+def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, str, str], _Price]:
     """What the staged units actually cost, read off the rows they were picked from.
 
     Staged hardware has left the shelf, so there is no inventory row left to price it by - but there
@@ -177,20 +209,26 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     Lines whose row has been deleted (`inventory_location_id` is ON DELETE SET NULL) and lines whose
     row knows no cost are skipped rather than counted at zero - a missing price is not a free door
     closer, and the project-average fallback below is a better answer than 0.
+
+    Each pick line's cost is in the currency of the row it came off (#1557), so the quantity-weighted
+    price is split into a Canadian and a US share over the same total quantity.
     """
     effective_cost = func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost)
+    line_cost = PullPickLine.quantity * effective_cost
     rows = session.execute(
         select(
             PullRequestModel.project_id,
             PullPickLine.hardware_category,
             PullPickLine.product_code,
-            func.sum(PullPickLine.quantity * effective_cost),
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=line_cost)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, line_cost), else_=None)), 0),
             func.sum(PullPickLine.quantity),
         )
         .select_from(PullPickLine)
         .join(PullRequestModel, PullPickLine.pull_request_id == PullRequestModel.id)
         .join(InventoryLocationModel, PullPickLine.inventory_location_id == InventoryLocationModel.id)
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .join(Project, PullRequestModel.project_id == Project.id)
         .where(
             Project.company == company,
@@ -202,17 +240,20 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
         .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
     ).all()
 
-    costs: dict[tuple[uuid.UUID, str, str], Decimal] = {}
-    for project_id, category, code, cost_sum, qty_sum in rows:
+    costs: dict[tuple[uuid.UUID, str, str], _Price] = {}
+    for project_id, category, code, cad_sum, usd_sum, qty_sum in rows:
         if not qty_sum:
             continue
-        costs[(project_id, category, code)] = Decimal(cost_sum) / Decimal(qty_sum)
+        costs[(project_id, category, code)] = (
+            Decimal(cad_sum) / Decimal(qty_sum),
+            Decimal(usd_sum) / Decimal(qty_sum),
+        )
     return costs
 
 
 def _project_average_costs(
     session: Session, keys: list[tuple[uuid.UUID, str, str]]
-) -> dict[tuple[uuid.UUID, str, str], Decimal]:
+) -> dict[tuple[uuid.UUID, str, str], _Price]:
     """The fallback price for a staged product with no priced pick line behind it - hardware picked
     before #367, or picked off rows that have since been deleted.
 
@@ -223,6 +264,9 @@ def _project_average_costs(
 
     Narrowed to the projects and products that actually need a fallback, so the statement stays one
     grouped read of a handful of groups rather than every combo the company has ever held.
+
+    The average is split by currency the way the picked price is (#1557): each share is the sum of that
+    currency's costs over the count of every known cost, so the two still add up to the plain average.
     """
     if not keys:
         return {}
@@ -232,10 +276,13 @@ def _project_average_costs(
             InventoryLocationModel.project_id,
             InventoryLocationModel.hardware_category,
             InventoryLocationModel.product_code,
-            func.avg(effective_cost),
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=effective_cost)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, effective_cost), else_=None)), 0),
+            func.count(effective_cost),
         )
         .select_from(InventoryLocationModel)
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             InventoryLocationModel.project_id.in_({k[0] for k in keys}),
             InventoryLocationModel.product_code.in_({k[2] for k in keys}),
@@ -246,40 +293,58 @@ def _project_average_costs(
             InventoryLocationModel.product_code,
         )
     ).all()
-    return {(pid, cat, code): Decimal(avg) for pid, cat, code, avg in rows if avg is not None}
+    return {
+        (pid, cat, code): (Decimal(cad_sum) / count, Decimal(usd_sum) / count)
+        for pid, cat, code, cad_sum, usd_sum, count in rows
+        if count
+    }
 
 
-def _staged_value_by_project(session: Session, company: str) -> dict[uuid.UUID, Decimal]:
+def _priced(price: _Price | None) -> bool:
+    """A price that knows something. A picked price of nothing in either currency falls back to the
+    project average, as a zero picked price always has."""
+    return price is not None and bool(price[0] or price[1])
+
+
+def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.UUID, bool], Decimal]:
+    """Staged hardware per (project, priced in USD) - the same keying as the shelf."""
     staged = _staged_quantities(session, company)
     if not staged:
         return {}
     picked = _picked_unit_costs(session, company)
     fallback = _project_average_costs(session, [key for key in staged if key not in picked])
 
-    value: dict[uuid.UUID, Decimal] = defaultdict(Decimal)
+    value: dict[tuple[uuid.UUID, bool], Decimal] = defaultdict(Decimal)
     for key, quantity in staged.items():
-        unit_cost = picked.get(key) or fallback.get(key) or _ZERO
-        value[key[0]] += Decimal(quantity) * unit_cost
+        price = picked.get(key)
+        if not _priced(price):
+            price = fallback.get(key) or (_ZERO, _ZERO)
+        cad_share, usd_share = price
+        value[(key[0], False)] += Decimal(quantity) * cad_share
+        value[(key[0], True)] += Decimal(quantity) * usd_share
     return dict(value)
 
 
-def _stock_pool_value(session: Session, company: str) -> dict[PoolKind, Decimal]:
-    """The jobless pool, per kind (#832), priced off the rows' own off-PO cost - the same expression the
-    warehouse dashboard's stock tile uses. Stock scopes through its WAREHOUSE, never a project (#637).
-    One grouped statement; a kind with no rows is zero."""
+def _stock_pool_value(session: Session, company: str) -> dict[tuple[PoolKind, bool], Decimal]:
+    """The jobless pool, per (kind, priced in USD) (#832, #1557), priced off the rows' own off-PO cost -
+    the same expression the warehouse dashboard's stock tile uses - in the rows' own `cost_currency`,
+    since a pool row has no PO to read one from. Stock scopes through its WAREHOUSE, never a project
+    (#637). One grouped statement; a kind with no rows is zero."""
+    is_usd = _is_usd(StockItemModel.cost_currency)
     rows = session.execute(
         select(
             StockItemModel.kind,
+            is_usd,
             func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0),
         )
         .select_from(StockItemModel)
         .join(Warehouse, StockItemModel.warehouse_id == Warehouse.id)
         .where(Warehouse.company == company)
-        .group_by(StockItemModel.kind)
+        .group_by(StockItemModel.kind, is_usd)
     ).all()
-    values = {kind: _ZERO for kind in PoolKind}
-    for kind, total in rows:
-        values[kind] = Decimal(total or 0)
+    values = {(kind, usd): _ZERO for kind in PoolKind for usd in (False, True)}
+    for kind, usd, total in rows:
+        values[(kind, bool(usd))] = Decimal(total or 0)
     return values
 
 
@@ -287,7 +352,18 @@ def _stock_pool_value(session: Session, company: str) -> dict[PoolKind, Decimal]
 
 
 def _empty_bucket() -> dict:
-    return {"hardware_value": _ZERO, "door_count": 0, "door_value": _ZERO, "total_value": _ZERO}
+    return {
+        "hardware_value": _ZERO,
+        "door_count": 0,
+        "door_value": _ZERO,
+        "total_value": _ZERO,
+        "usd_hardware_value": _ZERO,
+    }
+
+
+def _hardware_field(is_usd: bool) -> str:
+    """Which of a bucket's two hardware figures a value belongs in (#1557)."""
+    return "usd_hardware_value" if is_usd else "hardware_value"
 
 
 def get_inventory_value(session: Session, company: str) -> dict:
@@ -330,12 +406,14 @@ def get_inventory_value(session: Session, company: str) -> dict:
 
     # Hardware. Every project of the company falls in exactly one of the two project buckets, and a
     # project with no rows at all contributes nothing rather than being skipped as unknown.
-    for project_id, value in list(shelf.items()) + list(staged.items()):
+    # US-dollar hardware goes to its own figure and never into the Canadian one (#1557).
+    for (project_id, is_usd), value in list(shelf.items()) + list(staged.items()):
         bucket = OSSA if ossa_flags.get(project_id) else NON_OSSA
-        buckets[bucket]["hardware_value"] += value
+        buckets[bucket][_hardware_field(is_usd)] += value
     pool = _stock_pool_value(session, company)
-    buckets[GENERAL_STOCK]["hardware_value"] = pool[PoolKind.STOCK]
-    buckets[OVERHEAD]["hardware_value"] = pool[PoolKind.OVERHEAD]
+    for is_usd in (False, True):
+        buckets[GENERAL_STOCK][_hardware_field(is_usd)] = pool[(PoolKind.STOCK, is_usd)]
+        buckets[OVERHEAD][_hardware_field(is_usd)] = pool[(PoolKind.OVERHEAD, is_usd)]
 
     # Doors.
     rows = []
@@ -359,9 +437,10 @@ def get_inventory_value(session: Session, company: str) -> dict:
 
     for bucket in buckets.values():
         bucket["hardware_value"] = _cents(bucket["hardware_value"])
+        bucket["usd_hardware_value"] = _cents(bucket["usd_hardware_value"])
         bucket["door_value"] = _cents(Decimal(bucket["door_count"]) * average_door_cost)
         # Summed from the rounded halves so the caption ("hardware $X + doors $Y") always adds up to
-        # the figure printed above it.
+        # the figure printed above it. Canadian dollars only: the USD figure is shown beside it.
         bucket["total_value"] = bucket["hardware_value"] + bucket["door_value"]
 
     return {

@@ -76,9 +76,15 @@ interface ShippingOutRequest {
   items: ShippingRequestItem[];
 }
 
-type View = 'PENDING' | 'APPROVED' | 'REJECTED';
+type View = 'OPEN' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
 const VIEW_COPY: Record<View, { description: string; empty: string }> = {
+  // #1551: what the project page's open requests tile counts, and where it opens.
+  OPEN: {
+    description:
+      'Every request someone is still waiting on: pending ones, and accepted ones whose warehouse pull is not finished yet. This is what a project page counts as open requests.',
+    empty: 'No open shipping requests.',
+  },
   PENDING: {
     description:
       'Pending requests, from Start a Request or raised here off project inventory. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation, and a pending request can still be edited.',
@@ -108,7 +114,7 @@ export default function ShippingRequestsPage() {
   // changes the URL without remounting, and the tab has to move with it.
   const [searchParams, setSearchParams] = useSearchParams();
   const paramView = searchParams.get('view');
-  const view: View = paramView === 'APPROVED' || paramView === 'REJECTED' ? paramView : 'PENDING';
+  const view: View = paramView === 'OPEN' || paramView === 'APPROVED' || paramView === 'REJECTED' ? paramView : 'PENDING';
   const setView = useCallback(
     (next: View) => {
       // replace, not push: flipping a tab is not a navigation step anybody wants to walk back through.
@@ -158,7 +164,10 @@ export default function ShippingRequestsPage() {
   const { data, loading, error, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
-      variables: { projectId: projectId ?? null, status: view },
+      variables:
+        view === 'OPEN'
+          ? { projectId: projectId ?? null, status: null, openOnly: true }
+          : { projectId: projectId ?? null, status: view, openOnly: false },
       fetchPolicy: 'cache-and-network',
     },
   );
@@ -217,14 +226,15 @@ export default function ShippingRequestsPage() {
             value={view}
             onChange={(_e, next) => next && setView(next)}
           >
+            <ToggleButton value="OPEN">Open</ToggleButton>
             <ToggleButton value="PENDING">Pending</ToggleButton>
             <ToggleButton value="APPROVED">Accepted</ToggleButton>
             <ToggleButton value="REJECTED">Rejected</ToggleButton>
           </ToggleButtonGroup>
 
-          {view === 'APPROVED' && (
+          {(view === 'APPROVED' || view === 'OPEN') && (
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-              {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => {
+              {STAGE_ORDER.filter((stage) => stage !== (view === 'OPEN' ? 'DONE' : 'REQUESTED')).map((stage) => {
                 const count = stageCounts.get(stage) ?? 0;
                 // An empty rung still shows - it is the ladder, not a result - but it carries no state,
                 // so it drops its hue rather than colouring a zero.
@@ -255,6 +265,7 @@ export default function ShippingRequestsPage() {
         rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
         reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
         mode={view === 'PENDING' ? 'pending' : view === 'APPROVED' ? 'approved' : 'rejected'}
+        rowMode={view === 'OPEN' ? (req) => (req.status === 'PENDING' ? 'pending' : 'approved') : undefined}
         canReview={canManage}
         reviewDisabledReason="Requires the Shipping Manager role"
         reopenDisabledReason={(req) => reopenBlockedReason(req.stage)}

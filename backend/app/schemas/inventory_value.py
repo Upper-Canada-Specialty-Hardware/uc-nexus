@@ -30,6 +30,7 @@ def _bucket(data: dict) -> InventoryValueBucket:
         door_count=data["door_count"],
         door_value=float(data["door_value"]),
         total_value=float(data["total_value"]),
+        usd_hardware_value=float(data["usd_hardware_value"]),
     )
 
 

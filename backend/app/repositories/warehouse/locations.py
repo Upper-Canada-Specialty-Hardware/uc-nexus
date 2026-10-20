@@ -183,7 +183,8 @@ def clone_origin_fields(source: InventoryLocationModel) -> dict:
 
     `unit_cost` rides alongside them: a PO-origin row carries null here (its cost is on the PO line),
     but a migrated off-PO row's cost lives only on this column, so a derived row that dropped it would
-    silently value at zero. `entry_source` (#1699) rides too: it is the only record of how a
+    silently value at zero. Its `cost_currency` rides with it (#1557), since a cost without its currency
+    is half a price. `entry_source` (#1699) rides too: it is the only record of how a
     stock-origin row came in, and a transfer's new bin is still the same units.
     """
     return {
@@ -192,6 +193,7 @@ def clone_origin_fields(source: InventoryLocationModel) -> dict:
         "stock_item_id": source.stock_item_id,
         "shipment_return_item_id": source.shipment_return_item_id,
         "unit_cost": source.unit_cost,
+        "cost_currency": source.cost_currency,
         "entry_source": source.entry_source,
     }
 
@@ -623,6 +625,7 @@ def merge_locations(
             bay=to_bay,
             kind=si.kind,
             unit_cost=si.unit_cost,
+            cost_currency=si.cost_currency,
             lock=False,
         )
         for si in found

@@ -12,7 +12,7 @@ class _Row:
         self.__dict__.update(kw)
 
 
-def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0):
+def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0, currency=""):
     return _Row(
         src=src,
         po=po,
@@ -21,6 +21,7 @@ def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0):
         vendname=vendname,
         docdate=datetime(2026, 1, 2, 0, 0, 0),
         freight=freight,
+        currency=currency,
         modified=datetime(2026, 1, 3, 8, 30, 0),
     )
 
@@ -415,3 +416,48 @@ def test_a_short_wennsoft_cost_code_passes_through_unchanged():
     line_sql = next(s for s in cursor.all_sql if "POP10110" in s)
     assert "RTRIM(w.COSTCODE) AS costcode" in line_sql
     assert "Cost_Code_Number_1" not in line_sql
+
+
+# --- currency: the PO's CURNCYID, so inventory value can keep US dollars apart (#1557) --------------
+
+
+def test_the_header_carries_the_pos_currency():
+    rows = {"headers": [_hdr("work", "PO000010", currency="USD   ")], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    out = econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None, open_only=True)
+
+    assert out["pos"][0]["currency"] == "USD"
+    assert "RTRIM(CURNCYID) AS currency" in cursor.all_sql[0]
+
+
+def test_a_blank_currency_is_the_functional_currency_cad():
+    rows = {"headers": [_hdr("work", "PO000010", currency=None)], "work_lines": [], "received": []}
+    out = econnect.sync_pos(_Conn(_Cursor(rows)), cursor=None, page_size=5, modified_since=None, open_only=True)
+    assert out["pos"][0]["currency"] == "CAD"
+
+
+def test_a_po_read_by_number_carries_its_currency():
+    rows = {
+        "headers": [],
+        "hist_headers": [_hdr("history", "PO000005", currency="usd")],
+        "hist_lines": [],
+        "received": [],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.read_pos_by_number(_Conn(cursor), ["PO000005"])
+
+    assert out["pos"][0]["currency"] == "USD"
+    assert all("RTRIM(CURNCYID) AS currency" in sql for sql in cursor.all_sql if "POP30100" in sql)
+
+
+def test_the_backfill_and_incremental_reads_select_the_currency_out_of_the_union():
+    rows = {"headers": [_hdr("work", "PO000010")], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None)
+    econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since="2026-01-01T00:00:00")
+
+    union_reads = [sql for sql in cursor.all_sql if "UNION ALL" in sql]
+    assert len(union_reads) == 2
+    for sql in union_reads:
+        outer = sql.split("FROM (")[0]
+        assert "currency" in outer and "freight" in outer
