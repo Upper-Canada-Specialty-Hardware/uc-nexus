@@ -44,9 +44,9 @@ import GpCompanyLabel from '../../relay/GpCompanyLabel';
 
 // #729: every role a person can hold, module by module, with each module's user tier above its
 // manager tier. TENANT OWNER closes the list because it holds all of them inside one GP company.
-// The strings have to match backend/app/auth.py exactly.
+// The strings have to match backend/app/auth.py exactly. Hardware Schedule Import was retired (#1390):
+// it opened nothing, and the backend refuses granting it.
 const MODULE_ROLES = [
-  'Hardware Schedule Import',
   'PO User',
   'PO Manager',
   'Warehouse Staff',
