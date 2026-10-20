@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, configure } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
@@ -197,5 +197,44 @@ describe('ReturnShipmentDialog honesty (#1578)', () => {
     renderWith([linesMock, warehousesMock], 'SCHEDULED');
     await screen.findByText('HG-2');
     expect(screen.getByRole('button', { name: 'Cancel whole shipment' })).toBeInTheDocument();
+  });
+  it('sends the same key when the same return is sent again after a lost reply (#1552)', async () => {
+    const keys: string[] = [];
+    const record = (vars: Record<string, unknown>) =>
+      keys.push((vars as { input: { idempotencyKey: string } }).input.idempotencyKey);
+    const mocks: MockedResponse[] = [
+      linesMock,
+      warehousesMock,
+      {
+        request: { query: CREATE_SHIPMENT_RETURN, variables: (v) => (record(v), true) },
+        error: new Error('Failed to fetch'),
+      },
+      {
+        request: { query: CREATE_SHIPMENT_RETURN, variables: (v) => (record(v), true) },
+        result: { data: { createShipmentReturn: null } },
+      },
+    ];
+    render(
+      <MockedProvider mocks={mocks}>
+        <ToastProvider>
+          <ReturnShipmentDialog
+            slip={{ id: 'ps-1', packingSlipNumber: 'PS-0019', projectName: 'Cowichan District Hospital' }}
+            onClose={() => {}}
+            onCompleted={() => {}}
+          />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    await screen.findByText('HG-2');
+    fireEvent.change(screen.getAllByLabelText('Qty')[0], { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Record return' }));
+    await waitFor(() => expect(keys).toHaveLength(1));
+    await screen.findByText(/Failed to fetch|network|connection/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Record return' }));
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
   });
 });

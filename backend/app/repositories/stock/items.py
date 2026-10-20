@@ -286,8 +286,12 @@ def reclassify_stock_item(
     quantity: int,
     reason_text: str | None,
     performed_by: str,
+    expected_quantity: int | None = None,
 ) -> tuple[StockItem, StockItem | None]:
     """Change (category, code) on `quantity` units. If quantity < total, original keeps remainder.
+
+    `expected_quantity` is the row's count the dialog showed; a row that moved since is refused, so a
+    resend of a split after a lost reply cannot split the units off twice (#1552).
 
     Returns (reclassified_row, original_row_or_none).
     """
@@ -318,6 +322,7 @@ def reclassify_stock_item(
         lock=False,
     )
     si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
+    check_expected_quantity(si.quantity, expected_quantity)
     if quantity > si.quantity:
         raise ValidationError("Reclassify quantity exceeds stock quantity", field="quantity")
 
@@ -483,6 +488,7 @@ def set_stock_item_kind(
     kind: PoolKind,
     quantity: int,
     performed_by: str,
+    expected_quantity: int | None = None,
 ) -> tuple[StockItem, StockItem | None]:
     """Re-flag `quantity` units of a pool row as Stock or Overhead (#832).
 
@@ -494,6 +500,9 @@ def set_stock_item_kind(
     Only sound units move (1..available), the same rule reclassify applies: deficient units are
     condemned and stay on their row, under the kind they were condemned under, until the deficiency is
     resolved. That keeps a deficiency review pointing at the row it was raised against.
+
+    `expected_quantity` is the row's count the dialog showed; a row that moved since is refused, so a
+    resend after a lost reply cannot move the units twice (#1552).
 
     Returns (row_now_holding_the_units, source_row_or_none) - the second is None on an in-place flip.
     """
@@ -522,6 +531,7 @@ def set_stock_item_kind(
         lock=False,
     )
     si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
+    check_expected_quantity(si.quantity, expected_quantity)
     if si.kind == kind:
         raise ValidationError(f"This row is already {kind.value.lower()}", field="kind")
     available = si.quantity - (si.deficient_quantity or 0)

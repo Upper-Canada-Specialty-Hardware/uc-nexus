@@ -105,6 +105,7 @@ describe('TransferDialog', () => {
       type: 'INVENTORY_LOCATION',
       id: 'inv-1',
       productCode: 'HG-100',
+      quantity: 6,
       available: 6,
       warehouseId: 'wh-1',
       aisle: null,
@@ -118,6 +119,7 @@ describe('TransferDialog', () => {
           sourceType: 'INVENTORY_LOCATION',
           sourceId: 'inv-1',
           quantity: 6,
+          expectedQuantity: 6,
           destWarehouseId: 'wh-1',
           destAisle: 'A1',
           destRow: 'R1',
@@ -142,14 +144,14 @@ describe('TransferDialog', () => {
 
   it('multiple sources: lists each source, no quantity field, and loops one transfer per source', async () => {
     const sources: TransferSource[] = [
-      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
-      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', quantity: 3, available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', quantity: 4, available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
     ];
     let calls = 0;
     const base = { destWarehouseId: 'wh-1', destAisle: 'A9', destRow: 'R9', destBay: 'B9' };
     const mocks = [
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, ...base }, () => (calls += 1)),
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's2', quantity: 4, ...base }, () => (calls += 1)),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, expectedQuantity: 3, ...base }, () => (calls += 1)),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's2', quantity: 4, expectedQuantity: 4, ...base }, () => (calls += 1)),
     ];
     const { onSuccess } = renderDialog(sources, mocks);
 
@@ -169,19 +171,19 @@ describe('TransferDialog', () => {
 
   it('a batch that fails partway retries from the failed source, not the drained first one (#1205)', async () => {
     const sources: TransferSource[] = [
-      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
-      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
-      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', available: 5, warehouseId: 'wh-1', aisle: 'A3', row: 'R3', bay: 'B3' },
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', quantity: 3, available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', quantity: 4, available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', quantity: 5, available: 5, warehouseId: 'wh-1', aisle: 'A3', row: 'R3', bay: 'B3' },
     ];
     const calls: string[] = [];
     const base = { destWarehouseId: 'wh-1', destAisle: 'A9', destRow: 'R9', destBay: 'B9' };
-    const s2Input = { sourceType: 'STOCK_ITEM', sourceId: 's2', quantity: 4, ...base };
+    const s2Input = { sourceType: 'STOCK_ITEM', sourceId: 's2', quantity: 4, expectedQuantity: 4, ...base };
     // s1 has exactly one mock: a retry that re-sent it would find none and fail the batch again.
     const mocks = [
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, ...base }, () => calls.push('s1')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, expectedQuantity: 3, ...base }, () => calls.push('s1')),
       { request: { query: TRANSFER_INVENTORY, variables: { input: s2Input } }, error: new Error('Row is busy') },
       transferMock(s2Input, () => calls.push('s2')),
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, ...base }, () => calls.push('s3')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, expectedQuantity: 5, ...base }, () => calls.push('s3')),
     ];
     const { onSuccess } = renderDialog(sources, mocks);
 
@@ -209,6 +211,7 @@ describe('TransferDialog', () => {
       type: 'INVENTORY_LOCATION',
       id: 'inv-1',
       productCode: 'HG-100',
+      quantity: 6,
       available: 6,
       warehouseId: 'wh-1',
     };
@@ -226,6 +229,44 @@ describe('TransferDialog', () => {
     setLocation('A1', 'R1', 'B1');
     await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
   });
+
+  it('closes on a row-changed refusal, so a resend after a lost reply cannot move it twice (#1552)', async () => {
+    const source: TransferSource = {
+      type: 'INVENTORY_LOCATION',
+      id: 'inv-1',
+      productCode: 'HG-100',
+      quantity: 10,
+      available: 4,
+      warehouseId: 'wh-1',
+    };
+    const input = {
+      sourceType: 'INVENTORY_LOCATION',
+      sourceId: 'inv-1',
+      quantity: 4,
+      destWarehouseId: 'wh-1',
+      destAisle: 'A1',
+      destRow: 'R1',
+      destBay: 'B1',
+      expectedQuantity: 10,
+    };
+    const message = 'This row changed from 10 to 6 since you opened it. Reload and try again.';
+    const { onClose, onSuccess } = renderDialog(
+      [source],
+      [
+        {
+          request: { query: TRANSFER_INVENTORY, variables: { input } },
+          result: { errors: [{ message, extensions: { code: 'CONFLICT', field: 'expected_quantity' } }] },
+        },
+      ],
+    );
+
+    setLocation('A1', 'R1', 'B1');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
 });
 
 describe('the quantity is read before a scanned bay can send it (#1504)', () => {
@@ -236,6 +277,7 @@ describe('the quantity is read before a scanned bay can send it (#1504)', () => 
       type: 'INVENTORY_LOCATION',
       id: 'inv-1',
       productCode: 'HG-100',
+      quantity: 81,
       available: 81,
       warehouseId: 'wh-1',
     };
@@ -252,8 +294,8 @@ describe('the quantity is read before a scanned bay can send it (#1504)', () => 
 
   it('multiple sources: no quantity, and the dialog still opens on the destination warehouse', async () => {
     const sources: TransferSource[] = [
-      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
-      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', quantity: 3, available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', quantity: 4, available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
     ];
     renderDialog(sources, []);
 
@@ -265,16 +307,16 @@ describe('the quantity is read before a scanned bay can send it (#1504)', () => 
 describe('sources already at the destination (#1451)', () => {
   it('leaves a source already in the chosen bin out of the batch and moves the rest', async () => {
     const sources: TransferSource[] = [
-      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
-      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
-      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', available: 5, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', quantity: 3, available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', quantity: 4, available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', quantity: 5, available: 5, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
     ];
     const calls: string[] = [];
     const base = { destWarehouseId: 'wh-1', destAisle: 'A9', destRow: 'R9', destBay: 'B9' };
     // No mock for s2: sending it (the server refuses it as its own bin) would fail the batch.
     const mocks = [
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, ...base }, () => calls.push('s1')),
-      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, ...base }, () => calls.push('s3')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, expectedQuantity: 3, ...base }, () => calls.push('s1')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, expectedQuantity: 5, ...base }, () => calls.push('s3')),
     ];
     const { onSuccess, onClose } = renderDialog(sources, mocks);
 
@@ -291,8 +333,8 @@ describe('sources already at the destination (#1451)', () => {
 
   it('refuses to transfer when every source is already in the chosen bin', async () => {
     const sources: TransferSource[] = [
-      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
-      { type: 'INVENTORY_LOCATION', id: 'i2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', quantity: 3, available: 3, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+      { type: 'INVENTORY_LOCATION', id: 'i2', productCode: 'LK-300', quantity: 4, available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
     ];
     renderDialog(sources, []);
 
@@ -307,6 +349,7 @@ describe('isAtDestination matches the server rule', () => {
     type: 'STOCK_ITEM',
     id: 'x',
     productCode: 'P',
+    quantity: 1,
     available: 1,
     warehouseId: 'wh-1',
     aisle: 'A9',

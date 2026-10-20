@@ -17,6 +17,7 @@ from app.models.enums import (
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
+from app.repositories.warehouse.inventory import check_expected_deficient_quantity
 from app.services.locking import lock_inventory_combo
 
 from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
@@ -30,7 +31,10 @@ def report_inventory_deficiency(
     quantity: int,
     reason_text: str | None,
     performed_by: str,
+    expected_deficient_quantity: int | None = None,
 ) -> InventoryLocationModel:
+    """Flag `quantity` more units of a project row deficient. `expected_deficient_quantity` is the
+    flagged count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552)."""
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
 
@@ -39,6 +43,7 @@ def report_inventory_deficiency(
     il = lock_inventory_combo(session, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
+    check_expected_deficient_quantity(il.deficient_quantity or 0, expected_deficient_quantity)
 
     new_deficient = (il.deficient_quantity or 0) + quantity
     if new_deficient > il.quantity:
@@ -73,11 +78,14 @@ def report_stock_deficiency(
     quantity: int,
     reason_text: str | None,
     performed_by: str,
+    expected_deficient_quantity: int | None = None,
 ) -> StockItem:
+    """`report_inventory_deficiency` for a stock-pool row."""
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
 
     si = lock_stock_item(session, stock_item_id)
+    check_expected_deficient_quantity(si.deficient_quantity or 0, expected_deficient_quantity)
     new_deficient = (si.deficient_quantity or 0) + quantity
     if new_deficient > si.quantity:
         raise ValidationError(
@@ -116,11 +124,15 @@ def resolve_deficiency(
     destock_source: DestockSource | None,
     reviewed_by: str,
     destock_cost: DestockCost | None = None,
+    expected_deficient_quantity: int | None = None,
 ):
     """Resolve a deficient batch. Exactly one of inventory_location_id / stock_item_id is set.
 
     `destock_cost` is required when a project row's units are sent to stock (#942): ZERO lands them at
     $0, KEEP at their own effective price. Every other resolution, and a pool row's, ignores it.
+
+    `expected_deficient_quantity` is the flagged count the reviewer saw; a row whose count moved since
+    is refused, so a resend after a lost reply cannot resolve the units twice (#1552).
     """
     from app.models.deficiency_review import DeficiencyReview
 
@@ -157,6 +169,7 @@ def resolve_deficiency(
         il = lock_inventory_combo(session, inventory_location_id)
         if il is None:
             raise NotFoundError(f"Inventory location {inventory_location_id} not found")
+        check_expected_deficient_quantity(il.deficient_quantity or 0, expected_deficient_quantity)
         if quantity > (il.deficient_quantity or 0):
             # #1553: reached when two reviewers resolve the same units, so it says what happened in words.
             raise ValidationError(
@@ -199,6 +212,7 @@ def resolve_deficiency(
 
     else:
         si = lock_stock_item(session, stock_item_id)
+        check_expected_deficient_quantity(si.deficient_quantity or 0, expected_deficient_quantity)
         if quantity > (si.deficient_quantity or 0):
             # #1553: reached when two reviewers resolve the same units, so it says what happened in words.
             raise ValidationError(

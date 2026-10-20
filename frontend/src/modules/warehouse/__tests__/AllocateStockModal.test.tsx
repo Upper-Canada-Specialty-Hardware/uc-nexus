@@ -219,6 +219,10 @@ describe('AllocateStockModal keyboard (#1548)', () => {
     await waitFor(() => expect(result).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(result).toHaveBeenCalledTimes(1);
+    // The pool row's count as shown rides along, so a resend after a lost reply is refused (#1552).
+    expect(result).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ quantity: 2, expectedQuantity: 5 }) }),
+    );
   });
 });
 
@@ -271,6 +275,9 @@ describe('AllocateStockModal schedule pairs (#1647)', () => {
       ['HINGE', 'HG-100', 3],
       ['LOCK', 'HG-100', 1],
     ]);
+    // #1552: each line names the pool row's count as the line before it left it, so the second line is
+    // not refused for the first one's move, and a resend of either still is.
+    expect(calls.map((c) => c.expectedQuantity)).toEqual([5, 2]);
   });
 
   it('asks for a schedule product when the code is not on the schedule', async () => {

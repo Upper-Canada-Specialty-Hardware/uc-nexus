@@ -16,6 +16,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
+import { useSubmissionKey } from '../../hooks/useSubmissionKey';
 import Modal from '../../components/Modal';
 import LoadError from '../../components/LoadError';
 import { useToast } from '../../components/Toast';
@@ -108,6 +109,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
   const [reference, setReference] = useState('');
   const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const submissionKey = useSubmissionKey();
 
   // Default the destination warehouse to the primary; the user can still override it.
   const defaultWarehouseId = useMemo(() => {
@@ -204,16 +206,14 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
       setFormError('Enter a return quantity for at least one line');
       return;
     }
-    mutate({
-      variables: {
-        input: {
-          packingSlipId: slip.id,
-          warehouseId: effectiveWarehouseId,
-          reference: reference.trim() || null,
-          items: built.items,
-        },
-      },
-    });
+    const input = {
+      packingSlipId: slip.id,
+      warehouseId: effectiveWarehouseId,
+      reference: reference.trim() || null,
+      items: built.items,
+    };
+    // #1552: the same return sent again after a lost reply carries the same key, so it is booked once.
+    mutate({ variables: { input: { ...input, idempotencyKey: submissionKey(input) } } });
   };
 
   return (

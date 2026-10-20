@@ -10,7 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { Plus, X } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import ProjectPicker from '../../../components/ProjectPicker';
@@ -23,6 +23,7 @@ import type { Project } from '../../../types/project';
 import type { StockItem } from '../StockPoolView';
 import { useDefinedLocationPick } from '../useDefinedLocationPick';
 import { userMessage } from '../../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../../graphql/staleRow';
 
 interface Props {
   item: StockItem;
@@ -100,6 +101,10 @@ export default function AllocateStockModal({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const client = useApolloClient();
+  // Units this dialog has already landed off the pool row, by earlier lines or an earlier attempt that
+  // failed partway: the row the server holds is that much smaller than the one the dialog was opened on.
+  const [allocated, setAllocated] = useState(0);
   // #1548: Enter and a click in the same moment must not send it twice; set before `submitting` re-renders.
   const inFlight = useRef(false);
 
@@ -150,6 +155,7 @@ export default function AllocateStockModal({
   const binBlank = !aisle.trim() && !row.trim() && !bay.trim();
   const binOk = binBlank || isDefinedPick;
 
+  const available = item.available - allocated;
   const isCount = (raw: string) => Number.isInteger(Number(raw)) && Number(raw) >= 1;
   const q = Number(quantity);
   const lineTotal = lines.reduce((sum, l) => sum + (isCount(l.quantity) ? Number(l.quantity) : 0), 0);
@@ -166,15 +172,15 @@ export default function AllocateStockModal({
               ? 'Each schedule product can take one line.'
               : lines.some((l) => !isCount(l.quantity))
                 ? 'Enter a whole number of at least 1 on every line.'
-                : lineTotal > item.available
-                  ? `The lines add up to ${lineTotal}; only ${item.available} are available.`
+                : lineTotal > available
+                  ? `The lines add up to ${lineTotal}; only ${available} are available.`
                   : !binOk
                     ? 'Pick an aisle, row and bay defined on the Locations tab, or clear all three to leave it unlocated.'
                     : null
           : !category.trim() || !productCode.trim()
             ? 'Enter the target hardware category and product code.'
-            : !(Number.isInteger(q) && q >= 1 && q <= item.available)
-              ? `Enter a whole number from 1 to ${item.available}.`
+            : !(Number.isInteger(q) && q >= 1 && q <= available)
+              ? `Enter a whole number from 1 to ${available}.`
               : !binOk
                 ? 'Pick an aisle, row and bay defined on the Locations tab, or clear all three to leave it unlocated.'
                 : null;
@@ -193,6 +199,7 @@ export default function AllocateStockModal({
         })
       : [{ category: category.trim(), code: productCode.trim(), quantity: q }];
     let done = 0;
+    let landed = allocated;
     try {
       // One allocation per line, in turn, so a failure partway says exactly how many landed.
       for (const a of allocations) {
@@ -207,15 +214,28 @@ export default function AllocateStockModal({
               targetAisle: aisle.trim() || null,
               targetRow: row.trim() || null,
               targetBay: bay.trim() || null,
+              // The pool row's count as it stands after what this dialog already moved off it, so a
+              // resend after a lost reply is refused, not applied twice (#1552).
+              expectedQuantity: item.quantity - landed,
             },
           },
         });
         done += 1;
+        landed += a.quantity;
       }
       showToast('Stock allocated to project inventory', 'success');
       onSuccess();
     } catch (err) {
+      setAllocated(landed);
       const message = userMessage(err);
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened - or this very move landed and only its reply was lost
+        // (#1552). Close: the refetch redraws the grid, and reopening starts from the fresh count.
+        showToast(done > 0 ? `${message} - ${done} of ${allocations.length} allocated.` : message, 'error');
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+        return;
+      }
       const summary = done > 0 ? `${message} - ${done} of ${allocations.length} allocated.` : message;
       // The lines that landed drop out, so allocating again sends only what is still to go.
       if (done > 0) setLines(lines.slice(done));
@@ -252,7 +272,7 @@ export default function AllocateStockModal({
         )}
         <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
           <Typography component="div" sx={microLabelSx}>
-            Source · {item.available} available
+            Source · {available} available
           </Typography>
           <Typography sx={monoSx}>
             {item.hardwareCategory} / {item.productCode}
@@ -264,7 +284,7 @@ export default function AllocateStockModal({
         {scheduleMode ? (
           <Stack spacing={1.5}>
             <Typography component="div" sx={microLabelSx}>
-              Schedule products · {lineTotal} of {item.available} allocated
+              Schedule products · {lineTotal} of {available} allocated
             </Typography>
             {lines.map((line, index) => (
               <Stack key={index} direction="row" spacing={1} sx={{ alignItems: 'flex-start' }}>
@@ -293,7 +313,7 @@ export default function AllocateStockModal({
                   value={line.quantity}
                   onChange={(e) => setLine(index, { quantity: e.target.value })}
                   required
-                  inputProps={{ min: 1, max: item.available, 'aria-label': `Quantity ${index + 1}` }}
+                  inputProps={{ min: 1, max: available, 'aria-label': `Quantity ${index + 1}` }}
                   sx={{ width: 110, flexShrink: 0 }}
                 />
                 {lines.length > 1 && (
@@ -342,13 +362,13 @@ export default function AllocateStockModal({
               />
             </Stack>
             <TextField
-              label={`Quantity (max ${item.available})`}
+              label={`Quantity (max ${available})`}
               autoFocus
               type="number"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               required
-              inputProps={{ min: 1, max: item.available }}
+              inputProps={{ min: 1, max: available }}
             />
           </>
         )}

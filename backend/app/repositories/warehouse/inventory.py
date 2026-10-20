@@ -112,11 +112,27 @@ def check_expected_quantity(current: int, expected: int | None) -> None:
 
     The correction dialogs compute their write from the quantity they displayed. A pick, receive or
     allocation landing in between moves the row, and applying the stale write would double-count or
-    resurrect units. `expected` is that displayed count; None (an older client) skips the check."""
+    resurrect units. `expected` is that displayed count; None (an older client) skips the check.
+
+    The delta moves (transfer, destock, allocate, reclassify, kind change) send it too (#1552): their
+    own first attempt, committed behind a lost reply, is what moved the row, so a resend is refused
+    instead of moving the units a second time."""
     if expected is not None and current != expected:
         raise ConflictError(
             f"This row changed from {expected} to {current} since you opened it. Reload and try again.",
             field="expected_quantity",
+        )
+
+
+def check_expected_deficient_quantity(current: int, expected: int | None) -> None:
+    """`check_expected_quantity` for the writes that move a row's flagged count instead (#1552).
+
+    Reporting and resolving a deficiency leave `quantity` alone on some paths (a report, a repair), so
+    only the flagged count the dialog showed tells a resend after a lost reply from a fresh write."""
+    if expected is not None and current != expected:
+        raise ConflictError(
+            f"This row's flagged count changed from {expected} to {current} since you opened it. Reload and try again.",
+            field="expected_deficient_quantity",
         )
 
 

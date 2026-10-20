@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
 import { useToast } from '../../../components/Toast';
 import { RECLASSIFY_STOCK_ITEM } from '../../../graphql/warehouse';
@@ -8,6 +8,7 @@ import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
 import { userMessage } from '../../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../../graphql/staleRow';
 
 interface Props {
   item: StockItem;
@@ -21,6 +22,7 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
   const [quantity, setQuantity] = useState<string>(String(item.available));
   const [reason, setReason] = useState('');
   const { showToast } = useToast();
+  const client = useApolloClient();
   // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
   const inFlight = useRef(false);
 
@@ -35,6 +37,12 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
     onError: (err) => {
       inFlight.current = false;
       showToast(userMessage(err), 'error');
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened - or this very move landed and only its reply was lost
+        // (#1552). Close: the refetch redraws the grid, and reopening starts from the fresh count.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 
@@ -69,6 +77,8 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
           newProductCode: newCode.trim(),
           quantity: q,
           reasonText: reason.trim() || null,
+          // The row's count as shown, so a resend after a lost reply is refused, not applied twice (#1552).
+          expectedQuantity: item.quantity,
         },
       },
     });

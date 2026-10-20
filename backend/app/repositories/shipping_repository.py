@@ -704,8 +704,12 @@ def create_shipment_return(
     returned_by: str,
     reference: str | None,
     items: list[dict],
+    idempotency_key: str | None = None,
 ) -> ShipmentReturn:
     """Record a shipment return and route each loose line to its disposition.
+
+    `idempotency_key` (#1552) is the return dialog's, minted when it opened: a resend after a lost reply
+    gets back the return its first attempt wrote rather than booking the units back a second time.
 
     Each item dict carries: packing_slip_item_id, quantity, disposition (ReturnDisposition),
     and optional rma_reference / reason_text.
@@ -733,6 +737,21 @@ def create_shipment_return(
     ps = session.scalars(
         select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
     ).first()
+
+    # Looked up under the slip lock, so a resend that overlaps its own first attempt waits for it to
+    # commit and then finds what it wrote (#1552).
+    if idempotency_key:
+        if len(idempotency_key) > 100:
+            raise ValidationError("idempotency_key must be at most 100 characters", field="idempotency_key")
+        existing = session.scalars(
+            select(ShipmentReturn)
+            .where(ShipmentReturn.create_idempotency_key == idempotency_key)
+            .execution_options(populate_existing=True)
+        ).first()
+        if existing is not None:
+            if existing.packing_slip_id != packing_slip_id:
+                raise ValidationError("This return key was already used on another shipment.", field="idempotency_key")
+            return existing
 
     # 2. Validate destination warehouse: it exists, is active, and is the slip's project's company's own
     # building (#1376) - compared directly, so an unscoped admin cannot book a return into another
@@ -785,6 +804,7 @@ def create_shipment_return(
         returned_by=returned_by,
         returned_at=now,
         reference=reference,
+        create_idempotency_key=idempotency_key or None,
     )
     session.add(shipment_return)
     session.flush()

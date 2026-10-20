@@ -181,6 +181,7 @@ class StockMutations:
                 target_bay=input.target_bay,
                 performed_by=actor,
                 destock_cost=input.destock_cost,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(result)
@@ -208,6 +209,7 @@ class StockMutations:
                 dest_row=input.dest_row,
                 dest_bay=input.dest_bay,
                 performed_by=actor,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             return TransferResult(
@@ -235,6 +237,7 @@ class StockMutations:
                 target_row=input.target_row,
                 target_bay=input.target_bay,
                 performed_by=actor,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(result)
@@ -330,6 +333,7 @@ class StockMutations:
                 quantity=input.quantity,
                 reason_text=input.reason_text,
                 performed_by=actor,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(new_row)
@@ -355,6 +359,7 @@ class StockMutations:
                 kind=input.kind,
                 quantity=input.quantity,
                 performed_by=actor,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(target)
@@ -383,6 +388,7 @@ class StockMutations:
                 quantity=input.quantity,
                 reason_text=input.reason_text,
                 performed_by=actor,
+                expected_deficient_quantity=input.expected_deficient_quantity,
             )
             session.commit()
             session.refresh(il)
@@ -402,6 +408,7 @@ class StockMutations:
                 quantity=input.quantity,
                 reason_text=input.reason_text,
                 performed_by=actor,
+                expected_deficient_quantity=input.expected_deficient_quantity,
             )
             session.commit()
             session.refresh(si)
@@ -432,6 +439,7 @@ class StockMutations:
                 destock_source=input.destock_source,
                 reviewed_by=actor,
                 destock_cost=input.destock_cost,
+                expected_deficient_quantity=input.expected_deficient_quantity,
             )
             session.commit()
             session.refresh(review)

@@ -78,6 +78,7 @@ describe('ResolveDeficiencyModal', () => {
         rmaReference: null,
         destockSource: 'DEFICIENT_SWAP',
         destockCost: 'ZERO',
+        expectedDeficientQuantity: 3,
       },
     };
     const result = vi.fn(() => ({

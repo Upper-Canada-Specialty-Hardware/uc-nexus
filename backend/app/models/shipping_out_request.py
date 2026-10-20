@@ -15,7 +15,10 @@ class ShippingOutRequest(Base):
     same link to its pull. The two differ only in which exit the completed pull is."""
 
     __tablename__ = "shipping_out_requests"
-    __table_args__ = (Index("ix_shipping_out_requests_project_status", "project_id", "status"),)
+    __table_args__ = (
+        Index("ix_shipping_out_requests_project_status", "project_id", "status"),
+        Index("ix_shipping_out_requests_create_idempotency_key", "create_idempotency_key", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     request_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
@@ -32,6 +35,9 @@ class ShippingOutRequest(Base):
     # #972: the requester's Clerk user id, so a rejection is owed to them by name. Null on requests
     # raised before it was recorded.
     created_by_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1552: the browser mints one key when the dialog opens and re-sends it on a retry, so a create that
+    # committed behind a lost reply hands back what it wrote instead of writing it a second time.
+    create_idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
