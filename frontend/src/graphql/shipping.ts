@@ -495,8 +495,8 @@ export const MARK_SHIPMENT_DELIVERED = gql`
 `;
 
 export const GET_SHIPPING_OUT_REQUESTS = gql`
-  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus) {
-    shippingOutRequests(projectId: $projectId, status: $status) {
+  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus, $openOnly: Boolean = false) {
+    shippingOutRequests(projectId: $projectId, status: $status, openOnly: $openOnly) {
       id
       requestNumber
       projectId
