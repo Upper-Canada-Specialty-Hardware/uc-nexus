@@ -193,3 +193,13 @@ it('says the change log failed to load rather than "nothing changed since import
   expect(await screen.findByText(/couldn.t load the change log/i)).toBeInTheDocument();
   expect(screen.queryByText(/has been changed since import/)).not.toBeInTheDocument();
 });
+
+it("doesn't offer By Others for a product already classified (#1392)", async () => {
+  renderPage([]);
+
+  for (const code of ['HG-1', 'HG-2']) {
+    const group = await screen.findByRole('group', { name: `Classification of ${code}` });
+    expect(within(group).getByRole('button', { name: 'By Others' })).toBeDisabled();
+    expect(within(group).getByRole('button', { name: 'UCH Site' })).toBeEnabled();
+  }
+});

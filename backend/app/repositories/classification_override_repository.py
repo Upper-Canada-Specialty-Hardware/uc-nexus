@@ -65,6 +65,49 @@ SETTABLE = frozenset(
     }
 )
 
+# The choices that mean a product has been classified (#1392). The product owner ruled that such a
+# product can't be changed to By Others, on this page or through a schedule replace: By Others treats
+# the item as if it doesn't exist, which the work already planned around a classified product - POs,
+# shop requests, shipping - does not survive. Its first classification at import may still be By Others,
+# and By Others -> Shop / Site stays allowed.
+_CLASSIFIED = frozenset(
+    {
+        HardwareClassificationChoice.UCH_SHOP,
+        HardwareClassificationChoice.UCH_SITE,
+        HardwareClassificationChoice.MIXED,
+    }
+)
+_LABEL = {
+    HardwareClassificationChoice.UCH_SHOP: "UCH Shop",
+    HardwareClassificationChoice.UCH_SITE: "UCH Site",
+    HardwareClassificationChoice.MIXED: "a mix of UCH Shop and UCH Site",
+}
+
+
+def _by_others_refusal(was: HardwareClassificationChoice) -> str:
+    return f"it is already classified {_LABEL[was]}, and a classified product can't be changed to By Others"
+
+
+def refuse_classified_into_by_others(session: Session, project_id: uuid.UUID, excluded: set[Product]) -> None:
+    """Refuse a finalize whose By Others list takes in a product the project already has classified (#1392).
+
+    Called before the finalize rewrites the schedule rows, so the choice read is what the project held. A
+    product new to the project, never classified, or already By Others passes."""
+    if not excluded:
+        return
+    current = {
+        (r["hardware_category"], r["product_code"]): r["choice"]
+        for r in list_product_classifications(session, project_id)
+    }
+    refused = [
+        f"{code} ({category}): {_by_others_refusal(current[(category, code)])}"
+        for category, code in sorted(excluded)
+        if current.get((category, code)) in _CLASSIFIED
+    ]
+    if refused:
+        raise ValidationError("Nothing was saved. " + " | ".join(refused), field="excludedItems")
+
+
 _STORED = {
     HardwareClassificationChoice.UCH_SHOP: Classification.SHOP_HARDWARE,
     HardwareClassificationChoice.UCH_SITE: Classification.SITE_HARDWARE,
@@ -315,6 +358,21 @@ def plan_product_classifications(
             raise ValidationError(f"{code} ({category}) is not on this project's hardware schedule.", field="changes")
         was = current[product]
         if was == to:
+            continue
+        if to == HardwareClassificationChoice.BY_OTHERS and was in _CLASSIFIED:
+            plans.append(
+                {
+                    "hardware_category": category,
+                    "product_code": code,
+                    "from_choice": was,
+                    "to_choice": to,
+                    "went_out": [],
+                    "adjusts": [],
+                    "unaffected": [],
+                    "blocks": [_by_others_refusal(was)],
+                    "leaves_shop_requests": False,
+                }
+            )
             continue
         adjusts: list[str] = []
         unaffected: list[str] = []
