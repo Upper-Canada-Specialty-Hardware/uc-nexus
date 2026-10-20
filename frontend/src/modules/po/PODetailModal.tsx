@@ -573,6 +573,12 @@ export default function PODetailModal({
   // #1595: a queued registration posts the lines as they were when it was queued, so they are held too.
   const canEditItems = po.status === 'DRAFT' && !registrationQueued;
   const poNumberLocked = po.origin === 'GP' || po.status !== 'DRAFT';
+  // #1488: once receiving has started on an open PO, only the expected date (the vendor's answer for
+  // the rest) and the notes still change; the server refuses the others.
+  const receivingStarted =
+    po.status === 'PARTIALLY_RECEIVED' ||
+    ((po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED') && po.receiveRecords.length > 0);
+  const FROZEN_AFTER_RECEIVING = 'Fixed once receiving has started';
 
   const distinctProductCodes = useMemo(
     () => Array.from(new Set(po.lineItems.map((li) => li.productCode))),
@@ -663,8 +669,9 @@ export default function PODetailModal({
   const heldForQueuedRegistration = po.status === 'DRAFT' && registrationQueued;
   const canEdit =
     (po.status === 'DRAFT' && !registrationQueued) ||
-    (po.status === 'GP_REGISTERED' && po.receiveRecords.length === 0) ||
-    (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
+    po.status === 'GP_REGISTERED' ||
+    po.status === 'VENDOR_CONFIRMED' ||
+    po.status === 'PARTIALLY_RECEIVED';
   // A refetch that finds the PO no longer editable (moved on, or queued for GP) closes an open edit form.
   // Adjusted during render (guarded), the way React recommends for state derived from props.
   if (editing && !canEdit) setEditing(false);
@@ -874,12 +881,15 @@ export default function PODetailModal({
               label="Vendor Quote Number"
               value={vendorQuoteNumber}
               onChange={(e) => setVendorQuoteNumber(e.target.value)}
+              disabled={receivingStarted}
+              helperText={receivingStarted ? FROZEN_AFTER_RECEIVING : undefined}
               fullWidth
               size="small"
             />
             {po.status === 'DRAFT' && !po.projectId && <PoolKindToggle value={poolKind} onChange={setPoolKind} />}
             {/* Issue #216: preferred is the PM's ask, editable only on the DRAFT request; expected is
-                the vendor's answer, only enterable once GP-Registered (and before receiving). */}
+                the vendor's answer, enterable once GP-Registered - and still after receiving starts
+                (#1488), when the vendor pushes the rest out. */}
             {po.status === 'DRAFT' ? (
               <TextField
                 label="Preferred Delivery Date"
@@ -921,6 +931,8 @@ export default function PODetailModal({
                 onChange={(e) => setTariffAmount(e.target.value)}
                 size="small"
                 type="number"
+                disabled={receivingStarted}
+                helperText={receivingStarted ? FROZEN_AFTER_RECEIVING : undefined}
                 slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
                 sx={{ width: 200, maxWidth: '100%' }}
               />

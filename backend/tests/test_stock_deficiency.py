@@ -413,3 +413,129 @@ def test_resolving_more_than_is_still_flagged_says_so_in_words(db_session):
         "Only 2 of these units are still flagged deficient - someone else resolved some. "
         "Reopen to see the current count."
     )
+
+
+# --- purchasing is told of a return to vendor (#1393) ----------------------------------------------
+
+
+def _purchasing_notices(session, project_id):
+    from sqlalchemy import select
+
+    from app.models.enums import NotificationType
+    from app.models.notification import Notification
+    from app.services import notification_service
+
+    return session.scalars(
+        select(Notification).where(
+            Notification.project_id == project_id,
+            Notification.type == NotificationType.INVENTORY_SHORTFALL,
+            Notification.recipient_role == notification_service.PO_RECIPIENT_ROLE,
+        )
+    ).all()
+
+
+def _po_line(session, project):
+    from decimal import Decimal
+
+    from app.models.enums import POStatus
+    from app.models.purchase_order import POLineItem, PurchaseOrder
+
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=f"REQ-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        status=POStatus.CLOSED,
+        po_number=f"PO{uuid.uuid4().hex[:6]}",
+        gp_company="TUBC",
+        vendor_name_snapshot="Acme",
+        company="TUBC",
+    )
+    session.add(po)
+    session.flush()
+    line = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        hardware_category="HINGE",
+        product_code="HG-100",
+        ordered_quantity=10,
+        received_quantity=10,
+        unit_cost=Decimal("1.00"),
+        gp_line_ord=16384,
+    )
+    session.add(line)
+    session.flush()
+    return po, line
+
+
+def _resolve(session, *, il=None, si=None, resolution=DeficiencyResolution.RETURN_TO_VENDOR, quantity=3):
+    stock_repository.resolve_deficiency(
+        session,
+        inventory_location_id=il.id if il else None,
+        stock_item_id=si.id if si else None,
+        resolution=resolution,
+        quantity=quantity,
+        reason_text=None,
+        rma_reference="RMA-7" if resolution == DeficiencyResolution.RETURN_TO_VENDOR else None,
+        destock_source=None,
+        reviewed_by="Wendy Manager",
+        destock_cost=DestockCost.ZERO,
+    )
+    session.flush()
+
+
+def test_a_return_to_vendor_tells_purchasing_the_job_is_short(db_session):
+    project = make_project(db_session)
+    po, line = _po_line(db_session, project)
+    stock = make_stock_item(db_session, quantity=0)
+    il = make_il(db_session, project, quantity=10, deficient=3, stock_item_id=stock.id, po_line_item_id=line.id)
+
+    _resolve(db_session, il=il)
+
+    [notice] = _purchasing_notices(db_session, project.id)
+    assert notice.message == (
+        f"3 units of HINGE HG-100 went back to the vendor from PO {po.po_number} (RMA RMA-7), returned by "
+        "Wendy Manager. The job is 3 short - backfill or a replacement is needed. The PO still reads received."
+    )
+    assert line.received_quantity == 10
+
+
+def test_a_return_from_a_row_with_no_po_still_tells_purchasing(db_session):
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10, deficient=1)
+
+    _resolve(db_session, il=il, quantity=1)
+
+    [notice] = _purchasing_notices(db_session, project.id)
+    assert notice.message.startswith("1 unit of HINGE HG-100 went back to the vendor (RMA RMA-7)")
+    assert "PO still reads" not in notice.message
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    [
+        DeficiencyResolution.SEND_TO_STOCK,
+        DeficiencyResolution.SCRAP,
+        DeficiencyResolution.REPAIR,
+        DeficiencyResolution.LEAVE_AS_DEFICIENT,
+    ],
+)
+def test_other_resolutions_tell_purchasing_nothing(db_session, resolution):
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10, deficient=3)
+
+    _resolve(db_session, il=il, resolution=resolution)
+
+    assert _purchasing_notices(db_session, project.id) == []
+
+
+def test_a_pool_return_raises_nothing(db_session):
+    from sqlalchemy import func, select
+
+    from app.models.notification import Notification
+
+    before = db_session.scalar(select(func.count()).select_from(Notification))
+    si = make_stock_item(db_session, quantity=10, deficient=3)
+
+    _resolve(db_session, si=si)
+
+    assert db_session.scalar(select(func.count()).select_from(Notification)) == before

@@ -14,10 +14,12 @@ from app.models.enums import (
     DeficientItemSource,
     DestockCost,
     DestockSource,
+    NotificationType,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 from app.repositories.warehouse.inventory import check_expected_deficient_quantity
+from app.services import notification_service
 from app.services.locking import lock_inventory_combo
 
 from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
@@ -110,6 +112,41 @@ def report_stock_deficiency(
         },
     )
     return si
+
+
+def _tell_purchasing_of_return(
+    session: Session, il: InventoryLocationModel, quantity: int, rma_reference: str | None, reviewed_by: str
+) -> None:
+    """Tell purchasing the job is short the units going back to the vendor (#1393, ruled option c).
+
+    The PO's received figures stay as they are, so Nexus and GP still agree - which is exactly why nothing
+    else would show the gap: the PO reads fully received and the job is quietly short. This notice is the
+    signal, the way a short pick's backfill notice is. A stock pool row has no project to raise it on and
+    is not called here."""
+    from app.models.purchase_order import POLineItem, PurchaseOrder
+
+    po_number = None
+    if il.po_line_item_id is not None:
+        po_number = session.scalar(
+            select(PurchaseOrder.po_number)
+            .join(POLineItem, POLineItem.po_id == PurchaseOrder.id)
+            .where(POLineItem.id == il.po_line_item_id)
+        )
+    units = "unit" if quantity == 1 else "units"
+    message = (
+        f"{quantity} {units} of {il.hardware_category} {il.product_code} went back to the vendor"
+        + (f" from PO {po_number}" if po_number else "")
+        + (f" (RMA {rma_reference})" if rma_reference else "")
+        + f", returned by {reviewed_by}. The job is {quantity} short - backfill or a replacement is needed. "
+        + ("The PO still reads received." if po_number else "")
+    ).strip()
+    notification_service.create_notification(
+        session,
+        project_id=il.project_id,
+        recipient_role=notification_service.PO_RECIPIENT_ROLE,
+        notification_type=NotificationType.INVENTORY_SHORTFALL,
+        message=message,
+    )
 
 
 def resolve_deficiency(
@@ -207,6 +244,7 @@ def resolve_deficiency(
         elif resolution == DeficiencyResolution.RETURN_TO_VENDOR:
             il.quantity -= quantity
             il.deficient_quantity -= quantity
+            _tell_purchasing_of_return(session, il, quantity, rma_reference, reviewed_by)
         elif resolution == DeficiencyResolution.LEAVE_AS_DEFICIENT:
             pass
 
