@@ -931,10 +931,21 @@ class ProjectScheduleHardwareItem:
 
 
 @strawberry.type
+class ProjectProductClassification:
+    """One product on the project's classification list (#1443): the Site / Shop the project holds for it,
+    kept apart from any schedule. The import wizard fills a listed product in from this and doesn't ask."""
+
+    hardware_category: str
+    product_code: str
+    classification: Classification
+
+
+@strawberry.type
 class ProjectHardwareSchedule:
     project: Project
     openings: list[Opening]
     hardware_items: list[ProjectScheduleHardwareItem]
+    product_classifications: list[ProjectProductClassification]
 
 
 @strawberry.type

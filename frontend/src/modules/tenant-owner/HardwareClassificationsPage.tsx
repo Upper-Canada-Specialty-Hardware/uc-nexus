@@ -42,6 +42,10 @@ import { useGridColumnFit } from '../../components/useGridColumnFit';
  * that touches anything is saved, the page shows what it does - what already went out (history, it
  * stays as it went), what saving adjusts, what it leaves alone, and what blocks it - and the rules are
  * spelled out at the top. A bulk change is all or nothing. Every change lands in the log at the foot.
+ *
+ * #1443: the project's classifications are its own list, not the last schedule's. A schedule import adds
+ * new products to it and changes none, so this page is where a product's classification changes, and
+ * it also lists the products a newer schedule dropped, marked Not on current schedule.
  */
 
 type Choice = 'UCH_SHOP' | 'UCH_SITE' | 'BY_OTHERS' | 'UNCLASSIFIED' | 'MIXED';
@@ -52,6 +56,8 @@ interface ClassificationRow {
   quantity: number;
   openingCount: number;
   choice: Choice;
+  // #1443: false for a product only on the project's classification list - a newer schedule dropped it.
+  onSchedule: boolean;
 }
 
 interface ChangeRow {
@@ -88,6 +94,7 @@ const RULES = [
   'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled.',
   "A product that already has a classification - UCH Shop, UCH Site or a mix - can't be changed to By Others: By Others treats the item as if it doesn't exist. Only a product never classified can be set to By Others.",
   'Before anything that touches other work is saved, you see exactly what will happen.',
+  "A schedule import adds new products here but doesn't change one the project already has classified - that is done on this page. A product a newer schedule dropped stays listed, marked Not on current schedule.",
 ];
 
 const IMPACT_SECTIONS: { key: 'blocks' | 'wentOut' | 'adjusts' | 'unaffected'; label: string; color?: string }[] = [
@@ -210,14 +217,41 @@ export default function HardwareClassificationsPage() {
       flex: 1.2,
       minWidth: 140,
       renderCell: (p) => (
-        <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
-          {p.row.productCode}
-        </Box>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ height: '100%', minWidth: 0 }}>
+          <Box component="span" sx={{ ...monoSx, fontWeight: 600, flexShrink: 0 }}>
+            {p.row.productCode}
+          </Box>
+          {/* #1443: on the project's list, but the current schedule no longer has it. */}
+          {!p.row.onSchedule && (
+            <Chip
+              size="small"
+              variant="outlined"
+              label="Not on current schedule"
+              title="Not on current schedule"
+              sx={{ minWidth: 0 }}
+            />
+          )}
+        </Stack>
       ),
     },
     { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 130 },
-    { field: 'quantity', headerName: 'Qty', type: 'number', width: 70, minWidth: 70 },
-    { field: 'openingCount', headerName: 'Openings', type: 'number', width: 90, minWidth: 90 },
+    // A product off the schedule has nothing scheduled, so its figures read as a dash, not a zero.
+    {
+      field: 'quantity',
+      headerName: 'Qty',
+      type: 'number',
+      width: 70,
+      minWidth: 70,
+      renderCell: (p) => (p.row.onSchedule ? p.value : '—'),
+    },
+    {
+      field: 'openingCount',
+      headerName: 'Openings',
+      type: 'number',
+      width: 90,
+      minWidth: 90,
+      renderCell: (p) => (p.row.onSchedule ? p.value : '—'),
+    },
     {
       field: 'choice',
       headerName: 'Classification',

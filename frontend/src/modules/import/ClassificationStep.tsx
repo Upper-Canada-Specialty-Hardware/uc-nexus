@@ -40,8 +40,17 @@ export default function ClassificationStep({
     () => (isPo ? classificationRows.map((r) => ({ ...r, classification: poChoiceOf(r) })) : classificationRows),
     [isPo, classificationRows],
   );
+  // #1443: a product on the project's classification list is answered by the list and read-only here,
+  // so the guided walk never offers it and no pick - a whole-group one included - reaches its lines.
+  const listedKeys = useMemo(
+    () => new Set(classificationRows.filter((r) => r.listed).map((r) => r.classificationKey)),
+    [classificationRows],
+  );
+  const guidedRows = useMemo(() => rows.filter((r) => !r.listed), [rows]);
   const classify = useCallback(
-    (keys: string[], value: string) => {
+    (allKeys: string[], value: string) => {
+      const keys = allKeys.filter((k) => !listedKeys.has(k));
+      if (keys.length === 0) return;
       if (!isPo) {
         onClassify(keys, value);
         return;
@@ -50,7 +59,7 @@ export default function ClassificationStep({
       onClassify(keys, scope);
       if (siteShop) onClassifySiteShop(keys, siteShop);
     },
-    [isPo, onClassify, onClassifySiteShop],
+    [isPo, onClassify, onClassifySiteShop, listedKeys],
   );
 
   // Count the openings the lines actually belong to, not the selection set - hardware-mode imports
@@ -65,7 +74,7 @@ export default function ClassificationStep({
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>(['vendorNo']);
 
   const [phase, setPhase] = useState<Phase>(() =>
-    rows.some((r) => !isRowClassified(r)) ? 'guided' : 'review',
+    guidedRows.some((r) => !isRowClassified(r)) ? 'guided' : 'review',
   );
   // #1563: a PO re-import mounts this step before its rows exist (the reconcile's auto-select runs just
   // after), so the phase above was settled on nothing and always opened on review. Settle it once, on
@@ -73,8 +82,9 @@ export default function ClassificationStep({
   const [phaseSettled, setPhaseSettled] = useState(rows.length > 0);
   if (!phaseSettled && rows.length > 0) {
     setPhaseSettled(true);
-    if (rows.some((r) => !isRowClassified(r))) setPhase('guided');
+    if (guidedRows.some((r) => !isRowClassified(r))) setPhase('guided');
   }
+  const listedCount = rows.length - guidedRows.length;
   // #586: whether review was reached by finishing the guided walk-through (vs. landing straight on it
   // when nothing needed guiding). Drives the one-time hand-off confirmation so the two phases read as
   // one flow. Cleared on any hop back into guided.
@@ -105,7 +115,15 @@ export default function ClassificationStep({
         </Typography>
       </Alert>
 
-      {phase === 'guided' ? (
+      {listedCount > 0 && (
+        <Alert severity="info" sx={{ mb: 2, '& .MuiAlert-message': { minWidth: 0 } }}>
+          {listedCount === rows.length ? 'Every line is' : `${listedCount} of ${rows.length} lines are`} a product
+          this project already has classified, filled in from its classification list. Change{' '}
+          {listedCount === 1 ? 'it' : 'them'} on the project&apos;s Hardware Classifications page.
+        </Alert>
+      )}
+
+      {phase === 'guided' && guidedRows.length > 0 ? (
         <>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             {isPo
@@ -113,7 +131,7 @@ export default function ClassificationStep({
               : 'Classify each item group as Shop Hardware or Site Hardware.'}
           </Typography>
           <GuidedClassification
-            rows={rows}
+            rows={guidedRows}
             options={options}
             onClassify={classify}
             groupByFields={groupByFields}
@@ -136,10 +154,14 @@ export default function ClassificationStep({
           readOnly={false}
           groupByFields={groupByFields}
           justCompletedGuided={completedGuided}
-          onBackToGuided={() => {
-            setCompletedGuided(false);
-            setPhase('guided');
-          }}
+          onBackToGuided={
+            guidedRows.length > 0
+              ? () => {
+                  setCompletedGuided(false);
+                  setPhase('guided');
+                }
+              : undefined
+          }
         />
       )}
     </Box>

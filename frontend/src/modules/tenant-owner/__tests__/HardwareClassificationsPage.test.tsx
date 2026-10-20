@@ -18,12 +18,14 @@ import {
 const INFINITE = Number.POSITIVE_INFINITY;
 const PID = 'p1';
 
-const row = (productCode: string, choice: string) => ({
+// #1443: a product only on the project's classification list is off the schedule, with nothing on it.
+const row = (productCode: string, choice: string, onSchedule = true) => ({
   hardwareCategory: 'HINGE',
   productCode,
-  quantity: 4,
-  openingCount: 2,
+  quantity: onSchedule ? 4 : 0,
+  openingCount: onSchedule ? 2 : 0,
   choice,
+  onSchedule,
   __typename: 'ProjectHardwareClassification',
 });
 
@@ -90,9 +92,9 @@ const setMock = (result: MockedResponse['result']): MockedResponse => ({
   result,
 });
 
-function renderPage(extra: MockedResponse[] = [], changes: MockedResponse = changesMock) {
+function renderPage(extra: MockedResponse[] = [], changes: MockedResponse = changesMock, list: MockedResponse = listMock) {
   return render(
-    <MockedProvider mocks={[listMock, changes, ...extra]}>
+    <MockedProvider mocks={[list, changes, ...extra]}>
       <ToastProvider>
         <MemoryRouter initialEntries={[`/app/tenant-owner/projects/${PID}/classifications`]}>
           <Routes>
@@ -115,6 +117,23 @@ it('shows each product with its classification, a mixed one flagged, and the cha
   );
   // #1050: the rules are spelled out before anyone changes anything.
   expect(screen.getByRole('region', { name: 'How a change works' })).toHaveTextContent(/applies to what is still owed/);
+});
+
+it('shows a product a newer schedule dropped, off the schedule and still classifiable', async () => {
+  renderPage([], changesMock, {
+    ...listMock,
+    result: { data: { projectHardwareClassifications: [row('HG-1', 'UCH_SHOP'), row('GONE-1', 'UCH_SITE', false)] } },
+  });
+
+  const group = await screen.findByRole('group', { name: 'Classification of GONE-1' });
+  expect(within(group).getByRole('button', { name: 'UCH Site' })).toHaveAttribute('aria-pressed', 'true');
+  // It is classified, so By Others stays off for it (#1392).
+  expect(within(group).getByRole('button', { name: 'By Others' })).toBeDisabled();
+  expect(screen.getAllByText('Not on current schedule')).toHaveLength(1);
+  const gone = screen.getByText('GONE-1').closest('[role="row"]') as HTMLElement;
+  expect(within(gone).getAllByText('—')).toHaveLength(2);
+  const onSchedule = screen.getByText('HG-1').closest('[role="row"]') as HTMLElement;
+  expect(within(onSchedule).queryByText('—')).not.toBeInTheDocument();
 });
 
 it('shows the server refusal naming what holds the product', async () => {

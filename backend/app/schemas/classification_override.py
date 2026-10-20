@@ -15,7 +15,7 @@ from .enums import HardwareClassificationChoice
 
 @strawberry.type
 class ProjectHardwareClassification:
-    """One product on the project's schedule and the classification it has now."""
+    """One product on the project's schedule or classification list, and the classification it has now."""
 
     hardware_category: str
     product_code: str
@@ -23,6 +23,9 @@ class ProjectHardwareClassification:
     opening_count: int
     # UNCLASSIFIED or MIXED describe what is there; only the other three can be set.
     choice: HardwareClassificationChoice
+    # False for a product only on the classification list (#1443): a newer schedule dropped it before
+    # anybody ordered it, and Nexus still remembers its classification. Its quantity and openings are 0.
+    on_schedule: bool
 
 
 @strawberry.type
@@ -90,6 +93,7 @@ def _rows(session, project_id: uuid.UUID) -> list[ProjectHardwareClassification]
             quantity=r["quantity"],
             opening_count=r["opening_count"],
             choice=r["choice"],
+            on_schedule=r["on_schedule"],
         )
         for r in repo.list_product_classifications(session, project_id)
     ]

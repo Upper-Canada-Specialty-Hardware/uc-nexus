@@ -393,7 +393,7 @@ def migrate_inventory(
                 field=e.field,
             ) from e
 
-    classified = _apply_classifications(session, classifications or [])
+    classified = _apply_classifications(session, classifications or [], performed_by=performed_by)
 
     # The run marker is created before the marking so each mark can carry its run id - the marks are
     # what lets finalize re-apply the coverage after a schedule replace wipes the marked rows.
@@ -530,7 +530,7 @@ def _receive_against_line(
     return inventory_row
 
 
-def _apply_classifications(session: Session, classifications: list[dict]) -> int:
+def _apply_classifications(session: Session, classifications: list[dict], *, performed_by: str | None) -> int:
     """Write the wizard's Site/Shop decisions onto matching schedule rows that are still unclassified.
 
     Each decision: project_id, hardware_category, product_code, classification. Inherit means never
@@ -538,23 +538,70 @@ def _apply_classifications(session: Session, classifications: list[dict]) -> int
     classification IS NULL are touched. Categories are the schedule's own (the wizard snaps a matched
     row's category to the schedule before it gets here), so the (project, category, code) match lands
     on exactly the rows the extras-lane chip and the marking below read.
+
+    The project's classification list (#1443) is kept in step the same way: a listed product's rows take
+    the list's value, never the wizard's, and a product not yet listed whose classified rows now all agree
+    is appended with that value.
     """
+    from app.models.project_excluded_item import ProjectExcludedItem
+    from app.repositories import classification_override_repository
+
     total = 0
+    listed_by_project: dict[uuid.UUID, dict[tuple[str, str], Classification]] = {}
+    newly_classified: dict[uuid.UUID, set[tuple[str, str]]] = {}
     for decision in classifications:
         classification = decision.get("classification")
         if classification is None:
             continue
+        project_id = decision["project_id"]
+        product = (decision["hardware_category"].strip(), decision["product_code"].strip())
+        if project_id not in listed_by_project:
+            listed_by_project[project_id] = classification_override_repository.listed_classifications(
+                session, project_id
+            )
+        listed_value = listed_by_project[project_id].get(product)
         result = session.execute(
             update(HardwareItem)
             .where(
-                HardwareItem.project_id == decision["project_id"],
-                HardwareItem.hardware_category == decision["hardware_category"].strip(),
-                HardwareItem.product_code == decision["product_code"].strip(),
+                HardwareItem.project_id == project_id,
+                HardwareItem.hardware_category == product[0],
+                HardwareItem.product_code == product[1],
                 HardwareItem.classification.is_(None),
             )
-            .values(classification=Classification(classification))
+            .values(classification=listed_value or Classification(classification))
         )
         total += result.rowcount or 0
+        if listed_value is None:
+            newly_classified.setdefault(project_id, set()).add(product)
+
+    for project_id, products in newly_classified.items():
+        excluded = set(
+            session.execute(
+                select(ProjectExcludedItem.hardware_category, ProjectExcludedItem.product_code).where(
+                    ProjectExcludedItem.project_id == project_id
+                )
+            )
+            .tuples()
+            .all()
+        )
+        values: dict[tuple[str, str], set[Classification]] = {}
+        for category, code, cls in session.execute(
+            select(HardwareItem.hardware_category, HardwareItem.product_code, HardwareItem.classification)
+            .where(HardwareItem.project_id == project_id, HardwareItem.classification.is_not(None))
+            .distinct()
+        ):
+            if (category, code) in products:
+                values.setdefault((category, code), set()).add(cls)
+        classification_override_repository.write_list(
+            session,
+            project_id,
+            {
+                product: next(iter(found))
+                for product, found in values.items()
+                if len(found) == 1 and product not in excluded
+            },
+            updated_by=performed_by,
+        )
     return total
 
 

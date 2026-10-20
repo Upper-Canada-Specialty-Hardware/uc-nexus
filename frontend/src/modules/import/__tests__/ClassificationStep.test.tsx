@@ -1,8 +1,14 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import ClassificationStep from '../ClassificationStep';
 import type { ClassificationRow, ImportPurpose } from '../types';
 
-function makeRow(o: { id: string; vendorNo: string; classification?: string; siteShop?: string }): ClassificationRow {
+function makeRow(o: {
+  id: string;
+  vendorNo: string;
+  classification?: string;
+  siteShop?: string;
+  listed?: boolean;
+}): ClassificationRow {
   return {
     id: o.id,
     openingNumber: o.id,
@@ -20,6 +26,7 @@ function makeRow(o: { id: string; vendorNo: string; classification?: string; sit
     classificationKey: `Hinges|P-${o.id}|10`,
     classification: o.classification ?? '',
     siteShop: o.siteShop ?? '',
+    listed: o.listed ?? false,
   };
 }
 
@@ -137,5 +144,48 @@ describe('ClassificationStep phase on late rows', () => {
     rerender(<ClassificationStep classificationRows={ONE_ROW} itemCount={1} {...props} />);
 
     expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
+  });
+});
+
+// #1443: a product on the project's classification list is the list's to answer - filled in, read-only,
+// never walked - and only the products new to the list are asked.
+describe('ClassificationStep listed products', () => {
+  const listed = (id: string, vendorNo: string) =>
+    makeRow({ id, vendorNo, classification: 'BY_UCSH', siteShop: 'SHOP_HARDWARE', listed: true });
+
+  it('walks only the products new to the list and says where the others change', () => {
+    const { onClassify, onClassifySiteShop } = renderStep([listed('a', 'VEND-A'), makeRow({ id: 'b', vendorNo: 'VEND-B' })]);
+
+    expect(screen.getByText(/1 of 2 lines are a product this project already has classified/)).toBeInTheDocument();
+    expect(screen.getByText(/Hardware Classifications page/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    fireEvent.keyDown(document.body, { key: '2' });
+
+    expect(onClassify).toHaveBeenCalledTimes(1);
+    expect(onClassify).toHaveBeenCalledWith(['Hinges|P-b|10'], 'BY_UCSH');
+    expect(onClassifySiteShop).toHaveBeenCalledWith(['Hinges|P-b|10'], 'SITE_HARDWARE');
+  });
+
+  it('leaves a listed line out of a whole-group pick', () => {
+    const { onClassify } = renderStep([
+      listed('a', 'VEND-A'),
+      makeRow({ id: 'b', vendorNo: 'VEND-A', classification: 'BY_UCSH', siteShop: 'SITE_HARDWARE' }),
+    ]);
+
+    fireEvent.click(screen.getByText('VEND-A'));
+    const whole = screen.getByText('Set whole group').parentElement as HTMLElement;
+    fireEvent.click(within(whole).getByRole('button', { name: 'UCH Shop' }));
+
+    expect(onClassify).toHaveBeenCalledWith(['Hinges|P-b|10'], 'BY_UCSH');
+    expect(onClassify).not.toHaveBeenCalledWith(expect.arrayContaining(['Hinges|P-a|10']), expect.anything());
+  });
+
+  it('lands on review with nothing to walk when every line is listed', () => {
+    renderStep([listed('a', 'VEND-A'), listed('b', 'VEND-B')]);
+
+    expect(screen.getByText('All 2 classified')).toBeInTheDocument();
+    expect(screen.getByText(/Every line is a product this project already has classified/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Classify by group' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Set whole group')).not.toBeInTheDocument();
   });
 });

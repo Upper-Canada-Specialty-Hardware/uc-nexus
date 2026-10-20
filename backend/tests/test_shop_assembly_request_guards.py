@@ -127,14 +127,15 @@ def test_the_same_line_twice_is_refused(db_session):
 
 
 def _schedule_only(session, project, classification="SHOP_HARDWARE"):
-    """A01 scheduled for 4 HG-100 hinges, no request - the schedule a composer tab was opened over."""
+    """A01 scheduled for 4 HG-100 hinges classified `classification` (None: unclassified), no request -
+    the schedule a composer tab was opened over."""
     import_repository.finalize_import_session(
         session,
         {
             "project_id": str(project.id),
             "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
             "hardware_items": [{**_HINGE, "item_quantity": 4}],
-            "classifications": [{**_SHOP_HINGE, "classification": classification}],
+            "classifications": [{**_SHOP_HINGE, "classification": classification}] if classification else [],
         },
     )
 
@@ -188,9 +189,10 @@ def test_a_product_marked_by_others_is_refused_whatever_its_rows_say(db_session)
 
 
 def test_a_finalize_that_makes_the_product_shop_hardware_can_request_it(db_session):
-    """An assembly finalize's own classification lands before its request is checked."""
+    """An assembly finalize's own classification lands before its request is checked. Since #1443 that is
+    only a product's first classification: a listed product's is changed on the classifications page."""
     project = _project(db_session)
-    _schedule_only(db_session, project, classification="SITE_HARDWARE")
+    _schedule_only(db_session, project, classification=None)
 
     sar = _finalize(db_session, project, [{**_HINGE, "quantity": 4}])
 
