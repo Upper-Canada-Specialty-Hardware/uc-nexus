@@ -66,6 +66,9 @@ def _send(email: ClerkEmail) -> str:
         if exc.code != mailer.RECIPIENT_NOT_INTERNAL:
             raise DeliveryError(f"ucsh-mailer did not send it: {exc}") from exc
 
+    # TODO(#1769): SMTP2GO_API_KEY and SMTP2GO_SENDER are not set on production yet - the cutover went ahead
+    # without them so ucsh.com codes reach ucsh-mailer now. Until they are, a code for an address outside the
+    # company fails here and Clerk retries it. Set them (#1741) and remove this comment.
     try:
         smtp2go.send(to=email.to, subject=email.subject, text=email.text, html=email.html)
     except smtp2go.Smtp2goError as exc:
