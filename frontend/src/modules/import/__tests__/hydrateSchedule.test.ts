@@ -50,7 +50,7 @@ function item(
 }
 
 function response(items: ProjectHardwareScheduleHardwareItemResponse[]): ProjectHardwareScheduleResponse {
-  return { project, openings: [], hardwareItems: items };
+  return { project, openings: [], hardwareItems: items, productClassifications: [] };
 }
 
 describe('mapScheduleResponseToParseResult - door/frame filter (#627)', () => {
