@@ -61,6 +61,12 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         submittalId
         classification
       }
+      # #1443: the project's classification list. A listed product is filled in from it and not asked.
+      productClassifications {
+        hardwareCategory
+        productCode
+        classification
+      }
     }
   }
 `;

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { seedScheduleClassifications, type PersistedClassifiedItem } from '../scheduleClassificationSeed';
+import {
+  listedProducts,
+  seedListedClassifications,
+  seedScheduleClassifications,
+  type PersistedClassifiedItem,
+} from '../scheduleClassificationSeed';
 
 const stored = (productCode: string, unitCost: number | null, classification: string | null): PersistedClassifiedItem => ({
   hardwareCategory: 'HINGE',
@@ -53,5 +58,37 @@ describe('seedScheduleClassifications (#1455)', () => {
   it('treats a missing cost as 0 on both sides, as the wizard keys it', () => {
     const seeded = seedScheduleClassifications([stored('V', null, 'UCH_SITE')], [parsed('V', null)], new Map());
     expect(seeded?.get('HINGE|V|0')).toBe('UCH_SITE');
+  });
+});
+
+// #1443: a listed product takes the project's list value on every fresh line, whatever was there.
+describe('seedListedClassifications', () => {
+  const listed = listedProducts([
+    { hardwareCategory: 'HINGE', productCode: 'X', classification: 'SHOP_HARDWARE' },
+    { hardwareCategory: 'HINGE', productCode: 'GONE', classification: 'SITE_HARDWARE' },
+  ]);
+
+  it('fills every cost of a listed product with the list value, over an earlier answer', () => {
+    const seeded = seedListedClassifications(
+      listed,
+      [parsed('X', 10), parsed('X', 20), parsed('NEW', 5)],
+      new Set(),
+      new Map([['HINGE|X|10', 'SITE_HARDWARE']]),
+    );
+    expect(seeded?.get('HINGE|X|10')).toBe('SHOP_HARDWARE');
+    expect(seeded?.get('HINGE|X|20')).toBe('SHOP_HARDWARE');
+    expect(seeded?.has('HINGE|NEW|5')).toBe(false);
+  });
+
+  it('writes the value the map holds for it, and leaves a By Others product alone', () => {
+    const seeded = seedListedClassifications(listed, [parsed('X', 10)], new Set(), new Map(), () => 'BY_UCSH');
+    expect(seeded?.get('HINGE|X|10')).toBe('BY_UCSH');
+    expect(seedListedClassifications(listed, [parsed('X', 10)], new Set(['HINGE|X']), new Map())).toBeNull();
+  });
+
+  it('changes nothing on a re-run or with an empty list', () => {
+    const once = seedListedClassifications(listed, [parsed('X', 10)], new Set(), new Map())!;
+    expect(seedListedClassifications(listed, [parsed('X', 10)], new Set(), once)).toBeNull();
+    expect(seedListedClassifications(listedProducts(null), [parsed('X', 10)], new Set(), new Map())).toBeNull();
   });
 });

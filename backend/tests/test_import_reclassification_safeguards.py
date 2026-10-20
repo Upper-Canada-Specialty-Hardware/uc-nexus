@@ -1,20 +1,24 @@
-"""#1442: a finalize that changes a product's Site/Shop is held to the override page's plan.
+"""#1443: a schedule import doesn't change the classification of a product the project already has.
 
-Step 5a writes the classification a finalize was given onto every row of the product (#1264) - the
-same change the override page makes - so it gets the same safeguards: refused while a shop batch for the
-product is still being pulled, and a product leaving the shop comes off the openings still waiting on a
-pending shop request. Who may make the change is a separate decision (#1443) and is not touched here.
+The product owner ruled that a product's UCH Shop / UCH Site lives on the project's own classification
+list, not on whichever schedule was imported last. A finalize that answers a listed product differently is
+refused whole and changes nothing - the change is made on the Hardware Classifications page, which plans
+what it does first. A new product takes its first value from the finalize and is listed, and a product a
+newer schedule drops stays listed. #1442's safeguards remain for a Mixed product - never listed, its rows
+disagree - that a finalize settles on one value: it is held to the page's plan and logged like the page.
 A shop batch also refuses a product that is no longer shop work, whatever path changed it.
 """
 
 import uuid
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.errors import ConflictError, ValidationError
 from app.models.enums import (
     Classification,
+    HardwareClassificationChoice,
+    HardwareItemState,
     NotificationType,
     PullRequestSource,
     PullRequestStatus,
@@ -25,7 +29,8 @@ from app.models.enums import (
 from app.models.hardware import HardwareItem
 from app.models.hardware_classification_change import HardwareClassificationChange
 from app.models.notification import Notification
-from app.models.project import Project
+from app.models.project import Opening, Project
+from app.models.project_product_classification import ProjectProductClassification
 from app.models.pull_request import PullRequest
 from app.models.shop_assembly import (
     ShopAssemblyBatch,
@@ -34,7 +39,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequestItem,
     ShopAssemblyRequestOpening,
 )
-from app.repositories import import_repository, shop_assembly_repository
+from app.repositories import classification_override_repository, import_repository, shop_assembly_repository
 
 CAT = "HINGE"
 
@@ -178,53 +183,70 @@ def _notices(session, project) -> int:
     )
 
 
-def test_a_replace_moving_a_product_to_site_takes_it_off_a_waiting_shop_request(db_session):
+def _listed(session, project) -> dict[str, Classification]:
+    return {
+        code: classification
+        for (_category, code), classification in classification_override_repository.listed_classifications(
+            session, project.id
+        ).items()
+    }
+
+
+def _item_in_po(session, project, code: str, classification: Classification) -> None:
+    opening = session.scalars(select(Opening).where(Opening.project_id == project.id)).first()
+    session.add(
+        HardwareItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=opening.id,
+            hardware_category=CAT,
+            product_code=code,
+            leaf=2,
+            item_quantity=1,
+            classification=classification,
+            state=HardwareItemState.IN_PO,
+        )
+    )
+    session.flush()
+
+
+def test_a_first_classification_is_listed(db_session):
     project = _project(db_session)
-    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE})
-    req = _waiting_request(db_session, project, ["HG-100"])
+    import_repository.finalize_import_session(
+        db_session,
+        {"project_id": str(project.id), "openings": [_opening("A01")], "hardware_items": [_item("A01", "HG-100")]},
+    )
+    db_session.flush()
+    assert _listed(db_session, project) == {}
 
-    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE}, replace=True)
+    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE})
 
-    db_session.refresh(req)
-    assert req.items == []
-    assert req.openings[0].status == ShopAssemblyOpeningStatus.DISMISSED
-    # Nothing left waiting, so the request closes out, and the manager is told.
-    assert req.status == ShopAssemblyRequestStatus.APPROVED
-    assert _notices(db_session, project) == 1
     assert _classes(db_session, project, "HG-100") == {Classification.SITE_HARDWARE}
-    (change,) = _changes(db_session, project)
-    assert (change.from_choice, change.to_choice, change.changed_by) == ("UCH_SHOP", "UCH_SITE", "Pat PM")
+    assert _listed(db_session, project) == {"HG-100": Classification.SITE_HARDWARE}
+    assert _changes(db_session, project) == []
 
 
-def test_the_rest_of_a_waiting_request_stays_when_one_product_moves_to_site(db_session):
+def test_a_replace_cannot_change_a_listed_products_classification(db_session):
     project = _project(db_session)
     _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
-    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+    req = _waiting_request(db_session, project, ["HG-100"])
 
-    _finalize(
-        db_session,
-        project,
-        {"HG-100": Classification.SITE_HARDWARE, "HG-200": Classification.SHOP_HARDWARE},
-        replace=True,
-    )
+    with pytest.raises(ValidationError) as exc:
+        _finalize(
+            db_session,
+            project,
+            {"HG-100": Classification.SITE_HARDWARE, "HG-200": Classification.SHOP_HARDWARE},
+            replace=True,
+        )
 
-    db_session.refresh(req)
-    assert [i.product_code for i in req.items] == ["HG-200"]
-    assert req.openings[0].status == ShopAssemblyOpeningStatus.PENDING
-    assert req.status == ShopAssemblyRequestStatus.PENDING
-    assert [c.product_code for c in _changes(db_session, project)] == ["HG-100"]
-
-
-def test_a_replace_moving_a_product_on_a_batch_being_pulled_is_refused(db_session):
-    project = _project(db_session)
-    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE})
-    _batch_being_pulled(db_session, project, "HG-100")
-
-    with pytest.raises(ConflictError) as exc:
-        _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE}, replace=True)
-
-    assert "still being pulled" in str(exc.value)
+    assert exc.value.field == "classifications"
+    assert "HG-100 (HINGE) is UCH Shop" in exc.value.message
+    assert "Hardware Classifications page" in exc.value.message
+    assert "HG-200" not in exc.value.message
     assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE}
+    assert _listed(db_session, project)["HG-100"] == Classification.SHOP_HARDWARE
+    db_session.refresh(req)
+    assert [i.product_code for i in req.items] == ["HG-100"]
     assert _changes(db_session, project) == []
 
 
@@ -244,17 +266,158 @@ def test_a_finalize_that_keeps_the_classification_changes_nothing(db_session):
     assert _notices(db_session, project) == 0
 
 
-def test_a_first_classification_is_not_a_change(db_session):
+def test_a_listed_product_given_no_classification_takes_the_lists(db_session):
     project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE})
+
     import_repository.finalize_import_session(
         db_session,
-        {"project_id": str(project.id), "openings": [_opening("A01")], "hardware_items": [_item("A01", "HG-100")]},
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01")],
+            "hardware_items": [_item("A01", "HG-100", qty=4)],
+            "replace_schedule": True,
+        },
     )
     db_session.flush()
 
-    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE})
-
     assert _classes(db_session, project, "HG-100") == {Classification.SITE_HARDWARE}
+
+
+def test_a_product_a_newer_schedule_drops_stays_listed_and_comes_back_as_it_was(db_session):
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SITE_HARDWARE})
+
+    _finalize(db_session, project, {"HG-200": Classification.SITE_HARDWARE}, replace=True)
+
+    assert _classes(db_session, project, "HG-100") == set()
+    assert _listed(db_session, project) == {
+        "HG-100": Classification.SHOP_HARDWARE,
+        "HG-200": Classification.SITE_HARDWARE,
+    }
+    rows = {
+        r["product_code"]: r
+        for r in classification_override_repository.list_product_classifications(db_session, project.id)
+    }
+    assert rows["HG-100"]["on_schedule"] is False
+    assert (rows["HG-100"]["quantity"], rows["HG-100"]["opening_count"]) == (0, 0)
+    assert rows["HG-100"]["choice"] == HardwareClassificationChoice.UCH_SHOP
+    assert rows["HG-200"]["on_schedule"] is True
+
+    # Back on a later schedule with no answer for it: it takes the classification Nexus remembered.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01")],
+            "hardware_items": [_item("A01", "HG-100"), _item("A01", "HG-200")],
+            "classifications": [_classified("HG-200", Classification.SITE_HARDWARE)],
+            "replace_schedule": True,
+        },
+    )
+    db_session.flush()
+    assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE}
+
+
+def test_a_product_given_different_answers_at_different_costs_is_not_listed(db_session):
+    project = _project(db_session)
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01"), _opening("A02")],
+            "hardware_items": [_item("A01", "HG-100"), {**_item("A02", "HG-100"), "unit_cost": 20.0}],
+            "classifications": [
+                _classified("HG-100", Classification.SHOP_HARDWARE),
+                {**_classified("HG-100", Classification.SITE_HARDWARE), "unit_cost": 20.0},
+            ],
+        },
+    )
+    db_session.flush()
+
+    assert _listed(db_session, project) == {}
+    assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE, Classification.SITE_HARDWARE}
+
+
+def _mixed(session, project, codes: list[str]) -> None:
+    """Each code on A01 as Shop, plus one ordered row of it as Site: a Mixed product, never listed - the
+    state a product whose rows disagreed was left in by the #1443 backfill."""
+    _finalize(session, project, {code: Classification.SHOP_HARDWARE for code in codes})
+    session.execute(delete(ProjectProductClassification).where(ProjectProductClassification.project_id == project.id))
+    for code in codes:
+        _item_in_po(session, project, code, Classification.SITE_HARDWARE)
+        assert _classes(session, project, code) == {Classification.SHOP_HARDWARE, Classification.SITE_HARDWARE}
+
+
+def test_a_mixed_product_not_yet_listed_takes_its_single_value_and_is_listed(db_session):
+    project = _project(db_session)
+    _mixed(db_session, project, ["HG-100"])
+
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE}, replace=True)
+
+    assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE}
+    assert _listed(db_session, project) == {"HG-100": Classification.SHOP_HARDWARE}
+    (change,) = _changes(db_session, project)
+    assert (change.from_choice, change.to_choice, change.changed_by) == ("MIXED", "UCH_SHOP", "Pat PM")
+
+
+def test_a_mixed_product_moved_to_site_comes_off_a_waiting_shop_request(db_session):
+    """#1442, kept for a Mixed product (#1443): settling it on Site takes it off the openings still waiting
+    on a pending shop request, the manager is told, and the change is logged."""
+    project = _project(db_session)
+    _mixed(db_session, project, ["HG-100"])
+    req = _waiting_request(db_session, project, ["HG-100"])
+
+    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE}, replace=True)
+
+    db_session.refresh(req)
+    assert req.items == []
+    assert req.openings[0].status == ShopAssemblyOpeningStatus.DISMISSED
+    # Nothing left waiting, so the request closes out, and the manager is told.
+    assert req.status == ShopAssemblyRequestStatus.APPROVED
+    assert _notices(db_session, project) == 1
+    assert _classes(db_session, project, "HG-100") == {Classification.SITE_HARDWARE}
+    assert _listed(db_session, project) == {"HG-100": Classification.SITE_HARDWARE}
+    (change,) = _changes(db_session, project)
+    assert (change.from_choice, change.to_choice, change.changed_by) == ("MIXED", "UCH_SITE", "Pat PM")
+
+
+def test_the_rest_of_a_waiting_request_stays_when_a_mixed_product_moves_to_site(db_session):
+    project = _project(db_session)
+    _mixed(db_session, project, ["HG-100"])
+    req = _waiting_request(db_session, project, ["HG-100"])
+    db_session.add(
+        ShopAssemblyRequestItem(
+            id=uuid.uuid4(),
+            shop_assembly_request_id=req.id,
+            opening_number="A01",
+            hardware_category=CAT,
+            product_code="HG-200",
+            requested_quantity=1,
+        )
+    )
+    db_session.flush()
+
+    _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE}, replace=True)
+
+    db_session.refresh(req)
+    assert [i.product_code for i in req.items] == ["HG-200"]
+    assert req.openings[0].status == ShopAssemblyOpeningStatus.PENDING
+    assert req.status == ShopAssemblyRequestStatus.PENDING
+    assert [c.product_code for c in _changes(db_session, project)] == ["HG-100"]
+
+
+def test_a_mixed_product_on_a_batch_being_pulled_is_refused(db_session):
+    project = _project(db_session)
+    _mixed(db_session, project, ["HG-100"])
+    _batch_being_pulled(db_session, project, "HG-100")
+
+    with pytest.raises(ConflictError) as exc:
+        _finalize(db_session, project, {"HG-100": Classification.SITE_HARDWARE}, replace=True)
+
+    assert "still being pulled" in str(exc.value)
+    assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE, Classification.SITE_HARDWARE}
+    assert _listed(db_session, project) == {}
     assert _changes(db_session, project) == []
 
 

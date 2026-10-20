@@ -56,7 +56,10 @@ def get_project_hardware_schedule(
     session: Session,
     project_id: uuid.UUID,
 ) -> dict | None:
-    """Load a project's persisted hardware schedule (openings + items) for wizard hydration."""
+    """Load a project's persisted hardware schedule (openings + items) for wizard hydration, with its
+    classification list (#1443), which the wizard fills listed products in from instead of asking."""
+    from app.repositories import classification_override_repository
+
     project = (
         session.scalars(
             select(ProjectModel).where(ProjectModel.id == project_id).options(selectinload(ProjectModel.openings))
@@ -101,6 +104,7 @@ def get_project_hardware_schedule(
             for hi in hardware_items
             if hi.item_quantity > hi.beyond_schedule_quantity
         ],
+        "product_classifications": classification_override_repository.listed_classifications(session, project_id),
     }
 
 
@@ -904,22 +908,33 @@ def finalize_import_session(
         by_product[(c["hardware_category"], c["product_code"])].add(classification_map[key])
     product_classification = {product: next(iter(cls)) for product, cls in by_product.items() if len(cls) == 1}
 
+    # 1c. The project's classification list (#1443). The product owner ruled that a schedule import
+    # doesn't change an existing product's Site / Shop - that is done on the Hardware Classifications
+    # page - so a finalize that answers a listed product differently is refused whole, before anything is
+    # written. A listed product's rows all take the list's value, whatever this finalize was given; a
+    # product not yet listed takes its first value from this finalize and is appended at step 5a. Read
+    # under the project lock, which the page's save takes too, so the list cannot change underneath.
+    from app.repositories import classification_override_repository
+
+    listed = classification_override_repository.listed_classifications(session, project.id)
+    classification_override_repository.refuse_import_reclassifying_listed(listed, by_product)
+    # A Mixed product - not listed, its rows disagree - that this finalize settles on one value is a change
+    # to work already planned around it, so it is held to the override's plan (#1442): refused while a shop
+    # batch for it is still being pulled, and a product leaving the shop comes off the openings still
+    # waiting on a pending shop request (applied after step 5a). Planned here, before step 2 rewrites the
+    # rows, so it reads what the project held; the pending shop requests are locked after the project, the
+    # order set_product_classifications takes them.
+    reclassification_plans = classification_override_repository.plan_import_reclassification(
+        session, project.id, product_classification, listed
+    )
+
     def classification_for(hardware_category: str, product_code: str, unit_cost: float):
+        listed_value = listed.get((hardware_category, product_code))
+        if listed_value is not None:
+            return listed_value
         exact = classification_map.get((hardware_category, product_code, unit_cost))
         return exact if exact is not None else product_classification.get((hardware_category, product_code))
 
-    # 1c. Step 5a writes these onto every row of the product (#1264) - the change the override page
-    # makes, so it is held to the override's plan (#1442): refused while a shop batch for a product is
-    # still being pulled, and a product leaving the shop comes off the openings still waiting on a
-    # pending shop request (applied at 5a). Planned here, under the project lock and before step 2
-    # rewrites the rows, so it reads what the project held; the pending shop requests are locked after
-    # the project, the order set_product_classifications takes them. Who may make the change is
-    # unchanged (#1443).
-    from app.repositories import classification_override_repository
-
-    reclassification_plans = classification_override_repository.plan_import_reclassification(
-        session, project.id, product_classification
-    )
     # #1392: a product the project already has as Shop / Site can't be taken to By Others by a replace.
     # Checked here, before step 2 rewrites the rows, for the same reason.
     if excluded_items_input is not None:
@@ -1262,8 +1277,14 @@ def finalize_import_session(
     # set it only on rows they create, so a product half on a PO from an earlier session kept its old
     # value on the surviving IN_PO rows and read mixed. Only Site/Shop arrive here; By Others is the
     # exclusion table's business and is not touched. A product given different answers at different
-    # costs is left as the rows were written.
-    for (hardware_category, product_code), classification in product_classification.items():
+    # costs is left as the rows were written. A listed product on this schedule takes the list's value
+    # whether or not this finalize classified it (#1443), which is the value step 1c checked it against.
+    schedule_products = {(hi["hardware_category"], hi["product_code"]) for hi in hardware_items_input}
+    whole_product = {
+        **product_classification,
+        **{product: value for product, value in listed.items() if product in schedule_products},
+    }
+    for (hardware_category, product_code), classification in whole_product.items():
         session.execute(
             update(HardwareItemModel)
             .where(
@@ -1276,10 +1297,34 @@ def finalize_import_session(
             .execution_options(synchronize_session="fetch")
         )
     session.flush()
-    # The rest of the override's plan (#1442, planned at 1c): a product leaving the shop comes off the
-    # openings still waiting on a pending shop request, and each change is logged with the override's.
+    # The rest of the override's plan for a Mixed product (#1442, planned at 1c): off the openings still
+    # waiting on a pending shop request, and each change logged with the override page's.
     classification_override_repository.apply_import_reclassification(
         session, project.id, reclassification_plans, changed_by=created_by
+    )
+    # A product this finalize gave its first classification is appended to the project's list (#1443), so
+    # a later schedule that drops it does not forget it. One given different answers at different costs
+    # has no one value to list, a By Others product is the exclusion table's, and an answer for a product
+    # with no schedule rows is about nothing the project holds, so none of those is listed.
+    by_others = {(e.hardware_category, e.product_code) for e in list_excluded_items(session, project.id)}
+    with_rows = set(
+        session.execute(
+            select(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
+            .where(HardwareItemModel.project_id == project.id)
+            .distinct()
+        )
+        .tuples()
+        .all()
+    )
+    classification_override_repository.write_list(
+        session,
+        project.id,
+        {
+            product: value
+            for product, value in product_classification.items()
+            if product in with_rows and product not in listed and product not in by_others
+        },
+        updated_by=created_by,
     )
 
     # 5b. Re-apply the SharePoint migration's purchased-marking. Since #1123 a replace_schedule keeps

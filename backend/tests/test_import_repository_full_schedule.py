@@ -404,9 +404,10 @@ def test_classification_survives_a_po_step_cost_correction(db_session):
     assert db_session.scalar(select(POLineItem.classification)) == Classification.SHOP_HARDWARE
 
 
-def test_reclassifying_a_product_updates_its_rows_already_on_a_po(db_session):
-    """#1264: a later non-replace finalize that reclassifies a product applies it to the IN_PO rows an
-    earlier session left, not only to the rows it writes, so the product never reads mixed."""
+def test_classifying_a_product_updates_its_rows_already_on_a_po(db_session):
+    """#1264: a later non-replace finalize that classifies a product applies it to the IN_PO rows an
+    earlier session left, not only to the rows it writes, so the product never reads mixed. Since #1443
+    only a product's first classification can arrive this way; changing it is the classifications page's."""
     project = _make_project(db_session)
     db_session.commit()
     base = {
@@ -426,7 +427,7 @@ def test_reclassifying_a_product_updates_its_rows_already_on_a_po(db_session):
         {
             **base,
             "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))],
-            "classifications": [cls("HG-100", "SITE_HARDWARE"), cls("HG-200", "SITE_HARDWARE")],
+            "classifications": [cls("HG-200", "SITE_HARDWARE")],
         },
     )
     db_session.flush()
@@ -711,6 +712,39 @@ def test_get_project_hardware_schedule_returns_all_items(db_session):
     assert len(hw_items) == 3
     product_codes = {hi["product_code"] for hi in hw_items}
     assert product_codes == {"HG-100", "HG-200", "HG-300"}
+    # Nothing was classified, so the project's classification list (#1443) is empty.
+    assert schedule["product_classifications"] == {}
+
+
+def test_get_project_hardware_schedule_returns_the_classification_list(db_session):
+    """#1443: the wizard fills a listed product in from the list, including one the schedule dropped."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    def cls(code, value):
+        return {"hardware_category": "HINGE", "product_code": code, "unit_cost": 10.0, "classification": value}
+
+    base = {"project_id": str(project.id), "openings": [_opening_input("A01")]}
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            **base,
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+            "classifications": [cls("HG-100", "SHOP_HARDWARE"), cls("HG-200", "SITE_HARDWARE")],
+        },
+    )
+    import_repository.finalize_import_session(
+        db_session,
+        {**base, "hardware_items": [_hardware_item_input("A01", "HG-200")], "replace_schedule": True},
+    )
+    db_session.flush()
+
+    schedule = import_repository.get_project_hardware_schedule(db_session, project.id)
+    assert {hi["product_code"] for hi in schedule["hardware_items"]} == {"HG-200"}
+    assert schedule["product_classifications"] == {
+        ("HINGE", "HG-100"): Classification.SHOP_HARDWARE,
+        ("HINGE", "HG-200"): Classification.SITE_HARDWARE,
+    }
 
 
 def test_get_project_openings_returns_trimmed_rows_and_counts(db_session):

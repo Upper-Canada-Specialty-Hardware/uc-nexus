@@ -13,7 +13,7 @@ import {
   Typography,
 } from '@mui/material';
 import type { GridColDef } from '@mui/x-data-grid';
-import { Check, ChevronDown, Pencil, TriangleAlert } from 'lucide-react';
+import { Check, ChevronDown, Lock, Pencil, TriangleAlert } from 'lucide-react';
 import { distinctProductCodes, groupRowsByFields, type GroupByField } from './classificationGrouping';
 import { BY_OTHERS, type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
@@ -197,6 +197,17 @@ export default function ClassificationReview({
     </ToggleButtonGroup>
   );
 
+  // #1443: a listed product's answer is the project's classification list's, shown as a locked chip.
+  const listedChip = (value: string) => (
+    <Chip
+      size="small"
+      icon={<Lock size={12} strokeWidth={2} />}
+      color={lookup.color[value] ?? 'default'}
+      label={lookup.label[value] ?? value}
+      title="On this project's classification list. Change it on the project's Hardware Classifications page."
+    />
+  );
+
   // #733: the per-row classification cells of the shared row grid - resolved chips when read-only,
   // toggles to correct a single line otherwise. The toggle column is wider so every option fits unwrapped.
   const classificationColumns: GridColDef<ClassificationRow>[] = [
@@ -207,7 +218,9 @@ export default function ClassificationReview({
       width: readOnly ? 130 : options.length > 2 ? 290 : 150,
       sortable: false,
       renderCell: ({ row: r }) =>
-        readOnly ? (
+        r.listed ? (
+          listedChip(r.classification)
+        ) : readOnly ? (
           r.classification ? (
             <Chip size="small" color={lookup.color[r.classification] ?? 'default'} label={lookup.label[r.classification] ?? r.classification} />
           ) : (
@@ -262,6 +275,11 @@ export default function ClassificationReview({
 
           const productCodes = groupByFields.includes('productCode') ? [] : distinctProductCodes(groupRows);
           const isOpen = expanded.has(g.key);
+          // #1443: listed lines are the list's to answer; the group's own toggle sets only the rest.
+          const editableRows = groupRows.filter((r) => !r.listed);
+          const editable = !readOnly && editableRows.length > 0;
+          const editableValues = new Set(editableRows.map((r) => r.classification).filter(Boolean));
+          const editableUniform = editableValues.size === 1 ? [...editableValues][0] : null;
 
           return (
             <Accordion
@@ -306,7 +324,7 @@ export default function ClassificationReview({
                           label={uniform ? lookup.label[uniform] : 'Mixed'}
                         />
                       )}
-                      {!readOnly && (
+                      {editable && (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375 }}>
                           {incompleteCount > 0 ? (
                             <TriangleAlert size={13} strokeWidth={2} color="var(--mui-palette-warning-main)" />
@@ -337,7 +355,7 @@ export default function ClassificationReview({
                 </Box>
               </AccordionSummary>
               <AccordionDetails>
-                {!readOnly && (
+                {editable && (
                   <Box
                     sx={{
                       display: 'flex',
@@ -352,10 +370,10 @@ export default function ClassificationReview({
                   >
                     <Typography sx={microLabelSx}>Set whole group</Typography>
                     {renderToggle(
-                      uniform ?? '',
+                      editableUniform ?? '',
                       options,
-                      (value) => onClassify(uniqueKeys(groupRows), value),
-                      groupRows.some((r) => r.byOthersLocked),
+                      (value) => onClassify(uniqueKeys(editableRows), value),
+                      editableRows.some((r) => r.byOthersLocked),
                     )}
                   </Box>
                 )}

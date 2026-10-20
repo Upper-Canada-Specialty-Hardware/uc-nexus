@@ -553,6 +553,40 @@ describe('ImportWizard schedule purpose', () => {
     expect(nextButton()).toBeDisabled();
   });
 
+  // #1443: a product already on the project's classification list is filled in from it and not asked.
+  it('fills a listed product in from the project list and asks only the new one', async () => {
+    const listedSchedule: MockedResponse = {
+      request: { query: GET_PROJECT_HARDWARE_SCHEDULE, variables: { projectId: 'proj-1' } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          projectHardwareSchedule: {
+            project: { ...firstImportProject, projectId: 'P-100', scheduleFilename: null },
+            openings: [],
+            hardwareItems: [],
+            productClassifications: [
+              { hardwareCategory: 'Hinges', productCode: 'HNG-100', classification: 'SITE_HARDWARE' },
+            ],
+          },
+        },
+      },
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [availabilityMock, listedSchedule, reimportBaseMocks[2]],
+      purpose: 'schedule',
+    });
+    await flushApollo();
+    clickNext();
+
+    expect(screen.getByText(/1 of 2 lines are a product this project already has classified/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    // The walk holds only the lock; answering it finishes the step.
+    fireEvent.click(screen.getByRole('button', { name: 'Shop (1)' }));
+    expect(screen.getByText('All 2 classified')).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+  });
+
   // A first import through this purpose replaces nothing, and the finalize summary says so.
   it('says it saves the schedule on a first import, not that it replaces one', () => {
     renderWizard({ purpose: 'schedule' });
@@ -946,6 +980,7 @@ describe('ImportWizard deep link', () => {
               state: 'AVAILABLE',
             },
           ],
+          productClassifications: [],
         },
       },
     },

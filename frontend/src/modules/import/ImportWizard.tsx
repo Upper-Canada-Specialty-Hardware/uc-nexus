@@ -73,7 +73,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
 import { FadeIn, useStepDirection } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
-import { seedScheduleClassifications } from './scheduleClassificationSeed';
+import { listedProducts, seedListedClassifications, seedScheduleClassifications } from './scheduleClassificationSeed';
 import { exclusionsBlockFinalize as blocksFinalize, type ExclusionsPrefill } from './exclusionsGate';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { DEMO_COMPANY } from '../../demo/demoMode';
@@ -486,6 +486,29 @@ export default function ImportWizard({
     setClassifications((prev) => seedScheduleClassifications(persisted, parsedHardwareItems, prev) ?? prev);
   }, [purpose, scheduleData, parsedHardwareItems]);
 
+  // #1443: a product already on the project's classification list is filled in from the list, shown
+  // read-only, and not asked - a schedule import doesn't change it, the Hardware Classifications page
+  // does, and the finalize refuses a different answer. Only products new to the list are asked. This
+  // overwrites the schedule seed above and any earlier pick. The PO purpose holds it on both axes: in
+  // scope (BY_UCSH) and the list's Site/Shop. A product the project has as By Others is left as it is.
+  const listedProductMap = useMemo(
+    () => listedProducts(scheduleData?.projectHardwareSchedule?.productClassifications),
+    [scheduleData],
+  );
+  useEffect(() => {
+    if (purpose !== 'schedule' && purpose !== 'po') return;
+    if (listedProductMap.size === 0 || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
+    const seed = (prev: Map<string, string>, value?: (listed: string) => string) =>
+      seedListedClassifications(listedProductMap, parsedHardwareItems, excludedProducts, prev, value) ?? prev;
+    if (purpose === 'schedule') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeding local classification state from the project's list once it loads; it only ever writes the list's own values, so a re-run is a no-op
+      setClassifications((prev) => seed(prev));
+      return;
+    }
+    setClassifications((prev) => seed(prev, () => 'BY_UCSH'));
+    setSiteShopClassifications((prev) => seed(prev));
+  }, [purpose, listedProductMap, parsedHardwareItems, excludedProducts]);
+
 
   // ---- Derived Data ----
 
@@ -691,6 +714,13 @@ export default function ImportWizard({
     return locked;
   }, [scheduleData, excludedProducts]);
 
+  // #1443: a product on the project's classification list, unless the project has it as By Others -
+  // the same rule the list seed above follows.
+  const isListed = useCallback(
+    (productKey: string) => listedProductMap.has(productKey) && !excludedProducts.has(productKey),
+    [listedProductMap, excludedProducts],
+  );
+
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
     // #486: the classifier needs to see the door, not just the part. Opening attributes live on
@@ -721,9 +751,10 @@ export default function ImportWizard({
         classification: classifications.get(ck) ?? '',
         siteShop: siteShopClassifications.get(ck) ?? '',
         byOthersLocked: byOthersLockedProducts.has(`${hi.hardware_category}|${hi.product_code}`),
+        listed: isListed(`${hi.hardware_category}|${hi.product_code}`),
       };
     });
-  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed, byOthersLockedProducts]);
+  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed, byOthersLockedProducts, isListed]);
 
   // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {

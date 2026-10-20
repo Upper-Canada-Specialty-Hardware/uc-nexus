@@ -60,3 +60,48 @@ export function seedScheduleClassifications(
   }
   return changed ? next : null;
 }
+
+/** A product on the project's classification list (#1443), as GetProjectHardwareSchedule returns it. */
+export interface ListedProductClassification {
+  hardwareCategory: string;
+  productCode: string;
+  classification: string;
+}
+
+/** `category|code` -> the list's SITE_HARDWARE / SHOP_HARDWARE. */
+export function listedProducts(list: ListedProductClassification[] | null | undefined): Map<string, string> {
+  return new Map((list ?? []).map((p) => [`${p.hardwareCategory}|${p.productCode}`, p.classification]));
+}
+
+/**
+ * #1443: the product owner ruled that a schedule import doesn't change the Site/Shop of a product the
+ * project already has - it lives on the project's classification list and is changed on the Hardware
+ * Classifications page. So every fresh item of a listed product takes the list's value, overwriting
+ * whatever the session or the schedule seed put there, and the step shows it read-only; only products
+ * new to the list are asked. A product the project has as By Others is left to the exclusion prefill.
+ * `value` turns the list's value into the one this map holds - the PO purpose's scope map holds BY_UCSH
+ * for it. Returns null when nothing changed, so a re-run is a no-op.
+ */
+export function seedListedClassifications(
+  listed: Map<string, string>,
+  parsed: ParsedClassifiableItem[],
+  excluded: Set<string>,
+  current: Map<string, string>,
+  value: (listedValue: string) => string = (v) => v,
+): Map<string, string> | null {
+  if (listed.size === 0) return null;
+  const next = new Map(current);
+  let changed = false;
+  for (const hi of parsed) {
+    const pk = `${hi.hardware_category}|${hi.product_code}`;
+    const listedValue = listed.get(pk);
+    if (listedValue === undefined || excluded.has(pk)) continue;
+    const ck = costKey(hi.hardware_category, hi.product_code, hi.unit_cost);
+    const v = value(listedValue);
+    if (next.get(ck) !== v) {
+      next.set(ck, v);
+      changed = true;
+    }
+  }
+  return changed ? next : null;
+}

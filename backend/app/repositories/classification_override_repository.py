@@ -5,6 +5,13 @@ on two axes: hardware_items.classification (SHOP_HARDWARE / SITE_HARDWARE) for e
 the product, and a project_excluded_items row for By Others. The override writes both the same way
 the import's finalize does, so nothing downstream can tell an overridden product from an imported one.
 
+Since #1443 a product's UCH Shop / UCH Site also has its own per-project list,
+project_product_classifications, which no schedule is tied to. The product owner ruled that a newer
+schedule appends to it and never changes what is on it, and that a product a newer schedule dropped is
+remembered. So this page is where a listed product's classification is changed: every Shop / Site it
+sets is written to the list as well as the rows, and it shows the list's products a schedule no longer
+has. By Others stays a project_excluded_items row and is never listed.
+
 What a change does is planned before it is written (#1050), and the page shows that plan first:
 
 - Hardware that already went somewhere - to the shop on a completed shop assembly pull, or out on a
@@ -25,6 +32,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, ValidationError
@@ -43,6 +51,7 @@ from app.models.enums import (
 from app.models.hardware import HardwareItem
 from app.models.hardware_classification_change import HardwareClassificationChange
 from app.models.project_excluded_item import ProjectExcludedItem
+from app.models.project_product_classification import ProjectProductClassification
 from app.models.pull_request import PullRequest
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
@@ -91,8 +100,9 @@ def _by_others_refusal(was: HardwareClassificationChoice) -> str:
 def refuse_classified_into_by_others(session: Session, project_id: uuid.UUID, excluded: set[Product]) -> None:
     """Refuse a finalize whose By Others list takes in a product the project already has classified (#1392).
 
-    Called before the finalize rewrites the schedule rows, so the choice read is what the project held. A
-    product new to the project, never classified, or already By Others passes."""
+    Called before the finalize rewrites the schedule rows, so the choice read is what the project held, a
+    product only on the classification list (#1443) included. A product new to the project, never
+    classified, or already By Others passes."""
     if not excluded:
         return
     current = {
@@ -112,11 +122,91 @@ _STORED = {
     HardwareClassificationChoice.UCH_SHOP: Classification.SHOP_HARDWARE,
     HardwareClassificationChoice.UCH_SITE: Classification.SITE_HARDWARE,
 }
+_CHOICE_OF_STORED = {stored: choice for choice, stored in _STORED.items()}
 
 
-def _choice_of(classes: set[Classification | None], excluded: bool) -> HardwareClassificationChoice:
+def listed_classifications(session: Session, project_id: uuid.UUID) -> dict[Product, Classification]:
+    """The project's classification list (#1443): {product: Shop / Site}, in one query."""
+    return {
+        (category, code): classification
+        for category, code, classification in session.execute(
+            select(
+                ProjectProductClassification.hardware_category,
+                ProjectProductClassification.product_code,
+                ProjectProductClassification.classification,
+            ).where(ProjectProductClassification.project_id == project_id)
+        )
+    }
+
+
+def write_list(
+    session: Session,
+    project_id: uuid.UUID,
+    products: dict[Product, Classification],
+    *,
+    updated_by: str | None,
+) -> None:
+    """Put each product on the project's classification list with this value, adding its row or replacing
+    the value it had (#1443). Callers hold the project row lock, so nothing else writes the list meanwhile."""
+    if not products:
+        return
+    now = datetime.utcnow()
+    stmt = pg_insert(ProjectProductClassification).values(
+        [
+            {
+                "id": uuid.uuid4(),
+                "project_id": project_id,
+                "hardware_category": category,
+                "product_code": code,
+                "classification": classification,
+                "created_at": now,
+                "updated_at": now,
+                "updated_by": updated_by,
+            }
+            for (category, code), classification in sorted(products.items())
+        ]
+    )
+    session.execute(
+        stmt.on_conflict_do_update(
+            constraint="uq_project_product_classifications",
+            set_={
+                "classification": stmt.excluded.classification,
+                "updated_at": stmt.excluded.updated_at,
+                "updated_by": stmt.excluded.updated_by,
+            },
+        )
+    )
+
+
+def refuse_import_reclassifying_listed(
+    listed: dict[Product, Classification], given: dict[Product, set[Classification]]
+) -> None:
+    """Refuse a finalize that gives a listed product a classification other than the list's (#1443).
+
+    The product owner ruled that a schedule import doesn't change an existing product's Site / Shop: that is
+    done on the project's Hardware Classifications page, which shows what the change does first. Called
+    before the finalize writes anything, so a refusal leaves the project as it was."""
+    refused = [
+        f"{code} ({category}) is {_LABEL[_CHOICE_OF_STORED[listed[(category, code)]]]}"
+        for category, code in sorted(given)
+        if (category, code) in listed and given[(category, code)] != {listed[(category, code)]}
+    ]
+    if refused:
+        raise ValidationError(
+            "Nothing was saved. A schedule import can't change the classification of a product this project "
+            "already has; change it on the project's Hardware Classifications page. " + " | ".join(refused),
+            field="classifications",
+        )
+
+
+def _choice_of(
+    classes: set[Classification | None], excluded: bool, listed: Classification | None = None
+) -> HardwareClassificationChoice:
     if excluded:
         return HardwareClassificationChoice.BY_OTHERS
+    # A listed product's classification is the list's, whatever its schedule rows say (#1443).
+    if listed is not None:
+        return _CHOICE_OF_STORED[listed]
     if classes == {Classification.SHOP_HARDWARE}:
         return HardwareClassificationChoice.UCH_SHOP
     if classes == {Classification.SITE_HARDWARE}:
@@ -127,8 +217,10 @@ def _choice_of(classes: set[Classification | None], excluded: bool) -> HardwareC
 
 
 def list_product_classifications(session: Session, project_id: uuid.UUID) -> list[dict]:
-    """One row per product on the project's schedule: its current choice, total quantity and how many
-    openings carry it. Three grouped queries for the whole schedule, never one per product."""
+    """One row per product on the project's schedule or its classification list (#1443): its current
+    choice, total quantity, how many openings carry it, and whether the schedule has it at all. A product
+    only on the list - one a newer schedule dropped before anybody ordered it - reads 0 and 0. Four
+    queries for the whole project, never one per product."""
     totals = session.execute(
         select(
             HardwareItem.hardware_category,
@@ -147,6 +239,7 @@ def list_product_classifications(session: Session, project_id: uuid.UUID) -> lis
     ):
         classes[(category, code)].add(cls)
     excluded = _excluded(session, project_id)
+    listed = listed_classifications(session, project_id)
 
     rows = [
         {
@@ -154,10 +247,24 @@ def list_product_classifications(session: Session, project_id: uuid.UUID) -> lis
             "product_code": code,
             "quantity": int(quantity or 0),
             "opening_count": int(openings or 0),
-            "choice": _choice_of(classes[(category, code)], (category, code) in excluded),
+            "choice": _choice_of(classes[(category, code)], (category, code) in excluded, listed.get((category, code))),
+            "on_schedule": True,
         }
         for category, code, quantity, openings in totals
     ]
+    on_schedule = {(r["hardware_category"], r["product_code"]) for r in rows}
+    rows.extend(
+        {
+            "hardware_category": category,
+            "product_code": code,
+            "quantity": 0,
+            "opening_count": 0,
+            "choice": _choice_of(set(), (category, code) in excluded, classification),
+            "on_schedule": False,
+        }
+        for (category, code), classification in listed.items()
+        if (category, code) not in on_schedule
+    )
     rows.sort(key=lambda r: (r["hardware_category"], r["product_code"]))
     return rows
 
@@ -354,8 +461,12 @@ def plan_product_classifications(
     plans: list[dict] = []
     for category, code, to in changes:
         product = (category, code)
+        # A product a newer schedule dropped is still the project's while it is on the list (#1443).
         if product not in current:
-            raise ValidationError(f"{code} ({category}) is not on this project's hardware schedule.", field="changes")
+            raise ValidationError(
+                f"{code} ({category}) is not on this project's hardware schedule or classification list.",
+                field="changes",
+            )
         was = current[product]
         if was == to:
             continue
@@ -514,29 +625,30 @@ def _record_change(
     return change
 
 
-_CHOICE_OF_STORED = {stored: choice for choice, stored in _STORED.items()}
-
-
 def plan_import_reclassification(
     session: Session,
     project_id: uuid.UUID,
     stored: dict[Product, Classification],
+    listed: dict[Product, Classification],
 ) -> list[dict]:
-    """The override's plan for the Site/Shop values an import finalize is about to write (#1442).
+    """The override's plan for an import finalize that settles a Mixed product on one Site/Shop (#1442).
 
-    A finalize writes the classification it was given onto every row of the product (#1264), which is
-    the same change the override page makes, so it is held to the same plan: refused while a shop batch
-    for the product is still being pulled, and a product leaving the shop comes off the openings still
-    waiting on a pending shop request. Called by the finalize under its project lock and BEFORE it
-    rewrites the schedule rows, so `current` is what the project held, not what the finalize wrote.
+    A finalize writes the classification it was given onto every row of the product (#1264), which for a
+    product that already holds Site/Shop is the same change the override page makes, so it is held to the
+    same plan: refused while a shop batch for the product is still being pulled, and a product leaving the
+    shop comes off the openings still waiting on a pending shop request. Called by the finalize under its
+    project lock and BEFORE it rewrites the schedule rows, so `current` is what the project held.
 
-    Only products already on the project whose choice is Shop, Site or Mixed are planned. A product
-    the finalize brings in, or whose rows were never classified, is taking its first value; a By Others
-    product stays By Others (a finalize changes the exclusion table only through its own excluded list),
-    so the rows' Site/Shop is not the choice anybody sees. Pending shop requests are locked first, in
-    the order set_product_classifications takes them.
+    Since #1443 this is the unlisted products that already hold a classification. A listed product's
+    classification is the project's list, which a finalize is refused for changing
+    (refuse_import_reclassifying_listed). A product new to the project, or whose rows were never classified,
+    is taking its first value; a By Others product stays By Others. What is left is a Mixed product (not
+    listed because its rows disagree) and, rarely, one whose rows agree but which the list does not hold -
+    both already hold Shop or Site, so a different answer is a change to work already planned around it.
+    Pending shop requests are locked first, in the order set_product_classifications takes them.
     """
-    if not stored:
+    unlisted = {product: value for product, value in stored.items() if product not in listed}
+    if not unlisted:
         return []
     _lock_pending_shop_requests(session, project_id)
     current = {
@@ -545,13 +657,8 @@ def plan_import_reclassification(
     }
     changes = [
         (category, code, _CHOICE_OF_STORED[classification])
-        for (category, code), classification in sorted(stored.items())
-        if current.get((category, code))
-        in (
-            HardwareClassificationChoice.UCH_SHOP,
-            HardwareClassificationChoice.UCH_SITE,
-            HardwareClassificationChoice.MIXED,
-        )
+        for (category, code), classification in sorted(unlisted.items())
+        if current.get((category, code)) in _CLASSIFIED
         and current[(category, code)] != _CHOICE_OF_STORED[classification]
     ]
     if not changes:
@@ -564,9 +671,9 @@ def plan_import_reclassification(
 def apply_import_reclassification(
     session: Session, project_id: uuid.UUID, plans: list[dict], *, changed_by: str
 ) -> list[HardwareClassificationChange]:
-    """What an import's reclassification does beyond the rows the finalize itself rewrites (#1442):
-    a product leaving the shop comes off waiting shop openings (the manager is told), and every change
-    is logged where the override page's history reads it."""
+    """What an import's reclassification of a Mixed product does beyond the rows the finalize itself
+    rewrites (#1442): a product leaving the shop comes off waiting shop openings (the manager is told), and
+    every change is logged where the override page's history reads it."""
     now = datetime.utcnow()
     written: list[HardwareClassificationChange] = []
     for plan in plans:
@@ -600,8 +707,12 @@ def set_product_classifications(
     from unlocked reads, a batch committed at the same moment could leave a site product on a live shop
     pull, or a batch whose request lines this change then deleted.
 
-    The project row is locked before them (#1425), in the order a finalize takes the two: a shop request
-    raised at the same moment is checked against the classification after this commits, not before."""
+    The project row is locked before them (#1425): a shop request raised at the same moment is checked
+    against the classification after this commits, not before, and a finalize, which takes the same lock,
+    reads the classification list (#1443) only after this has written it.
+
+    Every UCH Shop / UCH Site set is written to the project's classification list as well as the rows
+    (#1443). A product only on the list has no rows, so the list is all its change writes."""
     from app.models.project import Project
 
     session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
@@ -627,6 +738,7 @@ def set_product_classifications(
         if plan["leaves_shop_requests"]:
             _take_off_waiting_shop_openings(session, project_id, (category, code), to, changed_by=changed_by)
         if to == HardwareClassificationChoice.BY_OTHERS:
+            # Only an unclassified product gets here (#1392), and an unclassified product is never listed.
             session.add(
                 ProjectExcludedItem(
                     id=uuid.uuid4(), project_id=project_id, hardware_category=category, product_code=code
@@ -641,6 +753,7 @@ def set_product_classifications(
         else:
             session.execute(delete(ProjectExcludedItem).where(match))
             session.execute(update(HardwareItem).where(product_rows).values(classification=_STORED[to], updated_at=now))
+            write_list(session, project_id, {(category, code): _STORED[to]}, updated_by=changed_by)
         written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
     session.flush()
     return written

@@ -63,6 +63,7 @@ from .types import (
     POListRow,
     Project,
     ProjectHardwareSchedule,
+    ProjectProductClassification,
     ProjectScheduleHardwareItem,
     PullRequest,
     PullRequestItem,
@@ -694,6 +695,10 @@ def project_hardware_schedule_to_type(data: dict) -> ProjectHardwareSchedule:
         project=project_type,
         openings=project_type.openings,
         hardware_items=[project_schedule_hardware_item_to_type(hi) for hi in data["hardware_items"]],
+        product_classifications=[
+            ProjectProductClassification(hardware_category=category, product_code=code, classification=classification)
+            for (category, code), classification in sorted(data["product_classifications"].items())
+        ],
     )
 
 
