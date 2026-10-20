@@ -6,8 +6,8 @@ with no row prints the shared PO document settings' from-address, as before.
 
 Downgrade drops the table.
 
-Revision ID: 150
-Revises: 149
+Revision ID: 151
+Revises: 150
 Create Date: 2026-10-19
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "150"
-down_revision = "149"
+revision = "151"
+down_revision = "150"
 branch_labels = None
 depends_on = None
 
