@@ -441,3 +441,72 @@ def test_pick_shortfall_wording_is_unchanged(db_session):
         db_session, project_id=project.id, request_number="PR-0042", shortfalls=error.shortfalls
     )
     assert notif.message.startswith("Pull Request PR-0042 couldn't be fulfilled - backfill needed.")
+
+
+def _open_po_line(session, project_id, *, ordered, received, status=None):
+    from decimal import Decimal
+
+    from app.models.enums import POStatus
+    from app.models.purchase_order import POLineItem, PurchaseOrder
+
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=f"REQ-{uuid.uuid4().hex[:8]}",
+        project_id=project_id,
+        status=status or POStatus.PARTIALLY_RECEIVED,
+        po_number=f"PO{uuid.uuid4().hex[:6]}",
+        gp_company="TUBC",
+        company="TUBC",
+    )
+    session.add(po)
+    session.flush()
+    session.add(
+        POLineItem(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            ordered_quantity=ordered,
+            received_quantity=received,
+            unit_cost=Decimal("1.00"),
+            gp_line_ord=16384,
+        )
+    )
+    session.flush()
+
+
+def test_net_of_on_order_tells_purchasing_only_what_is_not_coming(db_session):
+    """#1534: a shipping request or shop batch refused for short stock tells purchasing what is short past
+    what the project's open POs still owe - here 7 short, 4 on order (10 ordered, 6 received), so 3."""
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=1)
+    _open_po_line(db_session, project.id, ordered=10, received=6)
+
+    notif = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 8)]), net_of_on_order=True
+    )
+
+    assert notif is not None
+    assert notif.message.startswith(
+        "A shipping-out request couldn't be created - backfill needed beyond what is already on order."
+    )
+    assert "(short 3)" in notif.message
+
+
+def test_net_of_on_order_raises_nothing_when_the_shortfall_is_coming(db_session):
+    from app.models.enums import POStatus
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=1)
+    _open_po_line(db_session, project.id, ordered=10, received=0)
+    # A draft is not ordered and a closed PO gave up the rest, so neither counts.
+    _open_po_line(db_session, project.id, ordered=50, received=0, status=POStatus.DRAFT)
+
+    error = _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 8)])
+
+    assert notification_service.notify_gate_shortfall(db_session, error, net_of_on_order=True) is None
+    # The import's notice is ruled to stay as it was: it does not net off what is on order.
+    assert notification_service.notify_gate_shortfall(db_session, error) is not None

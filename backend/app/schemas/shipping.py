@@ -15,7 +15,7 @@ from app.auth import (
     user_roster,
 )
 from app.database import SessionLocal
-from app.errors import NotFoundError
+from app.errors import InventoryShortfallError, NotFoundError
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
@@ -34,6 +34,7 @@ from app.repositories import (
     shipping_requests,
     tenancy,
 )
+from app.services import notification_service
 
 from .converters import (
     container_to_type,
@@ -505,14 +506,23 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
-            created = shipping_requests.create_shipping_out_requests(
-                session,
-                uuid.UUID(str(input.project_id)),
-                [{"request_number": input.request_number, "items": _request_items(input.items)}],
-                created_by=actor,
-                created_by_user_id=auth["user_id"],
-                idempotency_key=input.idempotency_key.strip() or None,
-            )
+            try:
+                created = shipping_requests.create_shipping_out_requests(
+                    session,
+                    uuid.UUID(str(input.project_id)),
+                    [{"request_number": input.request_number, "items": _request_items(input.items)}],
+                    created_by=actor,
+                    created_by_user_id=auth["user_id"],
+                    idempotency_key=input.idempotency_key.strip() or None,
+                )
+            except InventoryShortfallError as e:
+                # #1534: purchasing hears of the shortfall too, as on the import path, but only what is not
+                # already on order. The refused work rolls back and the notice goes out in a fresh session.
+                session.rollback()
+                with SessionLocal() as notif_session:
+                    if notification_service.notify_gate_shortfall(notif_session, e, net_of_on_order=True) is not None:
+                        notif_session.commit()
+                raise
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, created[0].id)
             return shipping_out_request_to_type(refreshed)

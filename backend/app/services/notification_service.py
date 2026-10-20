@@ -225,7 +225,36 @@ def notify_po_shortfall(
     )
 
 
-def notify_gate_shortfall(session: Session, error) -> Notification | None:
+def _on_order(session: Session, project_id: uuid.UUID, products: set[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """What the project's open POs still owe it, per (hardware_category, product_code) (#1534): ordered less
+    received on POs that are placed and not closed, never below zero a line - the On Order figure the
+    hardware status page shows. A draft is not ordered yet, and a closed PO gave up what it never got."""
+    from sqlalchemy import func
+
+    from app.models.enums import POStatus
+    from app.models.purchase_order import POLineItem, PurchaseOrder
+
+    if not products:
+        return {}
+    rows = session.execute(
+        select(
+            POLineItem.hardware_category,
+            POLineItem.product_code,
+            func.sum(func.greatest(POLineItem.ordered_quantity - POLineItem.received_quantity, 0)),
+        )
+        .join(PurchaseOrder, POLineItem.po_id == PurchaseOrder.id)
+        .where(
+            PurchaseOrder.project_id == project_id,
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_((POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED)),
+            POLineItem.product_code.in_({code for _category, code in products}),
+        )
+        .group_by(POLineItem.hardware_category, POLineItem.product_code)
+    ).all()
+    return {(category, code): int(owed or 0) for category, code, owed in rows if (category, code) in products}
+
+
+def notify_gate_shortfall(session: Session, error, *, net_of_on_order: bool = False) -> Notification | None:
     """PO backfill signal for a request the creation gate refused (#342, #1533), or None when there is
     nothing to raise.
 
@@ -247,6 +276,16 @@ def notify_gate_shortfall(session: Session, error) -> Notification | None:
     from dataclasses import replace
 
     unstocked = [replace(s, short=max(0, s.short - s.reserved)) for s in error.shortfalls if s.short > s.reserved]
+    if net_of_on_order and unstocked:
+        # #1534: a shipping request or a shop batch refused for short stock tells purchasing only what is
+        # not already ordered and on its way, so nobody is told to order units that are coming. The import
+        # notice is left as it was ruled to stay.
+        on_order = _on_order(session, error.project_id, {(s.hardware_category, s.product_code) for s in unstocked})
+        unstocked = [
+            replace(s, short=s.short - on_order.get((s.hardware_category, s.product_code), 0))
+            for s in unstocked
+            if s.short > on_order.get((s.hardware_category, s.product_code), 0)
+        ]
     if not unstocked:
         return None
     subject = getattr(error, "label", None)
@@ -255,6 +294,10 @@ def notify_gate_shortfall(session: Session, error) -> Notification | None:
         if subject
         else "A request couldn't be fulfilled - backfill needed."
     )
+    if net_of_on_order:
+        # The "short" below is past what is on order, so "need 10, 2 available (short 3)" says why it
+        # does not add up.
+        headline = headline.replace("backfill needed.", "backfill needed beyond what is already on order.")
     message = f"{headline} {format_shortfall_lines(unstocked)}"
     already = session.scalar(
         select(

@@ -7,8 +7,10 @@ from sqlalchemy import select
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.errors import InventoryShortfallError
 from app.models.project import Project
 from app.repositories import shop_assembly_repository, tenancy
+from app.services import notification_service
 
 from .converters import shop_assembly_allocation_review_to_type, shop_assembly_request_to_type
 from .enums import ShopAssemblyRequestStatus
@@ -114,20 +116,29 @@ class ShopAssemblyMutations:
         request_id = uuid.UUID(str(input.request_id))
         with SessionLocal() as session:
             tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
-            shop_assembly_repository.create_shop_assembly_batch(
-                session,
-                request_id,
-                [
-                    {
-                        "opening_number": line.opening_number,
-                        "hardware_category": line.hardware_category,
-                        "product_code": line.product_code,
-                        "allocated_quantity": line.allocated_quantity,
-                    }
-                    for line in input.lines
-                ],
-                created_by=actor,
-            )
+            try:
+                shop_assembly_repository.create_shop_assembly_batch(
+                    session,
+                    request_id,
+                    [
+                        {
+                            "opening_number": line.opening_number,
+                            "hardware_category": line.hardware_category,
+                            "product_code": line.product_code,
+                            "allocated_quantity": line.allocated_quantity,
+                        }
+                        for line in input.lines
+                    ],
+                    created_by=actor,
+                )
+            except InventoryShortfallError as e:
+                # #1534: purchasing hears of the shortfall too, as on the import path, but only what is not
+                # already on order. The refused work rolls back and the notice goes out in a fresh session.
+                session.rollback()
+                with SessionLocal() as notif_session:
+                    if notification_service.notify_gate_shortfall(notif_session, e, net_of_on_order=True) is not None:
+                        notif_session.commit()
+                raise
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
             return _requests_to_types(session, reqs)[0]
