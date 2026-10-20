@@ -369,6 +369,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "rejectShopAssemblyRequest": SHOP_ASSEMBLY_MANAGERS,
     "discardShopAssemblyBatch": SHOP_ASSEMBLY_MANAGERS,
     # --- stock.py -------------------------------------------------------------------------
+    "allocationTargets": SIGNED_IN,
     "deficiencyReviews": SIGNED_IN,
     "deficientItems": SIGNED_IN,
     "stockItem": SIGNED_IN,

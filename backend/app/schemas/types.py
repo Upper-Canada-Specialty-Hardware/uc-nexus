@@ -2088,6 +2088,28 @@ class AuditLogEntry:
 
 
 @strawberry.type
+class AllocationPair:
+    """One pair on a project's hardware schedule, with what it still needs (#1647)."""
+
+    hardware_category: str
+    product_code: str
+    required_quantity: int
+    # Required, less what the project holds sound, what is on order and not received, and what shipped.
+    still_needed_quantity: int
+
+
+@strawberry.type
+class AllocationTargets:
+    """Where a pool row's units can go on a project (#1647)."""
+
+    # False for a pool row under one of the company's item type codes: exempt, it keeps its own pair.
+    schedule_hardware: bool
+    # False for a project with no schedule yet: the allocation lands as floating inventory.
+    has_schedule: bool
+    pairs: list[AllocationPair]
+
+
+@strawberry.type
 class TransferResult:
     success: bool
     quantity: int

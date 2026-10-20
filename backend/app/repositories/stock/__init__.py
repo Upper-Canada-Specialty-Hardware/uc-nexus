@@ -29,6 +29,7 @@ from .items import (
 from .movements import (
     allocate_stock_to_project,
     destock_inventory,
+    get_allocation_targets,
     receive_into_stock,
     transfer_inventory,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "_log_audit_event",
     "adjust_stock_quantity",
     "allocate_stock_to_project",
+    "get_allocation_targets",
     "assign_stock_item_location",
     "destock_inventory",
     "get_deficiency_reviews",
