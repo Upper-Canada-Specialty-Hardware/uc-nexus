@@ -895,6 +895,12 @@ def finalize_import_session(
         # AVAILABLE. A row the new schedule no longer has stays IN_PO on its opening, and an opening that
         # still holds ordered hardware is kept for it even when the new schedule dropped it - the order
         # is real, and the PO line and the per-opening reconcile still point at it.
+        #
+        # INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1527, 2026-10-20): the match
+        # is by product code, and a changed code is a different product, not a rename. A code only
+        # changes in TITAN, so a revision that drops code A and adds code B reads as A removed and B
+        # added, and Nexus does not offer to carry what was ordered under A over to B. A's ordered rows
+        # stay on their openings and are surplus to the schedule (#1491); B arrives unordered.
         new_opening_numbers = {o["opening_number"] for o in openings_input}
         # #342: reconcile in-flight requests with the new schedule BEFORE the openings they point at
         # are deleted - drop what vanished, release the reservations it was holding, flag the rest.
