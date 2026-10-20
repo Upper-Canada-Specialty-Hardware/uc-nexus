@@ -39,6 +39,8 @@ interface Bucket {
   doorCount: number;
   doorValue: number;
   totalValue: number;
+  /** #1557: hardware bought on USD POs, in US dollars and never converted. In neither figure above. */
+  usdHardwareValue: number;
 }
 
 interface DoorsOnHandRow {
@@ -80,6 +82,15 @@ const CURRENCY = new Intl.NumberFormat('en-CA', {
 const CURRENCY_EXACT = new Intl.NumberFormat('en-CA', {
   style: 'currency',
   currency: 'CAD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+// #1557: hardware bought on USD POs is its own figure, in its own currency - the product owner ruled
+// against converting it, so it is never added to the Canadian total. en-CA prints it as "US$".
+const USD_EXACT = new Intl.NumberFormat('en-CA', {
+  style: 'currency',
+  currency: 'USD',
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
@@ -290,6 +301,17 @@ function FigureTile({ label, icon, bucket }: { label: string; icon: ReactNode; b
           bucket.doorValue,
         )}`}
       </Typography>
+      {/* Only when there is any: a "+ US$0.00" line on every tile would be noise for a company that
+          buys nothing in US dollars. */}
+      {bucket.usdHardwareValue !== 0 && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ ...tabularSx, display: 'block', px: 0.25 }}
+        >
+          {`+ ${USD_EXACT.format(bucket.usdHardwareValue)} on USD POs`}
+        </Typography>
+      )}
     </StaggerItem>
   );
 }

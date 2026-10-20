@@ -20,13 +20,15 @@ import uuid
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from app.currency import normalize_currency
 from app.models.enums import HardwareItemState, POOrigin, POStatus
 from app.models.gp_outbox import GpWriteOutbox
 from app.models.gp_po_sync_state import GpPoSyncState
 from app.models.gp_write import GpWriteIdempotency
+from app.models.inventory import InventoryLocation
 from app.models.purchase_order import POLineItem, PurchaseOrder
 
 logger = logging.getLogger(__name__)
@@ -135,8 +137,8 @@ def _gp_cost_code(lines: list[dict]) -> str | None:
 
 
 def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
-    """Write the two GP-OWNED FIELDS the relay reads back off GP's own PO: the header freight amount
-    into shipping_cost, and the job-cost line's cost code into cost_code.
+    """Write the GP-OWNED FIELDS the relay reads back off GP's own PO: the header freight amount into
+    shipping_cost, the job-cost line's cost code into cost_code, and the PO's currency (#1557).
 
     A relay too old to send either key leaves the stored value exactly as it is, and so does a PO with
     no cost code on any line (a stock PO books to no job). Absent is not zero: zeroing shipping on
@@ -148,6 +150,10 @@ def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
     cost_code = _gp_cost_code(lines)
     if cost_code is not None:
         row.cost_code = cost_code
+    # The PO's currency (#1557), GP-owned like the freight and kept the same way: a relay too old to
+    # send the key leaves the stored currency alone rather than resetting it to CAD.
+    if "currency" in po:
+        row.currency = normalize_currency(po.get("currency"))
 
 
 def _parse_doc_date(doc_date: str | None) -> date | None:
@@ -689,6 +695,59 @@ def po_numbers_left_open(session: Session, company: str, since: datetime) -> lis
         .order_by(PurchaseOrder.po_number)
     ).all()
     return [row[0] for row in rows]
+
+
+def po_numbers_missing_currency(
+    session: Session, company: str, *, limit: int, exclude: frozenset[str] = frozenset()
+) -> list[str]:
+    """PO numbers whose currency Nexus does not know yet and which still have hardware on hand (#1557).
+
+    The open-book walk stamps the currency on every open PO it reads, so what is left are POs that
+    closed before the column existed. Only those still behind on-hand inventory matter - a PO's currency
+    is read for nothing else - so the currency backfill asks GP about those alone. `exclude` is the
+    numbers GP could not find on an earlier ask, so the backfill does not ask for them every pass.
+
+    Ordered by po_number, like po_numbers_left_open, so the batches are stable across restarts."""
+    on_hand = exists().where(
+        InventoryLocation.po_line_item_id == POLineItem.id,
+        POLineItem.po_id == PurchaseOrder.id,
+        InventoryLocation.quantity > 0,
+    )
+    stmt = select(PurchaseOrder.po_number).where(
+        PurchaseOrder.company == company,
+        PurchaseOrder.gp_company.isnot(None),
+        PurchaseOrder.po_number.isnot(None),
+        PurchaseOrder.currency.is_(None),
+        on_hand,
+    )
+    if exclude:
+        stmt = stmt.where(PurchaseOrder.po_number.not_in(exclude))
+    return list(session.scalars(stmt.order_by(PurchaseOrder.po_number).limit(limit)).all())
+
+
+def set_po_currencies(session: Session, company: str, currencies: dict[str, str]) -> int:
+    """Store GP's currency on POs read for the currency backfill (#1557). Returns how many were set.
+
+    Only the currency, and only where it is still unknown: these POs were read by number for this one
+    column, so nothing else on them is rewritten, and a currency the mirror stored in the meantime is
+    GP's newer word and stays. Caller commits."""
+    if not currencies:
+        return 0
+    count = 0
+    for po_number, currency in currencies.items():
+        result = session.execute(
+            update(PurchaseOrder)
+            .where(
+                PurchaseOrder.company == company,
+                PurchaseOrder.gp_company.isnot(None),
+                PurchaseOrder.po_number == po_number,
+                PurchaseOrder.currency.is_(None),
+            )
+            .values(currency=normalize_currency(currency))
+            .execution_options(synchronize_session=False)
+        )
+        count += result.rowcount or 0
+    return count
 
 
 def note_missing_from_gp(

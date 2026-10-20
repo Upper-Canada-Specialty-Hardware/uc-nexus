@@ -18,6 +18,7 @@ from .inventory import (
     get_unlocated_inventory,
     override_inventory_quantity,
     resolve_project_combo_cost,
+    resolve_project_combo_price,
 )
 from .locations import (
     ANY_LOCATION_PART,
@@ -175,6 +176,7 @@ __all__ = [
     "get_scheduled_classifications",
     "get_scheduled_classifications_for_projects",
     "resolve_project_combo_cost",
+    "resolve_project_combo_price",
     "get_scheduled_pairs",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",
