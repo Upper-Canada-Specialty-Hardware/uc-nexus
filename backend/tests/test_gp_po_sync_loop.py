@@ -40,6 +40,11 @@ def _no_budget_wait(monkeypatch):
     # And an always-open backfill window, so the tests that are about draining pages do not depend on
     # what time of day they happen to run. The window's own tests set it explicitly.
     monkeypatch.setattr(gp_po_sync, "BACKFILL_WINDOW", gp_window.parse("", None))
+    # The currency backfill (#1557) rides on every open-book pass and reads its candidates from the DB.
+    # Nothing is missing a currency unless a test says so, and its memory starts empty per test.
+    monkeypatch.setattr(gp_po_sync, "_po_numbers_missing_currency", lambda company, exclude: [])
+    monkeypatch.setattr(gp_po_sync, "_currency_unsent", {})
+    monkeypatch.setattr(gp_po_sync, "_currency_not_found", {})
 
 
 def _paced(result, *, cpu_ms=None, sql_cpu_pct=None, waited=0.0, calls=None, reads=None):
@@ -1611,3 +1616,126 @@ def test_the_accessors_hand_out_copies(monkeypatch, _traffic_records):
 
     assert gp_po_sync.activity()["company"] == "TUBC"
     assert gp_po_sync.last_open_passes()["TUBC"]["pages"] == 1
+
+
+# --- the currency backfill (#1557) -------------------------------------------------------------------
+
+
+def _currency_backfill(monkeypatch, missing, *, answer, build="relay-v1"):
+    """Stub the currency backfill's two DB halves and the relay. `missing` is every PO the DB says still
+    needs a currency; `answer(po_numbers)` is the relay's by-number reply. Returns (asked, stored)."""
+    asked: list[list[str]] = []
+    stored: dict[str, str] = {}
+
+    def numbers(company, exclude):
+        return [n for n in missing if n not in exclude and n not in stored][: gp_load.READ_BATCH]
+
+    def store(company, currencies):
+        stored.update(currencies)
+        return len(currencies)
+
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        assert op == "read_pos_by_number"
+        assert reads == len(payload["po_numbers"])
+        asked.append(list(payload["po_numbers"]))
+        return _paced(answer(payload["po_numbers"]))
+
+    monkeypatch.setattr(gp_po_sync, "_po_numbers_missing_currency", numbers)
+    monkeypatch.setattr(gp_po_sync, "_set_po_currencies", store)
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", fake_paced_call)
+    monkeypatch.setattr(gp_po_sync.relay_gateway, "_build", build)
+    return asked, stored
+
+
+def test_the_currency_backfill_stores_what_gp_answers(monkeypatch):
+    asked, stored = _currency_backfill(
+        monkeypatch,
+        ["PO1", "PO2"],
+        answer=lambda nums: {"pos": [{"po_number": n, "currency": "USD" if n == "PO1" else "CAD"} for n in nums]},
+    )
+
+    count = asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+
+    assert count == 2
+    assert asked == [["PO1", "PO2"]]
+    assert stored == {"PO1": "USD", "PO2": "CAD"}
+
+
+def test_the_currency_backfill_reads_a_few_batches_a_pass_and_no_more(monkeypatch):
+    missing = [f"PO{i:03d}" for i in range(200)]
+    asked, _ = _currency_backfill(
+        monkeypatch, missing, answer=lambda nums: {"pos": [{"po_number": n, "currency": "CAD"} for n in nums]}
+    )
+
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+
+    assert len(asked) == gp_po_sync.CURRENCY_BACKFILL_BATCHES_PER_PASS
+    assert all(len(batch) <= gp_load.READ_BATCH for batch in asked)
+
+
+def test_a_relay_that_sends_no_currency_is_not_asked_again_until_a_new_build(monkeypatch):
+    """An older relay answers the read without the key. Nothing is stored, and the same relay build is
+    not asked the same batch every pass for an answer it cannot give."""
+    asked, stored = _currency_backfill(monkeypatch, ["PO1"], answer=lambda nums: {"pos": [{"po_number": "PO1"}]})
+
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+
+    assert stored == {}
+    assert len(asked) == 1
+
+    monkeypatch.setattr(gp_po_sync.relay_gateway, "_build", "relay-v2")
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+    assert len(asked) == 2
+
+
+def test_a_po_gp_cannot_find_is_not_asked_about_again(monkeypatch):
+    asked, stored = _currency_backfill(
+        monkeypatch,
+        ["PO1", "PO2"],
+        answer=lambda nums: {
+            "pos": [{"po_number": n, "currency": "USD"} for n in nums if n != "PO2"],
+            "missing": [n for n in nums if n == "PO2"],
+        },
+    )
+
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+    asyncio.run(gp_po_sync._backfill_currencies("TUBC"))
+
+    assert stored == {"PO1": "USD"}
+    assert asked == [["PO1", "PO2"]]
+
+
+def test_a_failed_currency_backfill_never_fails_the_pass(monkeypatch, caplog):
+    def boom(company, exclude):
+        raise RuntimeError("db went away")
+
+    monkeypatch.setattr(gp_po_sync, "_po_numbers_missing_currency", boom)
+    with caplog.at_level(logging.ERROR, logger="app.services.gp_po_sync"):
+        assert asyncio.run(gp_po_sync._backfill_currencies("TUBC")) == 0
+    assert any("currency backfill failed" in m for m in caplog.messages)
+
+
+def test_a_busy_gp_ends_the_currency_backfill_quietly(monkeypatch):
+    _currency_backfill(monkeypatch, ["PO1"], answer=lambda nums: {"pos": []})
+
+    async def busy(company, op, payload=None, *, reads, **kwargs):
+        raise RelayBusyError("GP is busy")
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", busy)
+    assert asyncio.run(gp_po_sync._backfill_currencies("TUBC")) == 0
+
+
+def test_the_open_book_pass_ends_with_the_currency_backfill(monkeypatch):
+    asked = _open_book(monkeypatch, [([{"po_number": "PO9"}], None)])
+    ran: list[str] = []
+
+    async def backfill(company, *, background=True):
+        ran.append(company)
+        return 0
+
+    monkeypatch.setattr(gp_po_sync, "_backfill_currencies", backfill)
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert ran == ["TUBC"]
+    assert ("finish", None) in asked

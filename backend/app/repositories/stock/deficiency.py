@@ -22,7 +22,7 @@ from app.repositories.warehouse.inventory import check_expected_deficient_quanti
 from app.services import notification_service
 from app.services.locking import lock_inventory_combo
 
-from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
+from .common import _find_or_create_stock_row, _log_audit_event, destock_cost_currency, destock_unit_cost
 from .items import lock_stock_item
 
 
@@ -220,6 +220,7 @@ def resolve_deficiency(
 
         if resolution == DeficiencyResolution.SEND_TO_STOCK:
             pool_cost = destock_unit_cost(session, il, destock_cost)
+            pool_currency = destock_cost_currency(session, il, destock_cost)
             il.quantity -= quantity
             il.deficient_quantity -= quantity
             stock_row = _find_or_create_stock_row(
@@ -232,6 +233,7 @@ def resolve_deficiency(
                 bay=il.bay,
                 received_at=datetime.utcnow(),
                 unit_cost=pool_cost,
+                cost_currency=pool_currency,
             )
             stock_row.quantity += quantity
             stock_row.deficient_quantity += quantity

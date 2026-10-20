@@ -185,6 +185,9 @@ def _open_pos(session: Session) -> list[dict]:
                 "vendor_name": po.vendor_name_snapshot,
                 "doc_date": (po.ordered_at or po.created_at.date()).isoformat(),
                 "freight": float(po.shipping_cost or 0),
+                # #1557: a UBC PO bought in US dollars stays one in the copy, so inventory value in demo
+                # mode splits it out the way it does for UBC.
+                "currency": po.currency or "CAD",
                 "modified_at": datetime.utcnow().isoformat(),
                 "source_table": "work",
                 "idempotency_key": None,

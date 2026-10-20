@@ -773,8 +773,11 @@ def _sync_pos(session: Session, payload: dict) -> dict:
 
 
 def _strip(po: dict) -> dict:
-    """A stored PO without the bookkeeping the relay does not send."""
-    return {k: v for k, v in po.items() if k not in ("idempotency_key", "currency")}
+    """A stored PO without the bookkeeping the relay does not send. The currency is sent, as the real
+    relay's PO reads send it (#1557), blank read as CAD the way GP's own blank is."""
+    out = {k: v for k, v in po.items() if k != "idempotency_key"}
+    out["currency"] = po.get("currency") or "CAD"
+    return out
 
 
 def _read_po_totals(session: Session, payload: dict) -> dict:

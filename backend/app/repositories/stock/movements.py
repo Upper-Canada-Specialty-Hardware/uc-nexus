@@ -38,6 +38,7 @@ from .common import (
     _log_audit_event,
     _normalize_optional_location_fields,
     _validate_location_fields,
+    destock_cost_currency,
     destock_unit_cost,
     lock_pool_source,
 )
@@ -80,6 +81,7 @@ def destock_inventory(
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
     check_expected_quantity(il.quantity, expected_quantity)
     pool_cost = destock_unit_cost(session, il, destock_cost)
+    pool_currency = destock_cost_currency(session, il, destock_cost)
 
     # DEFICIENT_SWAP destocks the deficient units themselves and tightens that flag; every other
     # source moves sound units only. Either way the deficient claim must stay on the row, so the row
@@ -144,6 +146,7 @@ def destock_inventory(
         bay=final_bay,
         received_at=now,
         unit_cost=pool_cost,
+        cost_currency=pool_currency,
     )
 
     # Apply the move
@@ -361,6 +364,7 @@ def allocate_stock_to_project(
         # A stock-origin project row has no PO line, so it carries the pool row's cost - the one price
         # every unit on that row shares (#942).
         unit_cost=si.unit_cost,
+        cost_currency=si.cost_currency,
         received_at=now,
     )
     session.add(new_il)
@@ -421,6 +425,7 @@ def receive_into_stock(
     unit_cost: Decimal | None = None,
     kind: PoolKind = PoolKind.STOCK,
     company: str | None = None,
+    cost_currency: str | None = None,
 ) -> StockItem:
     """Receive vendor PO directly into the stock pool. Used when PO has no project_id.
 
@@ -434,7 +439,8 @@ def receive_into_stock(
 
     `unit_cost` is the units' price: the PO line's unit cost on a receipt off a no-project PO (#942),
     the entry's own cost from the SharePoint migration. It is part of the row's merge key, so the
-    units only ever stack onto a row at the same price.
+    units only ever stack onto a row at the same price. `cost_currency` is that price's currency, the
+    PO's on a receipt (#1557), null for CAD and for the migration's entries.
     """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
@@ -462,6 +468,7 @@ def receive_into_stock(
         received_at=received_at,
         kind=kind,
         unit_cost=unit_cost,
+        cost_currency=cost_currency,
     )
     stock_row.quantity += quantity
     stock_row.deficient_quantity += deficient_quantity
@@ -589,6 +596,7 @@ def transfer_inventory(
             # column would silently zero the moved units' value. Fills a null only.
             if il.unit_cost is not None and target.unit_cost is None:
                 target.unit_cost = il.unit_cost
+                target.cost_currency = il.cost_currency
         else:
             target = InventoryLocationModel(
                 project_id=il.project_id,
@@ -640,6 +648,7 @@ def transfer_inventory(
             bay=dest_bay,
             kind=si.kind,
             unit_cost=si.unit_cost,
+            cost_currency=si.cost_currency,
             lock=False,
         )
         si = lock_pool_source(session, si.id, dest.id if dest is not None else None)
@@ -669,6 +678,7 @@ def transfer_inventory(
             # The units keep their Stock / Overhead flag and their price wherever they go (#832, #942).
             kind=si.kind,
             unit_cost=si.unit_cost,
+            cost_currency=si.cost_currency,
         )
         target.quantity += quantity
         session.flush()

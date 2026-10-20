@@ -423,6 +423,8 @@ def test_clone_origin_fields_carries_unit_cost():
         "unit_cost",
         # #1699: how a stock-origin row came in travels with it too.
         "entry_source",
+        # #1557: and the currency the cost is in.
+        "cost_currency",
     }
 
 

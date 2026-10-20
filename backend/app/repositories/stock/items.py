@@ -319,6 +319,7 @@ def reclassify_stock_item(
         bay=found.bay,
         kind=found.kind,
         unit_cost=found.unit_cost,
+        cost_currency=found.cost_currency,
         lock=False,
     )
     si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
@@ -351,6 +352,7 @@ def reclassify_stock_item(
             bay=si.bay,
             kind=si.kind,
             unit_cost=si.unit_cost,
+            cost_currency=si.cost_currency,
         )
         if target is not None and target.id != si.id:
             return _fold_reclassified_row(
@@ -402,6 +404,7 @@ def reclassify_stock_item(
         # nor what they cost (#942) - the same as a full in-place reclassify keeps the row's price.
         kind=si.kind,
         unit_cost=si.unit_cost,
+        cost_currency=si.cost_currency,
     )
     new_row.quantity += quantity
 
@@ -528,6 +531,7 @@ def set_stock_item_kind(
         bay=found.bay,
         kind=kind,
         unit_cost=found.unit_cost,
+        cost_currency=found.cost_currency,
         lock=False,
     )
     si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
@@ -552,6 +556,7 @@ def set_stock_item_kind(
         bay=si.bay,
         kind=kind,
         unit_cost=si.unit_cost,
+        cost_currency=si.cost_currency,
     )
 
     if target is None and quantity == si.quantity:
@@ -587,6 +592,7 @@ def set_stock_item_kind(
             received_at=si.received_at,
             kind=kind,
             unit_cost=si.unit_cost,
+            cost_currency=si.cost_currency,
         )
     si.quantity -= quantity
     target.quantity += quantity

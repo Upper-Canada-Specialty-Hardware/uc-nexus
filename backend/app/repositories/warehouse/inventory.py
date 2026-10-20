@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.currency import cost_currency_of
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
     AuditAction,
@@ -614,18 +615,35 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
 
 
 def resolve_project_combo_cost(session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str):
-    """The best-known per-unit cost of one (category, code) in a project, or None.
+    """The best-known per-unit cost of one (category, code) in a project, or None. See
+    resolve_project_combo_price, which also says what currency the cost is in."""
+    return resolve_project_combo_price(session, project_id, hardware_category, product_code)[0]
+
+
+def resolve_project_combo_price(
+    session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str
+) -> tuple:
+    """The best-known per-unit cost of one (category, code) in a project and its `cost_currency`, as
+    (cost, currency). The cost is None when nothing knows a price; the currency is None for CAD.
 
     For write paths that re-materialize inventory with no PO line to hang a cost on - a shipment
     return, a pull-cancel restock after the original row was deleted. Newest project row's effective
     cost first (PO line cost, else the row's own off-PO cost - the same coalesce every value view
     applies), then the schedule's dominant unit_cost for the combo. None when nothing knows a price;
     inventing 0 here would just be the silent-zero valuation bug with extra steps.
+
+    The currency comes from wherever the cost did (#1557): the PO's when the newest row is priced off its
+    PO line, the row's own when it carries the cost itself. The schedule's cost is a TITAN price with no
+    currency of its own, so it reads as CAD.
     """
-    row_cost = session.execute(
-        select(func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost))
+    row = session.execute(
+        select(
+            func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost),
+            func.coalesce(POModel.currency, InventoryLocationModel.cost_currency),
+        )
         .select_from(InventoryLocationModel)
         .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             InventoryLocationModel.project_id == project_id,
             InventoryLocationModel.hardware_category == hardware_category,
@@ -634,9 +652,9 @@ def resolve_project_combo_cost(session: Session, project_id: uuid.UUID, hardware
         )
         .order_by(InventoryLocationModel.received_at.desc())
         .limit(1)
-    ).scalar()
-    if row_cost is not None:
-        return row_cost
+    ).first()
+    if row is not None:
+        return row[0], cost_currency_of(row[1])
 
     # Schedule fallback: the cost covering the most units wins, ties on the higher cost so the
     # answer never depends on row order.
@@ -651,8 +669,8 @@ def resolve_project_combo_cost(session: Session, project_id: uuid.UUID, hardware
         .group_by(HardwareItemModel.unit_cost)
     ).all()
     if not schedule_rows:
-        return None
-    return sorted(schedule_rows, key=lambda r: (-int(r[1] or 0), -r[0]))[0][0]
+        return None, None
+    return sorted(schedule_rows, key=lambda r: (-int(r[1] or 0), -r[0]))[0][0], None
 
 
 def get_inventory_rows(

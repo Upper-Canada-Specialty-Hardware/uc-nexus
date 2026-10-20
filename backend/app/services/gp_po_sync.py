@@ -89,6 +89,11 @@ BACKFILL_WINDOW = gp_window.parse(
 # time out at the edge while the server ran on, so the mutation just kicks it and returns.
 ADMIN_SYNC_BACKFILL_PAGES = 2
 
+# The CURRENCY BACKFILL (#1557): at most this many by-number batches per open-book pass. A PO that
+# closed before Nexus kept currencies has to be asked about once, by number, and only the ones behind
+# on-hand inventory are; a few batches a pass clears them over a morning without crowding the budget.
+CURRENCY_BACKFILL_BATCHES_PER_PASS = 3
+
 _wake_event: asyncio.Event | None = None
 _loop: asyncio.AbstractEventLoop | None = None
 
@@ -140,6 +145,14 @@ def request_refresh(company: str) -> None:
 _activity: dict | None = None
 _last_open_pass: dict[str, dict] = {}
 _last_new_po_check_result: dict[str, dict] = {}
+
+# The currency backfill's memory (#1557), in-process on purpose. `_currency_unsent` is the relay build
+# that answered a company's by-number read without a currency: a relay older than the currency read
+# would otherwise be asked the same batch every pass for an answer it can never give, so the backfill
+# rests until a different build connects (or the process restarts). `_currency_not_found` is the
+# numbers GP had in neither table, so they are not asked about again until a restart.
+_currency_unsent: dict[str, str | None] = {}
+_currency_not_found: dict[str, set[str]] = {}
 
 
 def activity() -> dict | None:
@@ -499,6 +512,9 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
             "created": created,
             "updated": updated,
         }
+        # After the pass is recorded as finished: the backfill is extra work riding on the pass, and its
+        # reads must never be what decides whether the open book counts as refreshed.
+        await _backfill_currencies(company, background=background)
     finally:
         _activity = None
     return {
@@ -697,6 +713,75 @@ async def _sweep_closed(company: str, pass_started_at: datetime, *, background: 
             "..." if len(cancelled) > 20 else "",
         )
     return {"stale": len(stale), "marked": len(marked), "cancelled": len(cancelled)}
+
+
+async def _backfill_currencies(company: str, *, background: bool = True) -> int:
+    """Ask GP, by number, the currency of the POs still behind on-hand inventory whose currency Nexus
+    does not know (#1557), and store it. Returns how many POs it set.
+
+    The last step of an open-book pass, and never a reason for the pass to fail: it reads a column the
+    pass does not depend on, so any error is logged and left for the next pass. The reads go through the
+    same budget as every other read, a batch at a time, a few batches a pass. Only the currency is
+    written - the POs are not re-mirrored - and only when GP's answer carries it: a relay too old to
+    read CURNCYID answers without the key, and is then left alone until another build connects."""
+    if company in _currency_unsent and _currency_unsent[company] == relay_gateway.build:
+        return 0
+    set_count = 0
+    try:
+        for _ in range(CURRENCY_BACKFILL_BATCHES_PER_PASS):
+            exclude = frozenset(_currency_not_found.get(company, ()))
+            batch = await asyncio.to_thread(_po_numbers_missing_currency, company, exclude)
+            if not batch:
+                break
+            call = await gp_load.paced_call(
+                company,
+                "read_pos_by_number",
+                {"po_numbers": batch},
+                reads=len(batch),
+                background=background,
+            )
+            result = call["result"] or {}
+            pos = result.get("pos") or []
+            if any("currency" not in po for po in pos):
+                _currency_unsent[company] = relay_gateway.build
+                logger.info(
+                    "gp po sync: %s relay does not send a PO's currency yet; currency backfill waits for a new build",
+                    company,
+                )
+                break
+            _currency_unsent.pop(company, None)
+            currencies = {
+                (po.get("po_number") or "").strip(): po["currency"] for po in pos if (po.get("po_number") or "").strip()
+            }
+            # Anything asked for and not answered - in neither GP table, or simply left out - is not
+            # asked about again this process, or one deleted PO would hold the backfill on one batch.
+            unanswered = set(batch) - set(currencies)
+            if unanswered:
+                _currency_not_found.setdefault(company, set()).update(unanswered)
+            set_count += await asyncio.to_thread(_set_po_currencies, company, currencies)
+            if len(batch) < gp_load.READ_BATCH:
+                break
+    except asyncio.CancelledError:
+        raise
+    except (RelayBusyError, RelayUnavailableError, RelayTimeoutError, RelayOpUnsupportedError) as e:
+        logger.info("gp po sync: %s currency backfill stopped for this pass (%s)", company, e)
+    except Exception:  # noqa: BLE001 - a currency the backfill could not read is read next pass
+        logger.exception("gp po sync: %s currency backfill failed; retrying next pass", company)
+    if set_count:
+        logger.info("gp po sync: %s currency backfill stored the currency of %s PO(s)", company, set_count)
+    return set_count
+
+
+def _po_numbers_missing_currency(company: str, exclude: frozenset[str]) -> list[str]:
+    with SessionLocal() as session:
+        return sync_repo.po_numbers_missing_currency(session, company, limit=gp_load.READ_BATCH, exclude=exclude)
+
+
+def _set_po_currencies(company: str, currencies: dict[str, str]) -> int:
+    with SessionLocal() as session:
+        count = sync_repo.set_po_currencies(session, company, currencies)
+        session.commit()
+        return count
 
 
 def _begin_open_pass(company: str, started_at: datetime) -> tuple[str | None, datetime]:

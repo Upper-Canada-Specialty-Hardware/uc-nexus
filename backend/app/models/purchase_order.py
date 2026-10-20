@@ -124,6 +124,11 @@ class PurchaseOrder(Base):
     # dialog), editable on the PO afterward. Null means "not entered"; 0 is a valid entered value.
     shipping_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     tariff_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # GP's currency for the PO (CURNCYID, blank read as 'CAD'), so inventory value can keep what was
+    # bought in US dollars apart from the Canadian figure rather than adding US$100 as C$100 (#1557).
+    # GP-owned: stamped at registration and kept by the mirror. Null on a draft, and on a PO the mirror
+    # has not read since the column arrived, until the currency backfill reaches it; null reads as CAD.
+    currency: Mapped[str | None] = mapped_column(String(15), nullable=True)
     # Issue #216: the PM's requested date, captured at PO-request creation (import wizard) and
     # editable only while DRAFT. expected_delivery_date is the vendor's answer - it can only be
     # entered after the PO is GP-Registered (and before receiving starts).

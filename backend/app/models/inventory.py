@@ -77,6 +77,10 @@ class InventoryLocation(Base):
     # onto a re-materialized row (a shipment return, a pull-cancel restock), so a GP-fed seven-figure
     # cost reaches this column too and a narrower one would just move the overflow to receive time.
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    # The currency unit_cost is in (#1557), travelling with it the same way. Null means CAD. A row with
+    # a po_line_item_id is valued in its PO's currency whatever this says - the PO is the truth there -
+    # but it is still set at creation so a row that later loses its PO link keeps its currency.
+    cost_currency: Mapped[str | None] = mapped_column(String(15), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
