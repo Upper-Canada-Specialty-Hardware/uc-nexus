@@ -7,6 +7,7 @@ export interface StatusRow {
   hardwareCategory: string;
   productCode: string;
   requiredQuantity: number;
+  surplusQuantity: number;
   notPurchased: number;
   poDrafted: number;
   onOrder: number;
@@ -66,26 +67,40 @@ function countColumn(
   };
 }
 
-// Required and Not Purchased count the hardware schedule imported into Nexus; every other column
-// counts POs and warehouse movements, which exist for GP-mirrored jobs that never had a schedule.
+// Required, Surplus and Not Purchased count the hardware schedule imported into Nexus; every other
+// column counts POs and warehouse movements, which exist for GP-mirrored jobs that never had a schedule.
+//
+// #1491: Surplus took 80px the floors did not have at 1366 with the rail expanded, so the floors with
+// slack were brought down to what their header needs on two lines - On Order, On Hand and Staged by
+// the same letter rule the column test counts with, and the two text columns to their own longest
+// header word ("HARDWARE"), their values ellipsizing below that as text columns do.
 export const buildColumns = (anySchedule: boolean): GridColDef[] => [
   {
     field: 'productCode',
     headerName: 'Product Code',
     flex: 1,
-    minWidth: 110,
+    minWidth: 90,
     renderCell: (params) => (
       <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
         {params.row.productCode}
       </Box>
     ),
   },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 110 },
+  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 90 },
   countColumn(
     'requiredQuantity',
     'Required',
-    'Total required quantity from the selected projects’ hardware schedules.',
+    'Total required quantity from the selected projects’ latest hardware schedules. Units ordered past them count as Surplus.',
     86,
+    !anySchedule,
+  ),
+  // #1491: a revision that lowers or drops a product already ordered keeps the order; what it no
+  // longer asks for shows here rather than in Required.
+  countColumn(
+    'surplusQuantity',
+    'Surplus',
+    'Ordered past what the latest hardware schedule asks for - kept on its PO, and not counted as required.',
+    80,
     !anySchedule,
   ),
   countColumn(
@@ -100,6 +115,7 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'onOrder',
     'On Order',
     'Ordered minus received on placed POs not yet Closed - still expected to arrive.',
+    66,
   ),
   countColumn(
     'receivedQuantity',
@@ -111,6 +127,7 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'onHand',
     'On Hand',
     'Current project inventory across warehouse locations. Pulls are already deducted.',
+    60,
   ),
   countColumn(
     'sentToShop',
@@ -121,6 +138,7 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'stagedForShipping',
     'Staged',
     'Pulled for shipping and waiting for a truck - completed shipping pulls not yet on a packing slip.',
+    72,
   ),
   // #1483: 96, so the marker and "SHIPPED" share the first line and "OUT" takes the second. At the
   // default 80 the marker sat alone and "OUT" fell onto a third line the header row cut off.

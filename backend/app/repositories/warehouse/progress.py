@@ -235,7 +235,8 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
     """Per-product-code rollup of purchasing progress for a single project.
 
     Columns produced per (hardware_category, product_code) drawn from the project's hardware schedule:
-    - required_quantity: sum of hardware_items.item_quantity
+    - required_quantity: sum of hardware_items.item_quantity, less the units ordered past the latest
+      schedule (#1491) - the schedule asks for what it asks for, whatever was ordered before it changed
     - po_drafted: sum of po_line_items.ordered_quantity on DRAFT POs
     - ordered_quantity / received_quantity: sum of ordered/received on placed POs
       (status in PLACED_PO_STATUSES, deleted_at IS NULL)
@@ -250,7 +251,9 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
         select(
             HardwareItemModel.hardware_category.label("hardware_category"),
             HardwareItemModel.product_code.label("product_code"),
-            func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
+            func.sum(HardwareItemModel.item_quantity - HardwareItemModel.beyond_schedule_quantity).label(
+                "required_quantity"
+            ),
         )
         .where(HardwareItemModel.project_id == project_id)
         .group_by(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
@@ -398,9 +401,14 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     """Per-product lifecycle rollup across one or more projects (admin Hardware Status page).
 
     One row per (hardware_category, product_code), quantities summed across the given projects:
-    - required_quantity: sum of hardware_items.item_quantity
+    - required_quantity: what the latest schedule asks for - sum of hardware_items.item_quantity less
+      the units ordered past it (#1491)
+    - surplus_quantity: units still on a PO that the latest schedule no longer asks for (#1491) - a
+      revision lowered or dropped the product after it was ordered, and the order was kept (#1123)
     - not_purchased: schedule lines still AVAILABLE (never drafted into a PO, or released back)
-      that the project has not marked By Others (#1489) - those are the general contractor's to supply
+      that the project has not marked By Others (#1489) - those are the general contractor's to supply.
+      A released row's units past the schedule are neither required nor waiting on a PO, so they are
+      left out (#1491)
     - po_drafted: ordered_quantity on DRAFT POs
     - on_order: ordered - received on placed POs not yet CLOSED (still expected to arrive)
     - received_quantity: PO receipts on placed POs - NOT current inventory
@@ -428,6 +436,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
 
     fields = (
         "required_quantity",
+        "surplus_quantity",
         "not_purchased",
         "po_drafted",
         "on_order",
@@ -450,6 +459,9 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     # general contractor's to supply, so its rows are not waiting on a PO: setting By Others hands them
     # back to AVAILABLE and the mark lives only in project_excluded_items, which is why the exclusion is
     # checked per project here rather than read off the row's state. Required still counts them.
+    # #1491: required and not purchased read from the latest schedule, so a row's units past it are left
+    # out of both; the ones still on a PO are the product's surplus.
+    scheduled_units = HardwareItemModel.item_quantity - HardwareItemModel.beyond_schedule_quantity
     excluded = (
         select(ProjectExcludedItemModel.id)
         .where(
@@ -463,12 +475,18 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
         select(
             HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
-            func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
+            func.sum(scheduled_units).label("required_quantity"),
+            func.sum(
+                case(
+                    (HardwareItemModel.state == HardwareItemState.IN_PO, HardwareItemModel.beyond_schedule_quantity),
+                    else_=0,
+                )
+            ).label("surplus_quantity"),
             func.sum(
                 case(
                     (
                         and_(HardwareItemModel.state == HardwareItemState.AVAILABLE, ~excluded),
-                        HardwareItemModel.item_quantity,
+                        scheduled_units,
                     ),
                     else_=0,
                 )
@@ -480,6 +498,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     for row in session.execute(required_stmt):
         b = bucket(row.hardware_category, row.product_code)
         b["required_quantity"] = int(row.required_quantity)
+        b["surplus_quantity"] = int(row.surplus_quantity)
         b["not_purchased"] = int(row.not_purchased)
 
     # PO lines: drafted, receipts, and the open remainder still expected to arrive.

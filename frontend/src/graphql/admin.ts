@@ -239,6 +239,7 @@ export const GET_HARDWARE_STATUS_BY_PRODUCT = gql`
       hardwareCategory
       productCode
       requiredQuantity
+      surplusQuantity
       notPurchased
       poDrafted
       onOrder
