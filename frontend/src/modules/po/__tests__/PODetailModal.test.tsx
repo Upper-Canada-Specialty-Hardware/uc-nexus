@@ -331,6 +331,34 @@ describe('PODetailModal', () => {
     expect(calls[0].expectedDeliveryDate).toBe('2026-10-01');
   });
 
+  it('edits only the expected date and notes once receiving has started (#1488)', async () => {
+    const received = {
+      ...registeredPo,
+      status: 'PARTIALLY_RECEIVED',
+      receiveRecords: [{ id: 'rr-1', receivedAt: '2026-10-01T12:00:00', receivedBy: 'dock', lineItems: [] }],
+    } as unknown as PurchaseOrder;
+    const calls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData(received) };
+        },
+      },
+    ];
+    renderModal(received, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('Vendor Quote Number')).toBeDisabled();
+    expect(screen.getByLabelText('Tariffs')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Expected Delivery Date'), { target: { value: '2026-11-15' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    expect(calls[0]).toEqual({ id: 'po-1', expectedDeliveryDate: '2026-11-15' });
+  });
+
   it('saving with nothing changed sends only the PO id (#1498)', async () => {
     const calls: Record<string, unknown>[] = [];
     const mocks: MockedResponse[] = [
