@@ -309,6 +309,9 @@ class CreateShippingOutRequestInput:
         deprecation_reason="Ignored since #493; the server mints the number from the project counter.",
     )
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    # #1552: minted when the dialog opens and re-sent on a retry, so a create that committed behind a
+    # lost reply returns that request instead of reserving the stock a second time. Blank: no check.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -560,6 +563,8 @@ class TransferInventoryInput:
     dest_aisle: str
     dest_row: str
     dest_bay: str
+    # The source row's count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -843,6 +848,9 @@ class CreateShipmentReturnInput:
     warehouse_id: strawberry.ID
     reference: str | None = None
     items: list[ShipmentReturnItemInput] = strawberry.field(default_factory=list)
+    # #1552: minted when the dialog opens and re-sent on a retry, so a return that committed behind a
+    # lost reply is handed back instead of booked a second time. Blank: no check.
+    idempotency_key: str = ""
 
 
 @strawberry.input
@@ -881,6 +889,8 @@ class DestockInventoryInput:
     target_aisle: str | None = None
     target_row: str | None = None
     target_bay: str | None = None
+    # The source row's count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -893,6 +903,8 @@ class AllocateStockToProjectInput:
     target_aisle: str | None = None
     target_row: str | None = None
     target_bay: str | None = None
+    # The source row's count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -919,6 +931,8 @@ class ReclassifyStockItemInput:
     new_product_code: str
     quantity: int
     reason_text: str | None = None
+    # The source row's count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -928,6 +942,8 @@ class SetStockItemKindInput:
     stock_item_id: strawberry.ID
     kind: PoolKind
     quantity: int
+    # The source row's count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -935,6 +951,8 @@ class ReportInventoryDeficiencyInput:
     inventory_location_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
+    # The row's flagged count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_deficient_quantity: int | None = None
 
 
 @strawberry.input
@@ -966,6 +984,8 @@ class ReportStockDeficiencyInput:
     stock_item_id: strawberry.ID
     quantity: int
     reason_text: str | None = None
+    # The row's flagged count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_deficient_quantity: int | None = None
 
 
 @strawberry.input
@@ -981,6 +1001,8 @@ class ResolveDeficiencyInput:
     # Required when a project row's units are sent to stock (#942), validated server-side; ignored
     # by every other resolution.
     destock_cost: DestockCost | None = None
+    # The row's flagged count the dialog showed; a resend after a lost reply finds it moved and is refused (#1552).
+    expected_deficient_quantity: int | None = None
 
 
 @strawberry.input

@@ -18,7 +18,7 @@ fungible stock and re-attaches the opening as a tag, the same as every other pul
 import hashlib
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, InvalidStateTransitionError, ValidationError
@@ -34,6 +34,7 @@ def create_shipping_out_requests(
     *,
     created_by: str,
     created_by_user_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> list[ShippingOutRequest]:
     """Mint PENDING shipping-out requests and the reservations that back their lines.
 
@@ -43,9 +44,19 @@ def create_shipping_out_requests(
 
     No PullRequest is minted here. A signed-in user accepts the request later, and that accept is
     what mints the warehouse pull (#293).
+
+    `idempotency_key` (#1552) is the Shipping module's, minted when its dialog opened, for a call of
+    one draft: a resend after a lost reply gets back the request its first attempt wrote rather than a
+    second request reserving the same stock again.
     """
     if not drafts:
         return []
+    if idempotency_key:
+        if len(drafts) != 1:
+            raise ValueError("an idempotency key names one request, so it is for a call of one draft")
+        existing = _request_for_create_key(session, project_id, idempotency_key)
+        if existing is not None:
+            return [existing]
 
     for draft in drafts:
         if not draft.get("items"):
@@ -88,6 +99,7 @@ def create_shipping_out_requests(
             status=ShippingOutRequestStatus.PENDING,
             created_by=created_by,
             created_by_user_id=created_by_user_id,
+            create_idempotency_key=idempotency_key or None,
         )
         session.add(req)
         session.flush()
@@ -108,6 +120,31 @@ def create_shipping_out_requests(
         created.append(req)
 
     return created
+
+
+# Namespace for the transaction-scoped advisory lock a keyed create takes on its key (#1552). The
+# two-int form keeps it apart from every single-key advisory lock elsewhere.
+_CREATE_KEY_LOCK_NAMESPACE = 1552
+
+
+def _request_for_create_key(session: Session, project_id: uuid.UUID, key: str) -> ShippingOutRequest | None:
+    """The request a create with this key already wrote, if any (#1552).
+
+    A resend that overlaps its own first attempt would pass an unlocked look and write a second request,
+    so the look is made under an advisory lock on the key: only attempts carrying the same key ever wait
+    on it, so it orders against no other lock. The second waits for the first to commit, then finds it.
+    """
+    if len(key) > 100:
+        raise ValidationError("idempotency_key must be at most 100 characters", field="idempotency_key")
+    session.execute(select(func.pg_advisory_xact_lock(literal(_CREATE_KEY_LOCK_NAMESPACE), func.hashtext(key))))
+    existing = session.scalars(
+        select(ShippingOutRequest)
+        .where(ShippingOutRequest.create_idempotency_key == key)
+        .execution_options(populate_existing=True)
+    ).first()
+    if existing is not None and existing.project_id != project_id:
+        raise ValidationError("This request key was already used on another project.", field="idempotency_key")
+    return existing
 
 
 def replace_shipping_out_request_items(

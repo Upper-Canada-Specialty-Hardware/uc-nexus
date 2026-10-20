@@ -189,5 +189,9 @@ describe('AllocateStockModal keyboard (#1548)', () => {
     await waitFor(() => expect(result).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(result).toHaveBeenCalledTimes(1);
+    // The pool row's count as shown rides along, so a resend after a lost reply is refused (#1552).
+    expect(result).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ quantity: 2, expectedQuantity: 5 }) }),
+    );
   });
 });

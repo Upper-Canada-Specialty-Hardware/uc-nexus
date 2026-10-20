@@ -102,6 +102,8 @@ describe('SetStockKindModal (#832)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mark as Overhead' }));
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(calls[0]).toEqual({ input: { stockItemId: 'si-1', kind: 'OVERHEAD', quantity: 4 } });
+    expect(calls[0]).toEqual({
+      input: { stockItemId: 'si-1', kind: 'OVERHEAD', quantity: 4, expectedQuantity: 10 },
+    });
   });
 });

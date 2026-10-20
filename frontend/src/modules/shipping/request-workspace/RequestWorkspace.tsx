@@ -43,6 +43,7 @@ import RequestWorkspaceInventoryTab from './RequestWorkspaceInventoryTab';
 import RequestWorkspaceCartRail from './RequestWorkspaceCartRail';
 import { userMessage } from '../../../graphql/userMessage';
 import RefreshFailedNote from '../../../components/RefreshFailedNote';
+import { useSubmissionKey } from '../../../hooks/useSubmissionKey';
 
 interface SeededItem {
   openingNumber: string | null;
@@ -391,6 +392,7 @@ function Composer({
     navigate('/app/shipping/requests');
   };
 
+  const submissionKey = useSubmissionKey();
   const [createRequest, { loading: creating }] = useMutation(CREATE_SHIPPING_OUT_REQUEST, {
     ...cacheUpdate,
     onCompleted: (data: unknown) => {
@@ -435,7 +437,9 @@ function Composer({
         },
       });
     } else {
-      createRequest({ variables: { input: { projectId: project.id, items } } });
+      const input = { projectId: project.id, items };
+      // #1552: the same request sent again after a lost reply carries the same key, so it reserves once.
+      createRequest({ variables: { input: { ...input, idempotencyKey: submissionKey(input) } } });
     }
   };
 

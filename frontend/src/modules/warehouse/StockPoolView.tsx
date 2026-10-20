@@ -94,6 +94,7 @@ function toTransferSource(s: StockItem): TransferSource {
     type: 'STOCK_ITEM',
     id: s.id,
     productCode: s.productCode,
+    quantity: s.quantity,
     available: s.available,
     warehouseId: s.warehouseId,
     aisle: s.aisle,

@@ -182,7 +182,10 @@ class ShipmentReturn(Base):
     """A shipment came back from site. Header mirrors PackingSlip; only loose lines are returnable."""
 
     __tablename__ = "shipment_returns"
-    __table_args__ = (Index("ix_shipment_returns_packing_slip", "packing_slip_id"),)
+    __table_args__ = (
+        Index("ix_shipment_returns_packing_slip", "packing_slip_id"),
+        Index("ix_shipment_returns_create_idempotency_key", "create_idempotency_key", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     packing_slip_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("packing_slips.id"), nullable=False)
@@ -192,6 +195,9 @@ class ShipmentReturn(Base):
     returned_at: Mapped[datetime] = mapped_column(nullable=False)
     reference: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    # #1552: the browser mints one key when the dialog opens and re-sends it on a retry, so a create that
+    # committed behind a lost reply hands back what it wrote instead of writing it a second time.
+    create_idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     items: Mapped[list["ShipmentReturnItem"]] = relationship(back_populates="shipment_return")
 

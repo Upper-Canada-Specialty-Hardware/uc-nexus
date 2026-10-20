@@ -506,6 +506,7 @@ class ShippingMutations:
                 [{"request_number": input.request_number, "items": _request_items(input.items)}],
                 created_by=actor,
                 created_by_user_id=auth["user_id"],
+                idempotency_key=input.idempotency_key.strip() or None,
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, created[0].id)
@@ -949,6 +950,7 @@ class ShippingMutations:
                 returned_by=actor,
                 reference=input.reference,
                 items=items_data,
+                idempotency_key=input.idempotency_key.strip() or None,
             )
             session.commit()
             refreshed = shipping_repository.get_shipment_return(session, sr.id)

@@ -85,6 +85,7 @@ function toTransferSource(r: GridRow): TransferSource {
     type: 'INVENTORY_LOCATION',
     id: il.id,
     productCode: il.productCode,
+    quantity: il.quantity,
     available: inventoryAvailable(il),
     warehouseId: il.warehouseId,
     aisle: il.aisle,
