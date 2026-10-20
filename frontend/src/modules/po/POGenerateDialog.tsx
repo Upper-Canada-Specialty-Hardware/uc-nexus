@@ -127,7 +127,8 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
   const {
     data: letterheadData, loading: lLoading, error: lError, refetch: refetchLetterhead,
   } = useQuery<{ companyLetterhead: CompanyLetterhead }>(GET_COMPANY_LETTERHEAD, {
-    variables: { company: po.gpCompany ?? po.company }, skip: !open,
+    // Read fresh each time the dialog opens: an address changed in settings this session must print.
+    variables: { company: po.gpCompany ?? po.company }, skip: !open, fetchPolicy: 'network-only',
   });
 
   const settings = settingsData?.poDocumentSettings;

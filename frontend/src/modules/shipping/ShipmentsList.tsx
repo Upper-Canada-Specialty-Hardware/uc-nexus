@@ -348,6 +348,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         const { data: letterheadData } = await client.query<{ companyLetterhead: CompanyLetterhead }>({
           query: GET_COMPANY_LETTERHEAD,
           variables: { projectId: slip.projectId },
+          // Printed as the company stands now, not as this tab first read it.
+          fetchPolicy: 'network-only',
         });
         const divisionAddress = letterheadData ? letterheadBlock(letterheadData.companyLetterhead) : '';
         // #1107 / #1304: before pickup a reprint is net of returns (it is the copy the driver takes);
