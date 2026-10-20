@@ -314,15 +314,20 @@ class ShippingQueries:
         project_id: strawberry.ID | None = None,
         status: ShippingOutRequestStatus | None = None,
         reopenable_only: bool = False,
+        open_only: bool = False,
     ) -> list[ShippingOutRequest]:
         """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
-        view uses it so it lists only requests Reopen can still act on."""
+        view uses it so it lists only requests Reopen can still act on. openOnly (#1551) lists every
+        open request - pending, or accepted with its pull in flight - whatever `status` says: what the
+        project page's open requests tile counts."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            reqs = shipping_repository.get_shipping_out_requests(session, pid, status, reopenable_only, company=scope)
+            reqs = shipping_repository.get_shipping_out_requests(
+                session, pid, status, reopenable_only, company=scope, open_only=open_only
+            )
             return _requests_to_types(session, reqs)
 
     @strawberry.field

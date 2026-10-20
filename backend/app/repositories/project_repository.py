@@ -519,7 +519,6 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     9,000 openings and 400 POs costs the same four queries as an empty one. Returns None when the
     project does not exist, which the resolver turns into a null.
     """
-    from app.models.enums import PullRequestStatus, ShippingOutRequestStatus
     from app.models.inventory import InventoryLocation
     from app.models.pull_request import PullRequest
     from app.models.purchase_order import PurchaseOrder
@@ -539,23 +538,16 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
         select(func.coalesce(func.sum(InventoryLocation.quantity), 0)).where(InventoryLocation.project_id == project_id)
     )
 
-    # "Open" is the request AND the pull it minted: a rejected request is finished, and so is an
-    # accepted one whose pull has been completed or cancelled - counting those would make the number
-    # grow forever and say nothing about what is still in flight. One LEFT JOIN rather than a second
-    # query, so the whole detail is still four reads. A PENDING request is open on its own status: a
-    # cancelled pull sends its request back to PENDING but leaves pull_request_id pointing at the
-    # cancelled pull until a re-accept overwrites it (#1197).
+    # "Open" is the request AND the pull it minted (#1197) - see open_request_clause, which the shipping
+    # requests page's open view lists with too (#1551). One LEFT JOIN rather than a second query, so the
+    # whole detail is still four reads.
+    from app.repositories.shipping_repository import open_request_clause
+
     open_requests = session.scalar(
         select(func.count())
         .select_from(ShippingOutRequest)
         .outerjoin(PullRequest, PullRequest.id == ShippingOutRequest.pull_request_id)
-        .where(
-            ShippingOutRequest.project_id == project_id,
-            ShippingOutRequest.status != ShippingOutRequestStatus.REJECTED,
-            (ShippingOutRequest.status == ShippingOutRequestStatus.PENDING)
-            | (PullRequest.id.is_(None))
-            | (PullRequest.status.notin_([PullRequestStatus.COMPLETED, PullRequestStatus.CANCELLED])),
-        )
+        .where(ShippingOutRequest.project_id == project_id, open_request_clause())
     )
 
     return {

@@ -67,6 +67,11 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
    * request down, when and why, and no actions: a rejection is final (#972).
    */
   mode?: 'pending' | 'approved' | 'rejected';
+  /**
+   * A mode per row, for a list that mixes them (#1551: shipping's open view holds pending requests and
+   * accepted ones still being pulled). Wins over `mode` where given.
+   */
+  rowMode?: (req: TRequest) => 'pending' | 'approved' | 'rejected';
   /** Re-run the list query after an accept/reject/reopen settles. */
   onChanged: () => void;
   /** Rendered right of the request number: the count chip (item(s) / opening(s)). */
@@ -117,6 +122,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   rejectMutation,
   reopenMutation,
   mode = 'pending',
+  rowMode,
   onChanged,
   renderSummary,
   renderDetails,
@@ -278,14 +284,14 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                       {req.returnNote && <Alert severity="warning">{req.returnNote}</Alert>}
                       {renderDetails(req)}
 
-                      {mode === 'rejected' ? (
+                      {(rowMode?.(req) ?? mode) === 'rejected' ? (
                         <Alert severity="error">
                           Rejected
                           {req.rejectedBy ? ` by ${req.rejectedBy}` : ''}
                           {req.rejectedAt ? ` on ${parseServerDate(req.rejectedAt).toLocaleString()}` : ''}
                           {req.rejectionReason ? `: ${req.rejectionReason}` : '.'}
                         </Alert>
-                      ) : mode === 'approved' ? (
+                      ) : (rowMode?.(req) ?? mode) === 'approved' ? (
                         <Stack direction="row" spacing={1.5} alignItems="center">
                           {gateReview(
                             <Button
