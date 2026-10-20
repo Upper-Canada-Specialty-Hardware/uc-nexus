@@ -15,7 +15,7 @@ import {
 import type { GridColDef } from '@mui/x-data-grid';
 import { Check, ChevronDown, Pencil, TriangleAlert } from 'lucide-react';
 import { distinctProductCodes, groupRowsByFields, type GroupByField } from './classificationGrouping';
-import { type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
+import { BY_OTHERS, type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ClassificationRowsGrid from './ClassificationRowsGrid';
 
@@ -165,6 +165,7 @@ export default function ClassificationReview({
     value: string,
     toggleOptions: ClassificationOption[],
     onChange: (value: string) => void,
+    byOthersLocked = false,
   ) => (
     <ToggleButtonGroup
       size="small"
@@ -179,6 +180,7 @@ export default function ClassificationReview({
         <ToggleButton
           key={opt.value}
           value={opt.value}
+          disabled={byOthersLocked && opt.value === BY_OTHERS}
           sx={{
             px: 1,
             fontSize: '0.75rem',
@@ -212,7 +214,7 @@ export default function ClassificationReview({
             <Chip size="small" label="—" />
           )
         ) : (
-          renderToggle(r.classification, options, (value) => onClassify([r.classificationKey], value))
+          renderToggle(r.classification, options, (value) => onClassify([r.classificationKey], value), r.byOthersLocked)
         ),
     },
   ];
@@ -349,7 +351,12 @@ export default function ClassificationReview({
                     }}
                   >
                     <Typography sx={microLabelSx}>Set whole group</Typography>
-                    {renderToggle(uniform ?? '', options, (value) => onClassify(uniqueKeys(groupRows), value))}
+                    {renderToggle(
+                      uniform ?? '',
+                      options,
+                      (value) => onClassify(uniqueKeys(groupRows), value),
+                      groupRows.some((r) => r.byOthersLocked),
+                    )}
                   </Box>
                 )}
 
