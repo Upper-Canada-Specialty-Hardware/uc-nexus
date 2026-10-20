@@ -60,6 +60,8 @@ export interface HardwareStatusRow {
   hardwareCategory: string;
   productCode: string;
   requiredQuantity: number;
+  /** Units still on a PO that the latest schedule no longer asks for (#1491); not in requiredQuantity. */
+  surplusQuantity: number;
   notPurchased: number;
   poDrafted: number;
   onOrder: number;
