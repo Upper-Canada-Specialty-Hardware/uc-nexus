@@ -558,23 +558,22 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
     `available_quantity` is the slice of the pair still AVAILABLE - on no purchase order yet. It is
     the ceiling on what the Nexus Registration panel may tie to a GP-born PO's line, and the panel
     shows it so the buyer sees the cap before saving rather than after being refused.
+
+    Both figures read from the latest schedule (#1491): a row's units ordered before a revision lowered
+    or dropped the product are surplus, not units the schedule still needs, so they are left out.
     """
     if not project_ids:
         return []
 
+    scheduled_units = HardwareItemModel.item_quantity - HardwareItemModel.beyond_schedule_quantity
     rows = session.execute(
         select(
             HardwareItemModel.project_id,
             HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
             HardwareItemModel.classification,
-            func.sum(HardwareItemModel.item_quantity),
-            func.sum(
-                case(
-                    (HardwareItemModel.state == HardwareItemState.AVAILABLE, HardwareItemModel.item_quantity),
-                    else_=0,
-                )
-            ),
+            func.sum(scheduled_units),
+            func.sum(case((HardwareItemModel.state == HardwareItemState.AVAILABLE, scheduled_units), else_=0)),
         )
         .where(HardwareItemModel.project_id.in_(project_ids))
         .group_by(

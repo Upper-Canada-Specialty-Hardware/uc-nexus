@@ -21,6 +21,10 @@ class HardwareItem(Base):
         Index("ix_hardware_items_state", "state"),
         Index("ix_hardware_items_po_line_item", "po_line_item_id"),
         CheckConstraint("item_quantity >= 1", name="ck_hardware_items_item_quantity_positive"),
+        CheckConstraint(
+            "beyond_schedule_quantity >= 0 AND beyond_schedule_quantity <= item_quantity",
+            name="ck_hardware_items_beyond_schedule_within_quantity",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -32,6 +36,10 @@ class HardwareItem(Base):
     # Door leaf this item belongs to (#311): 1 or 2. Null = frame / legacy / unknown.
     leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     item_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The part of item_quantity the latest schedule no longer asks for (#1491): ordered before a revision
+    # lowered or dropped it, kept on its PO (#1123), and reported as surplus rather than required. Every
+    # finalize restates it for the whole project; it is never more than the row's own quantity.
+    beyond_schedule_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     list_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)

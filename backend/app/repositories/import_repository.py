@@ -71,6 +71,9 @@ def get_project_hardware_schedule(
 
     hardware_items = session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project_id)).all()
 
+    # #1491: what the wizard hydrates is the latest schedule, so the units ordered past it are left out
+    # and a row wholly past it is not offered at all. Hydrating them back in would make the next finalize
+    # read the surplus as scheduled again and restate it as required.
     return {
         "project": project,
         "openings": list(project.openings),
@@ -81,7 +84,7 @@ def get_project_hardware_schedule(
                 "material_id": hi.material_id or str(hi.id),
                 "leaf": hi.leaf,
                 "hardware_category": hi.hardware_category,
-                "item_quantity": hi.item_quantity,
+                "item_quantity": hi.item_quantity - hi.beyond_schedule_quantity,
                 "unit_cost": float(hi.unit_cost) if hi.unit_cost is not None else None,
                 "unit_price": float(hi.unit_price) if hi.unit_price is not None else None,
                 "list_price": float(hi.list_price) if hi.list_price is not None else None,
@@ -96,6 +99,7 @@ def get_project_hardware_schedule(
                 "classification": hi.classification,
             }
             for hi in hardware_items
+            if hi.item_quantity > hi.beyond_schedule_quantity
         ],
     }
 
@@ -750,6 +754,53 @@ def plan_po_claims(
     return per_draft_claims, remaining_by_idx
 
 
+def restate_beyond_schedule(
+    session: Session,
+    project_id: uuid.UUID,
+    hardware_items_input: list[dict],
+    opening_map: dict[str, uuid.UUID],
+) -> None:
+    """Restate how much of a project's ordered hardware the latest schedule no longer asks for (#1491).
+
+    A finalize restates the schedule from its `hardware_items` input, but the rows already on a PO
+    survive it (#1123), so a revision that lowers or drops a product already ordered leaves more on
+    POs than the schedule needs. Per (opening, product, category, leaf) - the key step 5 persists by -
+    S is what the input asks for (0 when the input no longer has the key) and O is what the key's
+    IN_PO rows hold; max(0, O - S) of them are past the schedule. That surplus is spread over the
+    key's IN_PO rows oldest first, each taking at most its own quantity, and every other row of the
+    project is set to 0. The rows themselves are left as they are; only how they are reported changes.
+
+    One query loads the project's rows, so it runs after every write of the finalize, the SharePoint
+    re-marking included, and sees the rows as the finalize leaves them.
+    """
+    scheduled: dict[tuple[uuid.UUID, str, str, int | None], int] = defaultdict(int)
+    for hi in hardware_items_input:
+        opening_id = opening_map.get(hi["opening_number"])
+        if opening_id is not None:
+            scheduled[(opening_id, hi["product_code"], hi["hardware_category"], hi.get("leaf"))] += hi["item_quantity"]
+
+    rows = session.scalars(
+        select(HardwareItemModel)
+        .where(HardwareItemModel.project_id == project_id)
+        .order_by(HardwareItemModel.created_at, HardwareItemModel.id)
+    ).all()
+    ordered: dict[tuple[uuid.UUID, str, str, int | None], list[HardwareItemModel]] = defaultdict(list)
+    for row in rows:
+        if row.state == HardwareItemState.IN_PO:
+            ordered[(row.opening_id, row.product_code, row.hardware_category, row.leaf)].append(row)
+        elif row.beyond_schedule_quantity:
+            row.beyond_schedule_quantity = 0
+
+    for key, key_rows in ordered.items():
+        beyond = max(0, sum(row.item_quantity for row in key_rows) - scheduled.get(key, 0))
+        for row in key_rows:
+            take = min(beyond, row.item_quantity)
+            if row.beyond_schedule_quantity != take:
+                row.beyond_schedule_quantity = take
+            beyond -= take
+    session.flush()
+
+
 def finalize_import_session(
     session: Session,
     input_data: dict,
@@ -1239,6 +1290,10 @@ def finalize_import_session(
     from app.repositories import sharepoint_migration_repository
 
     sharepoint_migration_repository.reapply_migration_marks(session, project.id)
+
+    # 5c. Units ordered past the schedule this finalize restated are surplus, not required (#1491). Run
+    # after every hardware write above, the re-marking included, so it reads the rows as they now are.
+    restate_beyond_schedule(session, project.id, hardware_items_input, opening_map)
 
     # 6. Shipping-out requests (#293): Start a Request mints a PENDING ShippingOutRequest, NOT a
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.

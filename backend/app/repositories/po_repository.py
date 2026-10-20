@@ -863,18 +863,25 @@ def get_open_pos(
     return list(session.scalars(stmt).unique().all())
 
 
-_HARDWARE_ROW_UNCOPIED = frozenset({"id", "item_quantity", "created_at", "updated_at"})
+_HARDWARE_ROW_UNCOPIED = frozenset({"id", "item_quantity", "beyond_schedule_quantity", "created_at", "updated_at"})
 
 
 def _split_off_hardware_row(hi, quantity: int):
     """A new schedule row carrying `quantity` units of `hi`, identical to it in every other column. The
-    caller takes the same quantity off `hi`, so the opening's total is unchanged."""
+    caller takes the same quantity off `hi`, so the opening's total is unchanged.
+
+    The units past the latest schedule (#1491) go to the split-off part first and `hi` keeps the rest.
+    Both callers split off the part that is not on the line, so a tie takes scheduled units before
+    surplus ones and a release lets surplus go before scheduled units, and neither part can end up
+    holding more surplus than units."""
     from app.models.hardware import HardwareItem
 
     copied = {
         c.key: getattr(hi, c.key) for c in HardwareItem.__mapper__.column_attrs if c.key not in _HARDWARE_ROW_UNCOPIED
     }
-    return HardwareItem(id=uuid.uuid4(), item_quantity=quantity, **copied)
+    beyond = min(hi.beyond_schedule_quantity or 0, quantity)
+    hi.beyond_schedule_quantity = (hi.beyond_schedule_quantity or 0) - beyond
+    return HardwareItem(id=uuid.uuid4(), item_quantity=quantity, beyond_schedule_quantity=beyond, **copied)
 
 
 def _link_available_items(
@@ -986,8 +993,10 @@ def _available_schedule_units(
     from."""
     from app.models.hardware import HardwareItem
 
+    # #1491: a released row's units past the latest schedule are not units the schedule still needs, the
+    # same figure get_project_schedule_products shows the panel as the cap.
     total = session.scalar(
-        select(func.coalesce(func.sum(HardwareItem.item_quantity), 0)).where(
+        select(func.coalesce(func.sum(HardwareItem.item_quantity - HardwareItem.beyond_schedule_quantity), 0)).where(
             HardwareItem.project_id == project_id,
             HardwareItem.hardware_category == hardware_category,
             HardwareItem.product_code == product_code,

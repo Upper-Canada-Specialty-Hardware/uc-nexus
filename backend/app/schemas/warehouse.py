@@ -814,6 +814,7 @@ class WarehouseQueries:
                     hardware_category=row["hardware_category"],
                     product_code=row["product_code"],
                     required_quantity=row["required_quantity"],
+                    surplus_quantity=row["surplus_quantity"],
                     not_purchased=row["not_purchased"],
                     po_drafted=row["po_drafted"],
                     on_order=row["on_order"],

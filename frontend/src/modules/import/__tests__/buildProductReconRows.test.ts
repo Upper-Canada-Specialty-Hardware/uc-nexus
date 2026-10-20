@@ -46,6 +46,7 @@ function status(overrides: Partial<HardwareStatusRow>): Map<string, HardwareStat
     hardwareCategory: 'Locks',
     productCode: 'LCK-200',
     requiredQuantity: 0,
+    surplusQuantity: 0,
     notPurchased: 0,
     poDrafted: 0,
     onOrder: 0,

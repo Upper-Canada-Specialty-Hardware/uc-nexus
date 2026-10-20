@@ -1064,3 +1064,143 @@ def test_a_po_import_with_a_list_replaces_the_exclusions(db_session):
     db_session.flush()
 
     assert _exclusions(db_session, project.id) == {("HINGE", "HG-100")}
+
+
+# --- #1491: units ordered past the latest schedule are surplus, not required ------------------------
+
+
+def _ordered_ten_then(session, project, new_items: list[dict]) -> None:
+    """Import a schedule asking 10 of HG-100 at A01, order all 10 on a PO draft, then replace the
+    schedule with `new_items`."""
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=10)],
+            "po_drafts": [_po_draft(_ref("A01", "HG-100"))],
+        },
+    )
+    session.flush()
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": new_items,
+            "replace_schedule": True,
+        },
+    )
+    session.flush()
+
+
+def _beyond(session, project_id) -> int:
+    rows = session.scalars(select(HardwareItem).where(HardwareItem.project_id == project_id)).all()
+    return sum(hi.beyond_schedule_quantity for hi in rows)
+
+
+def test_first_import_has_no_surplus(db_session):
+    """#1491: nothing is ordered past a schedule that was just imported - required is the schedule."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=10)],
+            "po_drafts": [_po_draft(_ref("A01", "HG-100", quantity=4))],
+        },
+    )
+    db_session.flush()
+
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 10
+    assert status["surplus_quantity"] == 0
+    assert status["not_purchased"] == 6
+    assert _beyond(db_session, project.id) == 0
+
+
+def test_replace_lowering_an_ordered_product_reports_the_rest_as_surplus(db_session):
+    """#1491: 10 ordered, the revised schedule needs 6. The order stays as it is (#1123); required reads
+    the new schedule's 6 and the other 4 are surplus, with nothing left to purchase."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    _ordered_ten_then(db_session, project, [_hardware_item_input("A01", "HG-100", item_quantity=6)])
+
+    assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.IN_PO): 10}
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 6
+    assert status["surplus_quantity"] == 4
+    assert status["not_purchased"] == 0
+
+    # The wizard hydrates the latest schedule, not what was ordered against an earlier one, so a
+    # finalize resumed from it keeps the surplus where it is.
+    schedule = import_repository.get_project_hardware_schedule(db_session, project.id)
+    assert sum(hi["item_quantity"] for hi in schedule["hardware_items"]) == 6
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=6)],
+        },
+    )
+    db_session.flush()
+    status = _status(db_session, project.id, "HG-100")
+    assert (status["required_quantity"], status["surplus_quantity"]) == (6, 4)
+
+
+def test_replace_dropping_an_ordered_product_reports_it_all_as_surplus(db_session):
+    """#1491 / #1527: a revision that drops the product code leaves every ordered unit as surplus."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    _ordered_ten_then(db_session, project, [_hardware_item_input("A01", "HG-200", item_quantity=10)])
+
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 0
+    assert status["surplus_quantity"] == 10
+    assert status["not_purchased"] == 0
+    renamed = _status(db_session, project.id, "HG-200")
+    assert (renamed["required_quantity"], renamed["surplus_quantity"], renamed["not_purchased"]) == (10, 0, 10)
+
+
+def test_replace_raising_the_product_back_clears_the_surplus(db_session):
+    """#1491: every finalize restates the surplus, so a revision asking for the 10 again clears it."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    _ordered_ten_then(db_session, project, [_hardware_item_input("A01", "HG-100", item_quantity=6)])
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=10)],
+            "replace_schedule": True,
+        },
+    )
+    db_session.flush()
+
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 10
+    assert status["surplus_quantity"] == 0
+    assert status["not_purchased"] == 0
+    assert _beyond(db_session, project.id) == 0
+
+
+def test_schedule_products_leave_the_surplus_out(db_session):
+    """#1491: the migration wizard and the registration panel read units the schedule still needs, so
+    the units ordered past it count in neither the required nor the available figure."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    _ordered_ten_then(db_session, project, [_hardware_item_input("A01", "HG-100", item_quantity=6)])
+
+    rows = warehouse_repository.get_project_schedule_products(db_session, [project.id])
+    row = next(r for r in rows if r["product_code"] == "HG-100")
+    assert row["required_quantity"] == 6
+    assert row["available_quantity"] == 0
