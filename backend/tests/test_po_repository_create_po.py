@@ -670,13 +670,17 @@ def _po_with_a_receive(session):
     return po
 
 
-def test_notes_land_after_receiving_has_started_where_update_po_is_refused(db_session):
+def test_notes_land_after_receiving_has_started(db_session):
+    """Both paths take notes once receiving has started: update_po_notes always did, and update_po does
+    since #1488 left the expected date and notes open after a receive."""
     from app.errors import InvalidStateTransitionError
 
     po = _po_with_a_receive(db_session)
 
+    po_repository.update_po(db_session, po.id, notes="rest due friday")
+    assert po.notes == "rest due friday"
     with pytest.raises(InvalidStateTransitionError):
-        po_repository.update_po(db_session, po.id, notes="blocked")
+        po_repository.update_po(db_session, po.id, vendor_quote_number="Q-NEW")
 
     po_repository.update_po_notes(db_session, po.id, "  box crushed on delivery  ")
     assert po.notes == "box crushed on delivery"
