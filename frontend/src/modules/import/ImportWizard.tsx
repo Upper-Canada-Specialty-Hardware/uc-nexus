@@ -218,6 +218,9 @@ export default function ImportWizard({
   // #588: monotonic local id source for draft document attachments, unique within the session.
   const attachmentSeq = useRef(0);
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
+  // #1392: the project's By Others products as the server holds them ("category|code"), for telling a
+  // product the project has classified apart from one it has excluded.
+  const [excludedProducts, setExcludedProducts] = useState<Set<string>>(new Set());
   // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
@@ -438,6 +441,7 @@ export default function ImportWizard({
         }
         settle(true);
         const excluded = res.data.projectExcludedItems;
+        setExcludedProducts(new Set((excluded ?? []).map((ei) => `${ei.hardwareCategory}|${ei.productCode}`)));
         if (excluded && excluded.length > 0) {
           setClassifications((prev) => {
             const next = new Map(prev);
@@ -677,6 +681,16 @@ export default function ImportWizard({
             ? 'empty'
             : null;
 
+  // #1392: products the project already has as UCH Shop / UCH Site. They can't be changed to By Others.
+  const byOthersLockedProducts = useMemo(() => {
+    const locked = new Set<string>();
+    for (const hi of scheduleData?.projectHardwareSchedule?.hardwareItems ?? []) {
+      const key = `${hi.hardwareCategory}|${hi.productCode}`;
+      if (hi.classification && !excludedProducts.has(key)) locked.add(key);
+    }
+    return locked;
+  }, [scheduleData, excludedProducts]);
+
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
     // #486: the classifier needs to see the door, not just the part. Opening attributes live on
@@ -706,9 +720,10 @@ export default function ImportWizard({
         classificationKey: ck,
         classification: classifications.get(ck) ?? '',
         siteShop: siteShopClassifications.get(ck) ?? '',
+        byOthersLocked: byOthersLockedProducts.has(`${hi.hardware_category}|${hi.product_code}`),
       };
     });
-  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed]);
+  }, [aggregatedHardwareItems, classifications, siteShopClassifications, parsed, byOthersLockedProducts]);
 
   // Items grouped by vendor for auto PO segregation (excludes BY_OTHERS items)
   const vendorGroups = useMemo(() => {

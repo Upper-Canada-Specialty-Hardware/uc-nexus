@@ -869,6 +869,12 @@ def finalize_import_session(
     reclassification_plans = classification_override_repository.plan_import_reclassification(
         session, project.id, product_classification
     )
+    # #1392: a product the project already has as Shop / Site can't be taken to By Others by a replace.
+    # Checked here, before step 2 rewrites the rows, for the same reason.
+    if excluded_items_input is not None:
+        classification_override_repository.refuse_classified_into_by_others(
+            session, project.id, {(ei["hardware_category"], ei["product_code"]) for ei in excluded_items_input}
+        )
 
     # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
     # that will be regenerated from the current input. IN_PO rows (attached to prior POs, or marked

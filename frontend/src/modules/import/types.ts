@@ -262,7 +262,12 @@ export interface ClassificationRow {
   classification: string;
   // Issue #216: second axis (Site/Shop) for PO-purpose imports; '' = not yet classified.
   siteShop?: string;
+  // #1392: the project already has this product as UCH Shop / UCH Site, so By Others is not offered for
+  // it (the server refuses it too). Only a product new to the project or never classified may be By Others.
+  byOthersLocked?: boolean;
 }
+
+export const BY_OTHERS = 'BY_OTHERS';
 
 export interface ClassificationOption {
   value: string;

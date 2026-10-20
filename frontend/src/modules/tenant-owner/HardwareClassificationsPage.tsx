@@ -86,7 +86,7 @@ interface PendingChange {
 const RULES = [
   'A change applies to what is still owed. Hardware that already went to the shop or shipped stays as it went, and the log keeps where it went.',
   'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled.',
-  "By Others stops the product counting as ordered on the schedule. A PO or a shipping request for it is left alone - what arrives lands in the job's inventory like any extra.",
+  "A product that already has a classification - UCH Shop, UCH Site or a mix - can't be changed to By Others: By Others treats the item as if it doesn't exist. Only a product never classified can be set to By Others.",
   'Before anything that touches other work is saved, you see exactly what will happen.',
 ];
 
@@ -104,6 +104,9 @@ const LABEL: Record<Choice, string> = {
   UNCLASSIFIED: 'Unclassified',
   MIXED: 'Mixed',
 };
+
+// #1392: a classified product can't be changed to By Others (the server refuses it too).
+const isClassified = (choice: Choice) => choice === 'UCH_SHOP' || choice === 'UCH_SITE' || choice === 'MIXED';
 
 const rowId = (r: { hardwareCategory: string; productCode: string }) => `${r.hardwareCategory}::${r.productCode}`;
 
@@ -235,7 +238,13 @@ export default function HardwareClassificationsPage() {
               aria-label={`Classification of ${row.productCode}`}
             >
               {PO_OPTIONS.map((o) => (
-                <ToggleButton key={o.value} value={o.value} color={o.color} sx={{ py: 0.25, px: 1, whiteSpace: 'nowrap' }}>
+                <ToggleButton
+                  key={o.value}
+                  value={o.value}
+                  color={o.color}
+                  disabled={o.value === 'BY_OTHERS' && isClassified(row.choice)}
+                  sx={{ py: 0.25, px: 1, whiteSpace: 'nowrap' }}
+                >
                   {o.label}
                 </ToggleButton>
               ))}
@@ -308,7 +317,7 @@ export default function HardwareClassificationsPage() {
                 size="small"
                 variant="outlined"
                 color={o.color}
-                disabled={busy}
+                disabled={busy || (o.value === 'BY_OTHERS' && selectedRows.some((r) => isClassified(r.choice)))}
                 onClick={() => apply(selectedRows, o.value as Choice)}
               >
                 {o.label}
