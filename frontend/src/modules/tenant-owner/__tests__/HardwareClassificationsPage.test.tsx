@@ -129,7 +129,7 @@ it('shows a product a newer schedule dropped, off the schedule and still classif
   expect(within(group).getByRole('button', { name: 'UCH Site' })).toHaveAttribute('aria-pressed', 'true');
   // It is classified, so By Others stays off for it (#1392).
   expect(within(group).getByRole('button', { name: 'By Others' })).toBeDisabled();
-  expect(screen.getAllByText('Not on current schedule')).toHaveLength(1);
+  expect(screen.getAllByText('Off schedule')).toHaveLength(1);
   const gone = screen.getByText('GONE-1').closest('[role="row"]') as HTMLElement;
   expect(within(gone).getAllByText('—')).toHaveLength(2);
   const onSchedule = screen.getByText('HG-1').closest('[role="row"]') as HTMLElement;
