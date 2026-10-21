@@ -14,9 +14,9 @@ class ClerkEmailDelivery(Base):
     holds nothing but Clerk's opaque id, the route and the time: no recipient, subject, body or code."""
 
     __tablename__ = "clerk_email_deliveries"
-    __table_args__ = (CheckConstraint("route IN ('mailer', 'smtp2go')", name="ck_clerk_email_deliveries_route"),)
+    __table_args__ = (CheckConstraint("route = 'mailer'", name="ck_clerk_email_deliveries_route"),)
 
     clerk_email_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    # 'mailer' (ucsh-mailer, inside the company) or 'smtp2go' (everyone else).
+    # Always 'mailer': ucsh.com addresses only (#1810), and the mailer delivers inside the company alone.
     route: Mapped[str] = mapped_column(String(16), nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

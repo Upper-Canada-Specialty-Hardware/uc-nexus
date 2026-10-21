@@ -806,7 +806,9 @@ async def clerk_email_webhook(request: Request):
 
     No session in front of it: Clerk calls it, and the Svix signature over the raw body is the auth,
     checked before the body is even parsed (app/services/clerk_email.py). Any non-2xx makes Clerk retry,
-    so a send that fails answers 502 or 503 and a retry of one that worked answers `duplicate`."""
+    so a send that fails answers 502 or 503 and a retry of one that worked answers `duplicate`. An address
+    outside the company answers `not_internal`: codes are for ucsh.com users only (#1810), so it is not sent
+    and Clerk is told to stop."""
     from app.services import clerk_email, clerk_email_delivery
 
     body = bytearray()
