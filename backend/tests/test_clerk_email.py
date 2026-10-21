@@ -1,7 +1,7 @@
 """Clerk's sign-in code emails, delivered by Nexus (#1690).
 
 The signature and the payload are pure functions; the route is driven through TestClient with delivery
-stood in for; delivery itself runs against the test database with both senders stood in for, so nothing
+stood in for; delivery itself runs against the test database with ucsh-mailer stood in for, so nothing
 here ever reaches a mail service.
 """
 
@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.services import clerk_email, clerk_email_delivery, mailer, smtp2go
+from app.services import clerk_email, clerk_email_delivery, mailer
 
 SECRET = "whsec_" + base64.b64encode(b"k" * 32).decode()
 
@@ -220,6 +220,13 @@ def test_an_email_clerk_sent_itself_is_acknowledged_and_not_sent(client):
     assert client.delivered == []
 
 
+def test_an_outside_address_is_acknowledged_so_clerk_stops_retrying(client, monkeypatch):
+    monkeypatch.setattr(clerk_email_delivery, "deliver", lambda email: "not_internal")
+    raw = _event()
+    resp = _post(client, raw, _sign(raw))
+    assert resp.status_code == 200 and resp.json() == {"status": "not_internal"}
+
+
 def test_an_oversized_body_is_refused_unread(client):
     raw = b"x" * (clerk_email.MAX_BODY_BYTES + 1)
     resp = _post(client, raw, _sign(raw))
@@ -249,48 +256,25 @@ def test_a_failed_send_answers_an_error_so_clerk_retries(client, monkeypatch):
 
 @pytest.fixture
 def senders(monkeypatch):
-    """Both mail services stood in for. `mailer_refuses` is the mailer's error code for the next send."""
+    """ucsh-mailer stood in for. `mailer_refuses` is the mailer's error code for the next send; anything
+    posted elsewhere lands in `elsewhere`, which must stay empty."""
     monkeypatch.setenv("MAILER_URL", "https://mailer.example")
     monkeypatch.setenv("MAILER_KEY", "ucshm_nexus_test")
-    monkeypatch.setenv("SMTP2GO_API_KEY", "api-test")
-    monkeypatch.setenv("SMTP2GO_SENDER", "UC Nexus <nexus@example.test>")
     monkeypatch.setattr(mailer.time, "sleep", lambda seconds: None)
-    state = {"mailer": [], "smtp2go": [], "mailer_refuses": None, "smtp2go_status": 200}
+    state = {"mailer": [], "elsewhere": [], "mailer_refuses": None}
 
     def _post(url, *, json, headers, timeout):
-        if url.startswith("https://mailer.example"):
-            state["mailer"].append({"json": json, "headers": headers})
-            code = state["mailer_refuses"]
-            if code:
-                return httpx.Response(503 if code == "hve_unavailable" else 400, json={"error": code})
-            return httpx.Response(200, json={"status": "sent"})
-        state["smtp2go"].append({"json": json, "headers": headers})
-        if state["smtp2go_status"] != 200:
-            return httpx.Response(state["smtp2go_status"], json={"data": {"error_code": "E_ApiResponseCodes"}})
-        return httpx.Response(200, json={"data": {"succeeded": 1, "failed": 0, "email_id": "s2g_1"}})
+        if not url.startswith("https://mailer.example"):
+            state["elsewhere"].append(url)
+            return httpx.Response(200, json={})
+        state["mailer"].append({"json": json, "headers": headers})
+        code = state["mailer_refuses"]
+        if code:
+            return httpx.Response(503 if code == "hve_unavailable" else 400, json={"error": code})
+        return httpx.Response(200, json={"status": "sent"})
 
     monkeypatch.setattr(httpx, "post", _post)
     return state
-
-
-def test_smtp2go_sends_with_the_key_in_a_header_only(senders):
-    smtp2go.send(to="bob@example.test", subject="s", text="t", html="<p>t</p>")
-
-    [request] = senders["smtp2go"]
-    assert request["headers"] == {"X-Smtp2go-Api-Key": "api-test"}
-    assert request["json"] == {
-        "sender": "UC Nexus <nexus@example.test>",
-        "to": ["bob@example.test"],
-        "subject": "s",
-        "text_body": "t",
-        "html_body": "<p>t</p>",
-    }
-
-
-def test_smtp2go_refusing_raises(senders):
-    senders["smtp2go_status"] = 400
-    with pytest.raises(smtp2go.Smtp2goError, match="400"):
-        smtp2go.send(to="bob@example.test", subject="s", text="t", html=None)
 
 
 def test_the_mailer_error_carries_its_code(senders):
@@ -333,18 +317,19 @@ def test_a_ucsh_address_goes_through_the_mailer_once(senders, email):
     [request] = senders["mailer"]
     assert request["json"]["to"] == ["alice@ucsh.com"]
     assert request["headers"]["Idempotency-Key"] == f"nexus-clerk-{email.email_id}"
-    assert senders["smtp2go"] == []
+    assert senders["elsewhere"] == []
     assert _receipt(email.email_id) == "mailer"
 
 
-def test_an_outside_address_the_mailer_refuses_goes_through_smtp2go(senders, email):
+def test_an_outside_address_is_sent_nowhere(senders, email):
+    """Codes are for ucsh.com users only (#1810): the mailer's refusal ends it, with nothing kept."""
     senders["mailer_refuses"] = "recipient_not_internal"
 
-    assert clerk_email_delivery.deliver(email) == "sent"
+    assert clerk_email_delivery.deliver(email) == "not_internal"
 
     assert len(senders["mailer"]) == 1
-    assert [r["json"]["to"] for r in senders["smtp2go"]] == [["alice@ucsh.com"]]
-    assert _receipt(email.email_id) == "smtp2go"
+    assert senders["elsewhere"] == []
+    assert _receipt(email.email_id) is None
 
 
 def test_a_mailer_outage_is_never_sent_around_it(senders, email):
@@ -354,17 +339,16 @@ def test_a_mailer_outage_is_never_sent_around_it(senders, email):
     with pytest.raises(clerk_email_delivery.DeliveryError):
         clerk_email_delivery.deliver(email)
 
-    assert senders["smtp2go"] == []
+    assert senders["elsewhere"] == []
     assert _receipt(email.email_id) is None
 
 
 def test_a_failed_send_leaves_no_receipt_so_the_retry_sends(senders, email):
-    senders["mailer_refuses"] = "recipient_not_internal"
-    senders["smtp2go_status"] = 500
+    senders["mailer_refuses"] = "hve_unavailable"
     with pytest.raises(clerk_email_delivery.DeliveryError):
         clerk_email_delivery.deliver(email)
     assert _receipt(email.email_id) is None
 
-    senders["smtp2go_status"] = 200
+    senders["mailer_refuses"] = None
     assert clerk_email_delivery.deliver(email) == "sent"
-    assert _receipt(email.email_id) == "smtp2go"
+    assert _receipt(email.email_id) == "mailer"
