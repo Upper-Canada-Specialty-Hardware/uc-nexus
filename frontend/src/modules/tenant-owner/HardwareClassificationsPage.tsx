@@ -45,7 +45,7 @@ import { useGridColumnFit } from '../../components/useGridColumnFit';
  *
  * #1443: the project's classifications are its own list, not the last schedule's. A schedule import adds
  * new products to it and changes none, so this page is where a product's classification changes, and
- * it also lists the products a newer schedule dropped, marked Not on current schedule.
+ * it also lists the products a newer schedule dropped, marked Off schedule.
  */
 
 type Choice = 'UCH_SHOP' | 'UCH_SITE' | 'BY_OTHERS' | 'UNCLASSIFIED' | 'MIXED';
@@ -94,7 +94,7 @@ const RULES = [
   'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled.',
   "A product that already has a classification - UCH Shop, UCH Site or a mix - can't be changed to By Others: By Others treats the item as if it doesn't exist. Only a product never classified can be set to By Others.",
   'Before anything that touches other work is saved, you see exactly what will happen.',
-  "A schedule import adds new products here but doesn't change one the project already has classified - that is done on this page. A product a newer schedule dropped stays listed, marked Not on current schedule.",
+  "A schedule import adds new products here but doesn't change one the project already has classified - that is done on this page. A product a newer schedule dropped stays listed, marked Off schedule.",
 ];
 
 const IMPACT_SECTIONS: { key: 'blocks' | 'wentOut' | 'adjusts' | 'unaffected'; label: string; color?: string }[] = [
@@ -218,7 +218,13 @@ export default function HardwareClassificationsPage() {
       minWidth: 140,
       renderCell: (p) => (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ height: '100%', minWidth: 0 }}>
-          <Box component="span" sx={{ ...monoSx, fontWeight: 600, flexShrink: 0 }}>
+          {/* The code gives way, not the chip (#1807): a chip squeezed to "N." says nothing, while a
+              code cut short still reads from its start and shows in full on hover. */}
+          <Box
+            component="span"
+            title={p.row.productCode}
+            sx={{ ...monoSx, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
             {p.row.productCode}
           </Box>
           {/* #1443: on the project's list, but the current schedule no longer has it. */}
@@ -226,9 +232,9 @@ export default function HardwareClassificationsPage() {
             <Chip
               size="small"
               variant="outlined"
-              label="Not on current schedule"
-              title="Not on current schedule"
-              sx={{ minWidth: 0 }}
+              label="Off schedule"
+              title="Not on current schedule - a newer schedule dropped it"
+              sx={{ flexShrink: 0 }}
             />
           )}
         </Stack>
