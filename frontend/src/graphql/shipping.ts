@@ -371,10 +371,21 @@ export const GET_SLIP_PO_TRACE = gql`
 
 // The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
 // selection as every other read, so marking one picked up updates it in place.
+// #1943: the lines with what came back off them, so a container whose hardware all came back before
+// pickup is not listed as on the truck.
 export const GET_MY_DELIVERIES = gql`
   query GetMyDeliveries {
     myDeliveries {
       ${PACKING_SLIP_FIELDS}
+      items {
+        id
+        openingNumber
+        productCode
+        hardwareCategory
+        quantity
+        isManual
+        returnedQuantity
+      }
     }
   }
 `;

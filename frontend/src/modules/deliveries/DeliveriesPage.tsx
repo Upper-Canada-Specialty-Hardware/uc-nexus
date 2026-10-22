@@ -7,7 +7,7 @@ import { userMessage } from '../../graphql/userMessage';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
-import { shipmentStatusDisplay, type PackingSlip } from '../shipping/shipmentSiteForm';
+import { shipmentStatusDisplay, slipNetOfReturns, type PackingSlip } from '../shipping/shipmentSiteForm';
 import { CONTAINER_TYPE_LABEL } from '../shipping/staging';
 import { fmtShipDate } from '../shipping/loads';
 import { monoSx } from '../../theme';
@@ -118,6 +118,10 @@ function DeliveryCard({
   // The server lets a driver-only account remove only the photos it took (#1823), so only those offer it.
   const { userId, roles } = useIdentity();
   const driverOnly = roles.length === 1 && roles[0] === 'Driver';
+  // #1943: while it is still on the dock, a return takes hardware off the truck, and a container
+  // whose every line came back is not going. Once picked up, the truck carried what it carried.
+  const onTruck =
+    slip.status === 'SCHEDULED' ? slipNetOfReturns(slip.items ?? [], slip.containers).containers : slip.containers;
   const siteQuestions = [
     slip.gateNumber && `Gate: ${slip.gateNumber}`,
     slip.forkliftOnsite && `Forklift: ${slip.forkliftOnsite}`,
@@ -184,9 +188,9 @@ function DeliveryCard({
           {slip.specialInstructions}
         </Typography>
       )}
-      {slip.containers.length > 0 && (
+      {onTruck.length > 0 && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          On the truck: {slip.containers.map((c) => `${c.name} (${CONTAINER_TYPE_LABEL[c.containerType]})`).join(', ')}
+          On the truck: {onTruck.map((c) => `${c.name} (${CONTAINER_TYPE_LABEL[c.containerType]})`).join(', ')}
         </Typography>
       )}
 
