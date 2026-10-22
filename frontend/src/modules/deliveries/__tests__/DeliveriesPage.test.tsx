@@ -7,6 +7,8 @@ import DeliveriesPage from '../DeliveriesPage';
 import { GET_MY_DELIVERIES, MARK_SHIPMENT_PICKED_UP } from '../../../graphql/shipping';
 import { SITE_FORM_FIELDS } from '../../../types/shipmentSiteFormFields';
 
+vi.mock('../../../hooks/useIdentity', () => ({ useIdentity: () => ({ userId: 'u_dan', roles: ['Driver'] }) }));
+
 /**
  * A driver's own deliveries (#1727). Pinned: what the driver needs at the site is on the card, and the
  * one button is the next leg - picked up while scheduled, delivered once picked up.

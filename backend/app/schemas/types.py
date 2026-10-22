@@ -1589,6 +1589,8 @@ class ShipmentPhoto:
     packing_slip_id: strawberry.ID | None
     file_name: str
     taken_by: str
+    # Whose account took it, so a driver's page offers to remove only the driver's own (#1823).
+    taken_by_user_id: str | None
     taken_at: datetime
     s3_key: strawberry.Private[str]
 

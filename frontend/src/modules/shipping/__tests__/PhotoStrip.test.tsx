@@ -19,6 +19,7 @@ const photo: ShipmentPhoto = {
   packingSlipId: 'ps-1',
   fileName: 'IMG_0001.jpg',
   takenBy: 'Dan Driver',
+  takenByUserId: 'u_dan',
   takenAt: '2026-10-16T18:00:00Z',
   url: 'https://signed.example/ph-1',
 };
@@ -39,6 +40,19 @@ it('opens each photo full size and removes one taken by mistake', async () => {
   expect(screen.getByRole('link', { name: /Delivery photo by Dan Driver/ })).toHaveAttribute('href', photo.url);
   fireEvent.click(screen.getByRole('button', { name: /Remove Delivery photo by Dan Driver/ }));
   await vi.waitFor(() => expect(onRemoved).toHaveBeenCalled());
+});
+
+it('offers remove only on the photos it is told may be removed (#1823)', () => {
+  const office: ShipmentPhoto = { ...photo, id: 'ph-2', takenBy: 'Olive Office', takenByUserId: 'u_office' };
+  render(
+    <MockedProvider mocks={[]}>
+      <ToastProvider>
+        <PhotoStrip photos={[photo, office]} removeRefetchQueries={[]} canRemove={(p) => p.takenByUserId === 'u_dan'} />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+  expect(screen.getByRole('button', { name: /Remove Delivery photo by Dan Driver/ })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Remove Delivery photo by Olive Office/ })).not.toBeInTheDocument();
 });
 
 it('sends a picked photo as the kind and shipment it was taken for', async () => {

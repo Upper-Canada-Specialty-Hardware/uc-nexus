@@ -1030,6 +1030,7 @@ def shipment_photo_to_type(p) -> ShipmentPhoto:
         packing_slip_id=strawberry.ID(str(p.packing_slip_id)) if p.packing_slip_id else None,
         file_name=p.file_name,
         taken_by=p.taken_by,
+        taken_by_user_id=p.taken_by_user_id,
         taken_at=p.taken_at,
         s3_key=p.s3_key,
     )

@@ -11,13 +11,15 @@ interface Props {
   photos: ShipmentPhoto[];
   /** Operation names to refetch once a photo is removed. Omitted, the strip is read-only. */
   removeRefetchQueries?: string[];
+  /** Which photos may be removed, when not all of them: a driver removes only their own (#1823). */
+  canRemove?: (photo: ShipmentPhoto) => boolean;
 }
 
 /**
  * A row of photo thumbnails (#1728) that wraps rather than scrolling sideways. Each opens full size in
  * a new tab; when removing is allowed, a photo taken by mistake can be taken back off.
  */
-export default function PhotoStrip({ photos, removeRefetchQueries }: Props) {
+export default function PhotoStrip({ photos, removeRefetchQueries, canRemove }: Props) {
   const { showToast } = useToast();
   const [remove] = useMutation(DELETE_SHIPMENT_PHOTO, { refetchQueries: removeRefetchQueries ?? [] });
   if (photos.length === 0) return null;
@@ -48,7 +50,7 @@ export default function PhotoStrip({ photos, removeRefetchQueries }: Props) {
                 />
               </Box>
             </Tooltip>
-            {removeRefetchQueries && (
+            {removeRefetchQueries && (canRemove?.(photo) ?? true) && (
               <IconButton
                 size="small"
                 aria-label={`Remove ${caption}`}

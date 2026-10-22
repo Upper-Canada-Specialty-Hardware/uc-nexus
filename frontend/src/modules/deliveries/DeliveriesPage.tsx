@@ -13,6 +13,7 @@ import { fmtShipDate } from '../shipping/loads';
 import { monoSx } from '../../theme';
 import PhotoCapture from '../shipping/PhotoCapture';
 import PhotoStrip from '../shipping/PhotoStrip';
+import { useIdentity } from '../../hooks/useIdentity';
 
 type Step = { slip: PackingSlip; action: 'PICKED_UP' | 'DELIVERED' };
 
@@ -114,6 +115,9 @@ function DeliveryCard({
   onStep: (action: 'PICKED_UP' | 'DELIVERED') => void;
 }) {
   const status = shipmentStatusDisplay(slip.status);
+  // The server lets a driver-only account remove only the photos it took (#1823), so only those offer it.
+  const { userId, roles } = useIdentity();
+  const driverOnly = roles.length === 1 && roles[0] === 'Driver';
   const siteQuestions = [
     slip.gateNumber && `Gate: ${slip.gateNumber}`,
     slip.forkliftOnsite && `Forklift: ${slip.forkliftOnsite}`,
@@ -192,6 +196,7 @@ function DeliveryCard({
           <PhotoStrip
             photos={(slip.photos ?? []).filter((p) => p.kind === 'DELIVERY')}
             removeRefetchQueries={['GetMyDeliveries']}
+            canRemove={(p) => !driverOnly || p.takenByUserId === userId}
           />
         </Box>
       )}

@@ -6,6 +6,7 @@ export interface ShipmentPhoto {
   packingSlipId: string | null;
   fileName: string;
   takenBy: string;
+  takenByUserId: string | null;
   takenAt: string;
   /** Signed when read, good for an hour. */
   url: string;

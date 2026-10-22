@@ -17,7 +17,7 @@ export const GET_SHIPPING_STATS = gql`
 // for both halves so they can never disagree about whether something has been loaded.
 // A photo of a container as loaded or a load as delivered (#1728). `url` is signed when read and good
 // for an hour, which is longer than anybody keeps a screen open.
-const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenAt url`;
+const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenByUserId takenAt url`;
 
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
