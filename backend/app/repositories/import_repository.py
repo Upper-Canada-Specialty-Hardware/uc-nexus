@@ -900,6 +900,16 @@ def finalize_import_session(
     # #627: the source XML file name, present only when the hardware items came from a fresh parse.
     schedule_filename = input_data.get("schedule_filename")
 
+    # #1917: a replace drops every opening it isn't sent, so one sent none (a wrong export, a cut-off
+    # file) deleted every opening with nothing ordered, wiped every unordered row and rejected every
+    # pending request. A schedule with no openings is not a schedule to replace one with.
+    if replace_schedule and not openings_input:
+        raise ValidationError(
+            "The new schedule has no openings, so it can't replace this project's schedule. "
+            "Check the file is the right export.",
+            field="openings",
+        )
+
     # 1. Project lookup (must already exist), row-locked so finalizes on one project run one at a time
     # (#1156). Unlocked, two concurrent finalizes each wiped and re-inserted the AVAILABLE schedule: the
     # second's delete skipped the first's new rows and it inserted a full set on top, doubling the

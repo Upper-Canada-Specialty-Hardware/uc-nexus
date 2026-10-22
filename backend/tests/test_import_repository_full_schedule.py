@@ -666,6 +666,44 @@ def test_replace_schedule_keeps_ordered_hardware(db_session):
     assert status["not_purchased"] == 3
 
 
+def test_replace_schedule_with_no_openings_is_refused_before_anything_is_read():
+    """#1917: a replace drops every opening it isn't sent, so one with none is refused outright."""
+    with pytest.raises(ValidationError, match="has no openings, so it can't replace") as exc:
+        import_repository.finalize_import_session(
+            None,
+            {"project_id": str(uuid.uuid4()), "openings": [], "hardware_items": None, "replace_schedule": True},
+        )
+    assert exc.value.field == "openings"
+
+
+def test_replace_schedule_with_no_openings_leaves_the_schedule_alone(db_session):
+    """#1917: a contract with no assignments (a wrong export, a cut-off file) deleted every opening with
+    nothing ordered and wiped every unordered row. Refused, the schedule is as it was."""
+    project = _make_project(db_session)
+    db_session.commit()
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A02")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+        },
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match="has no openings"):
+        import_repository.finalize_import_session(
+            db_session, {"project_id": str(project.id), "openings": [], "replace_schedule": True}
+        )
+
+    openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
+    assert {o.opening_number for o in openings} == {"A01", "A02"}
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 1,
+        ("A02", "HG-200", HardwareItemState.AVAILABLE): 1,
+    }
+
+
 def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):
     """#1123 ruling: a new schedule does not undo an order. Ordered hardware with no match in the new
     schedule stays IN_PO on its opening, and the opening stays for it. Hardware Status never counts

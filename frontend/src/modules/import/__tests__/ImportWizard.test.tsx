@@ -391,6 +391,19 @@ describe('ImportWizard step transitions', () => {
     expect(screen.queryByRole('heading', { name: 'Select Import Purpose' })).not.toBeInTheDocument();
   });
 
+  // #1917: a contract with no openings or no hardware parsed "fine", and a schedule replace from it
+  // deleted every unordered opening and row.
+  it.each([
+    ['openings', { ...parseResult, openings: [] }, 'This file has no openings - check it is the right export.'],
+    ['hardware', { ...parseResult, hardwareItems: [] }, 'This file has no hardware - check it is the right export.'],
+  ])('holds Next on a file with no %s, saying why', (_what, empty, hint) => {
+    mockedUseParser.mockReturnValue(makeParser({ parseResult: empty }));
+    renderWizard({ purpose: 'schedule' });
+
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText(hint)).toBeInTheDocument();
+  });
+
   it('po purpose carries Classification and Organize PO Drafts before Finalize', () => {
     renderWizard();
 

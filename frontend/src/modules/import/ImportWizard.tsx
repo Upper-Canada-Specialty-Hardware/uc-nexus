@@ -1548,7 +1548,12 @@ export default function ImportWizard({
   // definition, and carries no job number to read, so it was always "can't be checked".
   const jobCheck = hydratedFromPersisted ? 'match' : checkJobNumber(parsed?.project?.submittal_job_no, project.projectId);
   const mismatchConfirmed = parsed != null && mismatchConfirmedFor === parsed;
-  const canProceedStep0 = parser.state === 'done' && (jobCheck !== 'mismatch' || mismatchConfirmed);
+  // #1917: a contract with no openings or no hardware (a wrong export, a cut-off file) parsed "fine",
+  // and a schedule replace from it deleted every unordered opening and row. Nothing goes on from it.
+  const parsedEmpty =
+    parser.state === 'done' && parsed != null && (parsed.openings.length === 0 || parsed.hardwareItems.length === 0);
+  const canProceedStep0 =
+    parser.state === 'done' && !parsedEmpty && (jobCheck !== 'mismatch' || mismatchConfirmed);
   const canProceedStep2 = selectedOpenings.size > 0;
   // #565: hardware mode's step-2 gate - at least one product picked.
   const canProceedHardware = selectedProductKeys.size > 0;
@@ -1595,6 +1600,12 @@ export default function ImportWizard({
   switch (effectiveStepId) {
     case 'upload':
       canProceedCurrentStep = canProceedStep0;
+      if (parsedEmpty) {
+        navHint =
+          parsed?.openings.length === 0
+            ? 'This file has no openings - check it is the right export.'
+            : 'This file has no hardware - check it is the right export.';
+      }
       break;
     case 'openings':
       canProceedCurrentStep = canProceedStep2;
