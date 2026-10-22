@@ -59,8 +59,36 @@ const results = vi.hoisted(() => {
       error: undefined,
       refetch,
     },
+    // #1909: one row naming a purchase order, so the wizard has a PO lookup to wait on.
+    poSnapshot: {
+      data: {
+        sharepointInventorySnapshot: {
+          alreadyMigrated: false,
+          items: [
+            {
+              spItemId: '1',
+              partNumber: 'PART-1',
+              scheduledPartNumber: '',
+              partCategory: 'Hinge',
+              inventoryType: 'Door Hardware',
+              locations: 'A-62R',
+              stockQty: 2,
+              nonStockQty: 0,
+              projectInventoryQty: 0,
+              projectNumber: '',
+              projectName: '',
+              unitCost: 0,
+              poNumber: 'PO501788',
+            },
+          ],
+        },
+      },
+      loading: false,
+      error: undefined,
+      refetch,
+    },
     currentSnapshot: null as unknown,
-    client: { query: () => Promise.resolve({ data: {} }) },
+    client: { query: (): Promise<unknown> => Promise.resolve({ data: {} }) },
   };
 });
 
@@ -134,4 +162,52 @@ it('leaves a bay-less location for the user and flags a shelf the warehouse has 
   } finally {
     results.currentSnapshot = null;
   }
+});
+
+describe('the purchase-order lookup (#1909)', () => {
+  const defaultQuery = results.client.query;
+  afterEach(() => {
+    results.currentSnapshot = null;
+    results.client.query = defaultQuery;
+  });
+
+  /** Next up to the Reconcile GP PO link step - the seventh, index 6. */
+  const toPoLinkStep = () => {
+    for (let i = 0; i < 6; i += 1) fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  };
+
+  it('says a failed lookup failed, offers it again, and holds Next on the link step', async () => {
+    results.projects = results.projectsLoaded;
+    results.currentSnapshot = results.poSnapshot;
+    results.client.query = () => Promise.reject(new Error('Network down'));
+    renderPage();
+
+    expect(await screen.findByText(/couldn.t load the purchase orders the list names/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    toPoLinkStep();
+    expect(screen.getByText('Could not read the purchase orders')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('holds Next on the link step while the lookup is still reading', () => {
+    results.projects = results.projectsLoaded;
+    results.currentSnapshot = results.poSnapshot;
+    results.client.query = () => new Promise(() => undefined);
+    renderPage();
+
+    toPoLinkStep();
+    expect(screen.getByText('Reading the purchase orders…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('lets the wizard on once the lookup has answered', async () => {
+    results.projects = results.projectsLoaded;
+    results.currentSnapshot = results.poSnapshot;
+    results.client.query = () => Promise.resolve({ data: { mirroredPosByNumber: [] } });
+    renderPage();
+
+    toPoLinkStep();
+    expect(await screen.findByText('Rows naming a PO')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+  });
 });

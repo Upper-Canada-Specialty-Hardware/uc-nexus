@@ -233,12 +233,18 @@ export default function SharePointMigrationPage() {
   const apollo = useApolloClient();
   const [posByNumber, setPosByNumber] = useState<Map<string, GpPo>>(new Map());
   const [poLookupLoading, setPoLookupLoading] = useState(false);
-  const [poLookupError, setPoLookupError] = useState<string | null>(null);
+  const [poLookupError, setPoLookupError] = useState<unknown>(null);
   const [poLookupAttempt, setPoLookupAttempt] = useState(0);
+  // The numbers the last successful lookup answered for.
+  const [poLookedUpKey, setPoLookedUpKey] = useState('');
   const poNumbers = useMemo(() => distinctPoNumbers(items), [items]);
   // A join, not the array itself: the array is rebuilt on every render of a new snapshot object and
   // would re-fire the whole lookup even when the numbers are identical.
   const poNumbersKey = poNumbers.join(',');
+  // #1909: until the lookup has answered for these numbers - still reading, or failed - every row
+  // naming a PO reads as "no such PO in Nexus" and would migrate unlinked, so Next past the Reconcile
+  // GP PO link step and Migrate wait for it, as the wizard waits for its other reads (#1842).
+  const poLookupBlocked = poNumbersKey !== '' && poLookedUpKey !== poNumbersKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -272,10 +278,9 @@ export default function SharePointMigrationPage() {
           }
         }
         setPosByNumber(merged);
+        setPoLookedUpKey(poNumbersKey);
       } catch (e) {
-        if (!cancelled) {
-          setPoLookupError(e instanceof Error ? userMessage(e) : 'Could not read the purchase orders');
-        }
+        if (!cancelled) setPoLookupError(e ?? new Error('Could not read the purchase orders'));
       } finally {
         if (!cancelled) setPoLookupLoading(false);
       }
@@ -571,6 +576,15 @@ export default function SharePointMigrationPage() {
 
       {whError && <LoadError what="the Nexus warehouses" error={whError} onRetry={refetchWarehouses} sx={{ mb: 2 }} />}
       {projError && <LoadError what="the Nexus projects" error={projError} onRetry={refetchProjects} sx={{ mb: 2 }} />}
+      {/* The Reconcile GP PO link step says so in its own words, with its own Retry. */}
+      {poLookupError !== null && step !== PO_LINK_STEP && (
+        <LoadError
+          what="the purchase orders the list names"
+          error={poLookupError}
+          onRetry={() => setPoLookupAttempt((n) => n + 1)}
+          sx={{ mb: 2 }}
+        />
+      )}
 
       {result ? (
         <Card variant="outlined">
@@ -1058,7 +1072,7 @@ export default function SharePointMigrationPage() {
               picks={poLinkPicks}
               onPick={setPoLink}
               loading={poLookupLoading}
-              error={poLookupError}
+              error={poLookupError ? userMessage(poLookupError, { reading: true }) : null}
               onRetry={() => setPoLookupAttempt((n) => n + 1)}
             />
           )}
@@ -1197,6 +1211,7 @@ export default function SharePointMigrationPage() {
                 disabled={
                   (step === CLASSIFICATION_STEP && unclassifiedRequired.length > 0) ||
                   (step >= 2 && scheduleProductsBlocked) ||
+                  (step >= PO_LINK_STEP && poLookupBlocked) ||
                   referenceReadsBlocked
                 }
                 onClick={() => setStep((s) => s + 1)}
@@ -1213,6 +1228,7 @@ export default function SharePointMigrationPage() {
                   unclassifiedRequired.length > 0 ||
                   scheduleProductsBlocked ||
                   referenceReadsBlocked ||
+                  poLookupBlocked ||
                   // A re-run adds every row again; the server refuses it unless confirmed (#1366).
                   (alreadyMigrated && !rerunConfirmed)
                 }
