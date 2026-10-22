@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
+import { GraphQLError } from 'graphql';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShopAssemblyRequestsPage from '../ShopAssemblyRequestsPage';
@@ -28,10 +29,11 @@ vi.mock('../../../hooks/useIdentity', () => ({
 }));
 
 // The panel needs a loaded allocation review before it shows its buttons; these tests are about the
-// page around it, so a stub hands back the one callback the dismiss test drives.
+// page around it, so a stub hands back the one callback the dismiss test drives, with the openings the
+// real panel would show (#1853).
 vi.mock('../BatchReviewPanel', () => ({
-  default: ({ onDismissRemaining }: { onDismissRemaining: () => void }) => (
-    <button type="button" onClick={onDismissRemaining}>
+  default: ({ onDismissRemaining }: { onDismissRemaining: (openingNumbers: string[]) => void }) => (
+    <button type="button" onClick={() => onDismissRemaining(['01-VEST-400'])}>
       Dismiss remaining
     </button>
   ),
@@ -116,7 +118,7 @@ it('sends the reason typed into the dismiss confirm (#1156)', async () => {
     {
       request: {
         query: DISMISS_SHOP_ASSEMBLY_OPENINGS,
-        variables: { requestId: 'req-PENDING', openingNumbers: null, reason: 'client supplying' },
+        variables: { requestId: 'req-PENDING', openingNumbers: ['01-VEST-400'], reason: 'client supplying' },
       },
       result: dismissed,
     },
@@ -130,6 +132,35 @@ it('sends the reason typed into the dismiss confirm (#1156)', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
   await vi.waitFor(() => expect(dismissed).toHaveBeenCalled());
+});
+
+it('dismisses the openings the confirm counted, and says why a stale screen dismissed nothing (#1853)', async () => {
+  renderPage([
+    {
+      request: {
+        query: DISMISS_SHOP_ASSEMBLY_OPENINGS,
+        variables: { requestId: 'req-PENDING', openingNumbers: ['01-VEST-400'], reason: null },
+      },
+      result: {
+        errors: [
+          new GraphQLError(
+            'Opening 01-VEST-400 is no longer waiting on this request, so nothing was dismissed. ' +
+              'It was just changed - refresh to see where it stands.',
+            { extensions: { code: 'VALIDATION_ERROR', field: 'opening_numbers' } },
+          ),
+        ],
+      },
+    },
+  ]);
+  fireEvent.click(await screen.findByText('80001-009'));
+
+  fireEvent.click(await screen.findByRole('button', { name: /dismiss remaining/i }));
+  expect(await screen.findByText('Dismiss 1 opening?')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+  expect(
+    await screen.findByText(/Opening 01-VEST-400 is no longer waiting on this request, so nothing was dismissed/),
+  ).toBeInTheDocument();
 });
 
 it("opens on the Rejected tab from the bell's link (#1453)", async () => {

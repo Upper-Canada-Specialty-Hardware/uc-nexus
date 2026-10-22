@@ -389,6 +389,44 @@ def test_dismissing_the_remainder_closes_the_request(db_session):
     assert sum(r.quantity for r in _reservations(db_session, project.id)) == 2
 
 
+def test_dismissing_openings_a_stale_screen_showed_dismisses_nothing(db_session):
+    """#1853: Dismiss remaining sends the openings its screen showed. One batched since is refused by
+    name, with a refresh hint, and the opening still pending is left pending rather than swept up."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    sar = import_repository.finalize_import_session(
+        db_session,
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
+    )["shop_assembly_request"]
+    db_session.flush()
+    batch_request(db_session, sar.id, openings=["A01"])  # from another tab, after the screen loaded
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        shop_assembly_repository.dismiss_shop_assembly_openings(
+            db_session, sar.id, ["A01", "A02"], dismissed_by="manager", reason=None
+        )
+    assert excinfo.value.field == "opening_numbers"
+    assert excinfo.value.message.startswith("Opening A01 is no longer waiting on this request, so nothing was")
+    assert "refresh" in excinfo.value.message
+    db_session.refresh(sar, attribute_names=["openings"])
+    assert {o.opening_number: o.status for o in sar.openings} == {
+        "A01": ShopAssemblyOpeningStatus.BATCHED,
+        "A02": ShopAssemblyOpeningStatus.PENDING,
+    }
+
+
 def test_rejecting_an_unbatched_request_releases_nothing_and_mints_nothing(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=5)

@@ -820,8 +820,16 @@ def dismiss_shop_assembly_openings(
         wanted = list(dict.fromkeys(opening_numbers))
         missing = [n for n in wanted if n not in pending]
         if missing:
+            # #1853: what a stale screen meets - Dismiss remaining sends the openings it showed, and one
+            # was batched or dismissed since. Nothing is dismissed, and the manager is told why.
+            names = ", ".join(sorted(missing))
             raise ValidationError(
-                f"Opening(s) {', '.join(sorted(missing))} are not waiting on this request.",
+                (
+                    f"Opening {names} is no longer waiting on this request"
+                    if len(missing) == 1
+                    else f"Openings {names} are no longer waiting on this request"
+                )
+                + f", so nothing was dismissed. {REFRESH_HINT}",
                 field="opening_numbers",
             )
         targets = [pending[n] for n in wanted]

@@ -147,7 +147,7 @@ export default function ShopAssemblyRequestsPage() {
   const [openRequestId, setOpenRequestId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<
     | { kind: 'batch'; requestId: string; lines: BatchLineInput[]; openings: number; leftBehind: number }
-    | { kind: 'dismiss'; requestId: string; openings: number }
+    | { kind: 'dismiss'; requestId: string; openingNumbers: string[] }
     | { kind: 'reject'; requestId: string }
     | { kind: 'discard'; batchId: string; batchNumber: string }
     | null
@@ -232,8 +232,15 @@ export default function ShopAssemblyRequestsPage() {
     if (pending.kind === 'batch') {
       createBatch({ variables: { input: { requestId: pending.requestId, lines: pending.lines } } });
     } else if (pending.kind === 'dismiss') {
+      // #1853: the openings the confirm counted, never "whatever is pending now" - a batch landed from
+      // another tab since would otherwise be swept up unseen. The server refuses any that are no
+      // longer waiting, and nothing is dismissed.
       dismissOpenings({
-        variables: { requestId: pending.requestId, openingNumbers: null, reason: dismissReason.trim() || null },
+        variables: {
+          requestId: pending.requestId,
+          openingNumbers: pending.openingNumbers,
+          reason: dismissReason.trim() || null,
+        },
       });
     } else if (pending.kind === 'reject') {
       const reason = rejectReason.trim();
@@ -267,7 +274,7 @@ export default function ShopAssemblyRequestsPage() {
     }
     if (confirm.kind === 'dismiss') {
       return {
-        title: `Dismiss ${plural(confirm.openings, 'opening')}?`,
+        title: `Dismiss ${plural(confirm.openingNumbers.length, 'opening')}?`,
         message:
           'These openings are not getting their hardware through this request. Nothing is released - they were ' +
           'never holding anything - and the request is finished with.',
@@ -465,9 +472,9 @@ export default function ShopAssemblyRequestsPage() {
                                 pendingOpenings.length - new Set(lines.map((l) => l.openingNumber)).size,
                             })
                           }
-                          onDismissRemaining={() => {
+                          onDismissRemaining={(openingNumbers) => {
                             setDismissReason('');
-                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length });
+                            setConfirm({ kind: 'dismiss', requestId: req.id, openingNumbers });
                           }}
                           onReject={() => setConfirm({ kind: 'reject', requestId: req.id })}
                         />

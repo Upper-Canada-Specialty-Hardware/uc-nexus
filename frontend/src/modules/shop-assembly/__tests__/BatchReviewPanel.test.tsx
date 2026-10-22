@@ -153,6 +153,14 @@ describe('BatchReviewPanel', () => {
     expect(screen.getByRole('button', { name: 'Go to A01, nothing free' })).toBeInTheDocument();
   });
 
+  it('dismisses the openings it shows, not whatever is pending by the time it lands (#1853)', () => {
+    const props = renderPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss remaining' }));
+
+    expect(props.onDismissRemaining).toHaveBeenCalledWith(['A01', 'A02']);
+  });
+
   it('has no include control to disagree with the quantities (#706)', () => {
     renderPanel();
 

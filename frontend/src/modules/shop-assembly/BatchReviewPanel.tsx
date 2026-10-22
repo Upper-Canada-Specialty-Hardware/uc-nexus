@@ -49,7 +49,8 @@ interface BatchReviewPanelProps {
   /** Why the manager actions are unavailable, or null when they are. */
   disabledReason: string | null;
   onCreateBatch: (lines: BatchLineInput[]) => void;
-  onDismissRemaining: () => void;
+  /** #1853: called with the openings this panel shows, which are what the confirm counts and the dismiss sends. */
+  onDismissRemaining: (openingNumbers: string[]) => void;
   onReject: () => void;
   /** False once the request has been batched - a batched request cannot be rejected whole. */
   canReject: boolean;
@@ -519,7 +520,7 @@ export default function BatchReviewPanel({
           variant="outlined"
           color="warning"
           disabled={busy || Boolean(disabledReason)}
-          onClick={onDismissRemaining}
+          onClick={() => onDismissRemaining(openings.map((o) => o.openingNumber))}
         >
           Dismiss remaining
         </Button>
