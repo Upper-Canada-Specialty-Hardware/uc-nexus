@@ -68,6 +68,7 @@ const USER = {
   // The buyer list is the buyer master of THIS company, so the fixture account has one; the
   // no-company case is its own test below.
   company: COMPANY as string | null,
+  demoMode: false,
   imageUrl: '',
   __typename: 'ClerkUser',
 };
@@ -768,6 +769,63 @@ test('checking DB Admin pulls UC Nexus Admin in, and unchecking it drops DB Admi
 });
 
 // #1558: a failed users read said "No rows" - as if the company had no users - with nothing to retry.
+// --- demo mode (#1838) ---------------------------------------------------------------------------
+
+/** The demo mode switch, once the relay has answered and the company field is the select. */
+async function demoSwitch() {
+  await screen.findByRole('combobox', { name: /^Company$/i }, GRID_TIMEOUT);
+  return screen.getByRole('switch', { name: /Demo mode/ });
+}
+
+test('demo mode cannot be turned on for an account working outside the ubc companies', async () => {
+  // The server refuses it (#1658), but only after the roles and company have already saved.
+  renderPage([relayStatusMock(true), usersMock({ ...USER, company: 'UCSH' })]);
+
+  await openEditDialog();
+  const toggle = await demoSwitch();
+  expect(toggle).toBeDisabled();
+  expect(toggle).not.toBeChecked();
+  expect(screen.getByText(/Only an account working in UBC or TUBC can be put in demo mode/)).toBeInTheDocument();
+});
+
+test('an account in a ubc company can be put in demo mode', async () => {
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+  const toggle = await demoSwitch();
+  expect(toggle).toBeEnabled();
+  expect(screen.queryByText(/Only an account working in/)).not.toBeInTheDocument();
+});
+
+test('moving an account in demo mode out of the ubc companies shows it coming out', async () => {
+  // The company move takes it out of demo mode (#1830), so the switch says so before Save.
+  renderPage([relayStatusMock(true), usersMock({ ...USER, demoMode: true }), buyersMock]);
+
+  await openEditDialog();
+  expect(await demoSwitch()).toBeChecked();
+
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: /^Company$/i }));
+  fireEvent.click(await screen.findByRole('option', { name: 'UCSH UC Shop' }));
+
+  const toggle = screen.getByRole('switch', { name: /Demo mode/ });
+  expect(toggle).not.toBeChecked();
+  expect(toggle).toBeDisabled();
+});
+
+test('an account already in demo mode outside the ubc companies can still be taken out', async () => {
+  renderPage([relayStatusMock(true), usersMock({ ...USER, company: 'UCSH', demoMode: true })]);
+
+  await openEditDialog();
+  const toggle = await demoSwitch();
+  expect(toggle).toBeChecked();
+  expect(toggle).toBeEnabled();
+
+  fireEvent.click(toggle);
+  expect(toggle).not.toBeChecked();
+  // Off, it can't go back on.
+  expect(toggle).toBeDisabled();
+});
+
 it('says the users could not be loaded and offers a retry, instead of an empty grid', async () => {
   renderPage([
     { request: { query: GET_USERS, variables: () => true }, error: new TypeError('Failed to fetch') },
