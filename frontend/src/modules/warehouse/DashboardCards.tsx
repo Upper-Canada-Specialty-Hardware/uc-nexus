@@ -13,11 +13,12 @@ export interface WarehouseDashboard {
   totalItemCount: number;
   totalValue: number;
   unlocatedCount: number;
-  /** Stock-pool units on hand and their off-PO value (migrated stock carries its own unit cost;
-   *  PO-received pool stock counts 0). */
+  /** Stock-pool units on hand and their value at each row's own unit cost (migrated stock carries
+   *  its own; a row received off a PO carries its line's, #942). Stock-kind rows only: overhead is
+   *  not stock (#1953). */
   stockItemCount: number;
   stockValue: number;
-  /** Stock-pool rows with no rack location yet. */
+  /** Stock-kind pool rows with no rack location yet. */
   stockUnlocatedCount: number;
   pendingPullShop: number;
   pendingPullShipping: number;

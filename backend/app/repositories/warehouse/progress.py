@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import (
     HardwareItemState,
+    PoolKind,
     POStatus,
     PullPickLineState,
     PullRequestSource,
@@ -91,17 +92,20 @@ def get_warehouse_dashboard(session: Session, *, company: str | None = None) -> 
 
     # Stock-pool tiles. stock_item_count is units on hand (the same sense as total_item_count above);
     # stock_unlocated_count is the row count with no aisle, mirroring unlocated_count on the project
-    # side. stock_value prices the pool off the rows' own off-PO unit_cost (the SharePoint migration
-    # writes it; PO-received pool stock carries none and counts 0) - without it a migration landing
-    # mostly STOCK entries changed total inventory value by nothing.
+    # side. stock_value prices the pool off the rows' own unit_cost - the SharePoint migration writes
+    # it, and since #942 a pool row received off a PO carries its line's price too - so a migration
+    # landing mostly STOCK entries changes total inventory value. #1953: Stock rows only, as the
+    # INVENTORY VALUE page's GENERAL STOCK figure is - overhead is the company's own, not stock.
+    stock_kind = StockItemModel.kind == PoolKind.STOCK
     stock_item_count = (
-        session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0)).where(*warehouse_scope)) or 0
+        session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0)).where(stock_kind, *warehouse_scope))
+        or 0
     )
     stock_value = (
         session.scalar(
             select(
                 func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0)
-            ).where(*warehouse_scope)
+            ).where(stock_kind, *warehouse_scope)
         )
         or 0
     )
@@ -112,6 +116,7 @@ def get_warehouse_dashboard(session: Session, *, company: str | None = None) -> 
             .where(
                 StockItemModel.aisle.is_(None),
                 StockItemModel.quantity > 0,
+                stock_kind,
                 *warehouse_scope,
             )
         )

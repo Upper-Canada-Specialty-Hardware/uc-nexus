@@ -18,9 +18,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
+
 from app import auth
 from app.auth import NEXUS_ADMIN_ROLE
-from app.models.enums import POStatus
+from app.models.enums import PoolKind, POStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
@@ -166,6 +168,23 @@ def test_stock_tiles_count_units_on_hand_and_unlocated_rows(db_session):
     dashboard = progress.get_warehouse_dashboard(session)
     assert dashboard["stock_item_count"] == baseline["stock_item_count"] + 12
     assert dashboard["stock_unlocated_count"] == baseline["stock_unlocated_count"] + 2
+
+
+def test_stock_tiles_leave_overhead_out(db_session):
+    """#1953: overhead rows sit in the same pool but are not stock, so none of the three stock tiles
+    counts them - the same split as the INVENTORY VALUE page's GENERAL STOCK figure."""
+    session = db_session
+    baseline = progress.get_warehouse_dashboard(session)
+
+    make_stock_item(session, quantity=2, code="ST-STK", unit_cost=Decimal("5.00"))
+    overhead = make_stock_item(session, quantity=7, code="ST-OVH", unit_cost=Decimal("100.00"))
+    overhead.kind = PoolKind.OVERHEAD
+    session.flush()
+
+    dashboard = progress.get_warehouse_dashboard(session)
+    assert dashboard["stock_item_count"] == baseline["stock_item_count"] + 2
+    assert dashboard["stock_value"] == pytest.approx(baseline["stock_value"] + 10)
+    assert dashboard["stock_unlocated_count"] == baseline["stock_unlocated_count"] + 1
 
 
 class _FakeRequest:
