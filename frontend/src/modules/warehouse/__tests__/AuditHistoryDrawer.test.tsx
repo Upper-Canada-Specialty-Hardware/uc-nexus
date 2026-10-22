@@ -176,4 +176,16 @@ describe('AuditHistoryDrawer event detail (#974)', () => {
     expect(screen.getByText('2 → 4 (+2)')).toBeInTheDocument();
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
+
+  it('shows the reason a stock pool recount stores as reasonText (#1897)', async () => {
+    renderEntries([
+      {
+        ...entry('1', 'ADJUSTMENT', { oldQuantity: 8, newQuantity: 6, adjustment: -2, reasonText: 'two crushed' }),
+        entityType: 'STOCK_ITEM',
+      },
+    ]);
+
+    expect(await screen.findByText('8 → 6 (-2)')).toBeInTheDocument();
+    expect(screen.getByText('two crushed')).toBeInTheDocument();
+  });
 });

@@ -136,6 +136,8 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
         }
         // An override written before #1895 stored `delta` where the drawer reads `adjustment`.
         const adjustment = (detail.adjustment ?? detail.delta) as number;
+        // #1897: a stock pool recount stores its reason as reasonText.
+        const adjustReason = text('reason') ?? reason;
         const placed = (detail.destinations as { aisle: string; row: string; bay: string; quantity: number }[]) ?? [];
         return (
           <>
@@ -143,7 +145,7 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
             {placed.length > 0 && (
               <DetailLine label="Placed" value={placed.map((d) => `${d.quantity} at ${formatLocation(d)}`).join(', ')} />
             )}
-            {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
+            {adjustReason && <DetailLine label="Reason" value={adjustReason} />}
           </>
         );
       }
