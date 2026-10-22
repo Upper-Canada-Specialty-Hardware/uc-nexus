@@ -82,6 +82,8 @@ export default function NotificationBell() {
       variables: { limit: 5 },
       pollInterval: 30000,
       skipPollAttempt: () => document.hidden,
+      // One operation for the list and the badge (#1894): either failing keeps the other.
+      errorPolicy: 'all',
     },
   );
 
