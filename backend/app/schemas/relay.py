@@ -636,10 +636,16 @@ class RelayMutations:
         relay whose in-memory secret has drifted from the stored one cannot be recovered any other way
         without physical access to the workstation - and the relay binds localhost, so there is no
         remote restart. Arm it only when a relay you own is dialling in, and disarm as soon as it
-        reconnects."""
+        reconnects.
+
+        Refuses the install holding the connection (#1868): its relay is not drifted, and the window
+        would bind the next unknown secret over the credential it is connected with."""
         identity = current_user(info)
+        target = uuid.UUID(str(install_id))
+        if relay_gateway.install_id == target:
+            raise ConflictError("That relay is connected, so there is nothing to adopt.")
         with SessionLocal() as session:
-            install = session.get(RelayInstall, uuid.UUID(str(install_id)))
+            install = session.get(RelayInstall, target)
             if install is None:
                 raise NotFoundError("Relay install not found", field="install_id")
             window = relay_adopt.arm(install_id=install.id, label=install.label, armed_by=identity["user_id"])

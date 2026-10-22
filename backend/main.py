@@ -509,8 +509,13 @@ async def relay_link(websocket: WebSocket):
             # that install instead of refusing (#353 PR B): this is the only recovery path for a relay
             # whose stored secret has drifted from the one it is dialling with, when nobody can reach
             # the workstation to restart it. Adoption is consumed here, single-use.
+            #
+            # Never while another relay holds the slot (#1868): try_register below would refuse this
+            # socket anyway, after the window was spent and the presented secret bound over the
+            # install's own - the live relay's own, when the window was armed on it. Left armed, the
+            # window still adopts once the slot is free.
             window = relay_adopt.peek()
-            if window is not None:
+            if window is not None and not relay_gateway.connected:
                 install = relay_repository.adopt_secret(session, window.install_id, secret.strip(), window.armed_by)
                 if install is not None and relay_adopt.consume(window.install_id):
                     adopted = True

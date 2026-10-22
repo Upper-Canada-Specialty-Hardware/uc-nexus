@@ -8,6 +8,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
+import pytest
 from cryptography.fernet import Fernet
 
 # The crypto layer reads RELAY_SECRET_ENC_KEY at call time; provide one before enroll/adopt.
@@ -84,6 +85,26 @@ def test_disarm_reports_whether_a_window_was_open():
     assert relay_adopt.disarm() is False
     relay_adopt.arm(uuid.uuid4(), "X", "user_admin")
     assert relay_adopt.disarm() is True
+    assert relay_adopt.peek() is None
+
+
+def test_arm_refuses_the_install_holding_the_connection(monkeypatch):
+    """#1868: a connected relay is not drifted, and a window armed on it would bind the next unknown
+    secret over the credential it is connected with. Refused before any window opens."""
+    from app.errors import ConflictError
+    from app.schemas import relay as relay_module
+
+    live = uuid.uuid4()
+
+    class _LiveGateway:
+        install_id = live
+
+    monkeypatch.setattr(relay_module, "relay_gateway", _LiveGateway())
+    monkeypatch.setattr(relay_module, "current_user", lambda info: {"user_id": "user_admin"})
+    _fresh_window_state()
+
+    with pytest.raises(ConflictError):
+        relay_module.RelayMutations().arm_relay_adopt(None, str(live))
     assert relay_adopt.peek() is None
 
 

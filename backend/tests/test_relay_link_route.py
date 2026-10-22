@@ -366,6 +366,38 @@ def test_relay_link_adopts_an_unknown_secret_while_a_window_is_armed(_migrate_da
         _delete_install(install_id)
 
 
+def test_relay_link_never_adopts_while_another_relay_holds_the_slot(_migrate_database):
+    """#1868: the route bound the presented secret and spent the window before try_register refused the
+    socket for a held slot - leaving the install's credential replaced by a relay that never connected.
+    With the slot held the window is left alone: nothing bound, still armed for when the slot is free."""
+    relay_adopt.disarm()
+    live_secret = "relay-link-adopt-slot-live-secret"
+    live_id = _enroll_committed("WS-ADOPT-SLOT-LIVE", live_secret)
+    target_id = _enroll_committed("WS-ADOPT-SLOT-TARGET", "relay-link-adopt-slot-target-secret")
+    try:
+        relay_adopt.arm(target_id, "WS-ADOPT-SLOT-TARGET", "user_admin")
+        with TestClient(app) as client:
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {live_secret}"}) as ws:
+                _wait_until(lambda: gateway.connected)
+                try:
+                    with client.websocket_connect("/relay-link", headers={"Authorization": "Bearer a-stranger"}):
+                        pass
+                except WebSocketDisconnect:
+                    pass
+                assert gateway.install_id == live_id  # the live relay is undisturbed
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+
+        row = _read_install(target_id)
+        assert row.adopted_at is None
+        assert relay_adopt.peek() is not None
+        assert relay_adopt.peek().install_id == target_id
+    finally:
+        relay_adopt.disarm()
+        _delete_install(live_id)
+        _delete_install(target_id)
+
+
 def test_relay_link_still_rejects_an_unknown_secret_with_no_window_armed(_migrate_database):
     # The gate only opens when an admin opens it: no window means the pre-adopt behaviour, verbatim.
     relay_adopt.disarm()

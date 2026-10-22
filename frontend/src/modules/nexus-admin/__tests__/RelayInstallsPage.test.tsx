@@ -259,15 +259,16 @@ it('holds the remove confirm while the remove is in flight', async () => {
   expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled();
 });
 
-it('disables Remove on the install that is currently connected', async () => {
+it('disables Remove and Adopt on the install that is currently connected', async () => {
   // Deleting the live install would revoke the secret out from under a running relay and take GP down
   // mid-write. The backend refuses it; the button must not offer it either.
   renderPage([connectedStatusMock, installsMock, windowMock(null)]);
 
   const remove = await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT);
   await waitFor(() => expect(remove).toBeDisabled(), GRID_TIMEOUT);
-  // The adopt action stays available - it is the recovery path, not a destructive one.
-  expect(screen.getByRole('button', { name: /adopt next connection/i })).not.toBeDisabled();
+  // #1868: nor is there anything to adopt - a window armed on it would bind the next unknown secret over
+  // the one it is connected with, and the backend refuses that too.
+  expect(screen.getByRole('button', { name: /adopt next connection/i })).toBeDisabled();
 });
 
 it('copies the full secret hash', async () => {
