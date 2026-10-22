@@ -43,3 +43,17 @@ def test_a_key_longer_than_the_relay_takes_is_refused():
 def test_a_missing_key_is_refused(key):
     with pytest.raises(ValidationError):
         gp_idempotency.validate_key(key)
+
+
+def test_a_ledger_row_answers_only_the_kind_of_write_that_made_it():
+    """#1873: a resume persists the row's relay_result as its own, so a registration must not resume from a
+    receipt's row, nor an approval from a registration's. No row at all is a first attempt."""
+    receipt = gp_idempotency.IdempotencyState(
+        op="create_receive", relay_result={"receipt_number": "R1"}, result_id=None
+    )
+
+    gp_idempotency.require_op(None, "register_po_in_gp")
+    gp_idempotency.require_op(receipt, "create_receive")
+    with pytest.raises(ValidationError) as excinfo:
+        gp_idempotency.require_op(receipt, "register_po_in_gp")
+    assert excinfo.value.field == "idempotency_key"

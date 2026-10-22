@@ -31,6 +31,14 @@ def load(key: str) -> IdempotencyState | None:
         return IdempotencyState(op=row.op, relay_result=row.relay_result, result_id=row.result_id)
 
 
+def require_op(state: IdempotencyState | None, op: str) -> None:
+    """Refuse a key whose ledger row another kind of GP write made (#1873). A resume persists the row's
+    relay_result as this call's own, so a receipt's result read back as a registration's - or the other
+    way round - would book a write GP never made for it."""
+    if state is not None and state.op != op:
+        raise ValidationError("This key was already used for a different GP write.", field="idempotency_key")
+
+
 # The key goes to the relay, which matches it inside GP's note text with LIKE (#1860). Letters, digits
 # and hyphens cover every key minted here (a UUID, or a short prefix and one) and none of them is LIKE
 # syntax; 64 is the most the relay takes. PAIRED EDIT: relay/src/ucnexus_relay/models.py's

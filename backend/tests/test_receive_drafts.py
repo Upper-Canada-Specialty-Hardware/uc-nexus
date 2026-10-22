@@ -1135,6 +1135,25 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
     assert result.draft.status.value == "APPROVED"
 
 
+def test_a_resume_refuses_a_ledger_row_another_kind_of_write_made(committed, monkeypatch, approve_env):
+    """#1873: the resume persisted any row's relay_result as this approval's receipt - a registration's
+    answer included - booking a receipt GP never posted. Refused before a claim is taken."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    key = str(uuid.uuid4())
+    gp_idempotency.record_relay_result(key, "register_po_in_gp", {"po_number": "0001234", "company": "TEST"})
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert relay.calls == []
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
 def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_reposting(
     committed, monkeypatch, approve_env
 ):

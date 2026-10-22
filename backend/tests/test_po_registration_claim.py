@@ -194,3 +194,31 @@ def test_the_original_attempt_resumes_from_the_ledger_without_pushing_again(monk
     po = po_repository.reload_po(db_session, draft.id)
     assert po.status == POStatus.GP_REGISTERED
     assert po.registering_key is None
+
+
+def test_a_resume_refuses_a_ledger_row_another_kind_of_write_made(monkeypatch, db_session):
+    """#1873: the resume persisted any row's relay_result as this registration's - a receipt's answer
+    included - registering the draft under a PO GP never made for it. Refused before anything is sent."""
+    from app.errors import ValidationError
+    from app.services.gp_idempotency import IdempotencyState
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes: list[str] = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushes.append(op)
+        return {"po_number": "unused", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    receipt = IdempotencyState(op="create_receive", relay_result={"receipt_number": "RCT000777"}, result_id=None)
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: receipt if k == key else None)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _run_register(draft, key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert pushes == []
+    po = po_repository.reload_po(db_session, draft.id)
+    assert po.status == POStatus.DRAFT
+    assert po.registering_key is None

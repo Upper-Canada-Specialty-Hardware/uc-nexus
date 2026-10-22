@@ -1218,6 +1218,9 @@ class WarehouseMutations:
         # company is a Clerk round trip the first time a request asks for it.
         scope = await asyncio.to_thread(tenant_scope, info)
         state = await asyncio.to_thread(gp_idempotency.load, key)
+        # #1873: before the row's result is resumed from - and before a claim is taken - it must be a
+        # receipt's. The finished path below checked the op; the resume did not.
+        gp_idempotency.require_op(state, "create_receive")
         if state is not None and state.result_id is not None:
             # Fully finished under this key already. The draft link was written in the same
             # transaction as the receive, so there is nothing to repair - just answer with it, once the
