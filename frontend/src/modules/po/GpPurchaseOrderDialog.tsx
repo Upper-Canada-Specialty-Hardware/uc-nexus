@@ -757,6 +757,11 @@ export default function GpPurchaseOrderDialog({
       setContact('');
       setContactEdited(false);
       setComment('');
+      // #1949: a draft that gained its project after it was raised still carries the lines it was raised
+      // with, every one off the job, there being none then. A line on a project PO books to the job by
+      // default, so they start ticked rather than registering the whole PO off the job unnoticed.
+      const linesOffTheJob =
+        !!registerPo.projectId && registerPo.lineItems.length > 0 && registerPo.lineItems.every((li) => !li.jobCost);
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -773,7 +778,7 @@ export default function GpPurchaseOrderDialog({
         // for all lines" pick above the grid then does for the rest.
         costCode: li.costCode ?? registerPo.costCode ?? '',
         uofm: li.uofm || DEFAULT_UOFM,
-        jobCost: li.jobCost,
+        jobCost: linesOffTheJob || li.jobCost,
         manufacturer: li.manufacturer ?? null,
         // #1910: a draft's custom-item line keeps its catalog link. Without it the line unlocked and
         // registering sent no custom item, so GP's line - and the stock received on it - lost the
@@ -1670,7 +1675,14 @@ export default function GpPurchaseOrderDialog({
             badged in the option list, not hidden from it - what it cannot take is a registration. */}
         <ProjectPicker
           value={selectedProject}
-          onChange={(p) => setProjectId(p?.id ?? '')}
+          onChange={(p) => {
+            // #1949: the same when a projectless draft is given its project here - its lines were all
+            // off the job for want of one, so picking the job puts them on it.
+            if (isRegister && p && !projectId) {
+              setLineItems((prev) => (prev.every((li) => !li.jobCost) ? prev.map((li) => ({ ...li, jobCost: true })) : prev));
+            }
+            setProjectId(p?.id ?? '');
+          }}
           label={isRegister ? 'Project' : 'Project (Optional)'}
           placeholder="Search by project number or name, or leave empty for a stock PO"
           disabled={projectLocked}

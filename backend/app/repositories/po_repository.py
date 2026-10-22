@@ -1706,6 +1706,13 @@ def update_po(
                     f"Project {project.project_id} belongs to {project.company}, not {po.company}",
                     field="project_id",
                 )
+            # #1949: a projectless draft's lines were stored booking to no job, there being none, and
+            # nothing moved them when it gained one - so it registered with every line off the job. A
+            # line on a project PO books to the job by default, create_po's rule; a line with no cost
+            # code of its own takes the PO's, as there.
+            for li in po.line_items:
+                li.job_cost = True
+                li.cost_code = li.cost_code or po.cost_code
         po.project_id = project_id
         # A PO moved onto a job no longer receives into the pool, so its pool kind reverts (#832).
         po.pool_kind = PoolKind.STOCK

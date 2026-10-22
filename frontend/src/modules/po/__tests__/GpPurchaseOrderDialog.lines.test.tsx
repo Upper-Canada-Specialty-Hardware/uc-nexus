@@ -80,6 +80,45 @@ it('lets a stock draft with no project pick one at register time', async () => {
   expect(screen.getByText(/this draft has no project yet/i)).toBeTruthy();
 });
 
+// #1949: a draft raised with no project stores every line off the job, there being none. Given its
+// project - on the PO detail, or here - the lines stayed off it and the PO registered with nothing
+// booked to the job. A line on a project PO books to the job by default, so they start ticked.
+it('ticks job cost on every line of a draft that was given its project after it was raised', async () => {
+  const gainedProject: PurchaseOrder = {
+    ...stockDraft,
+    projectId: 'p1',
+    lineItems: [stockDraft.lineItems[0], { ...stockDraft.lineItems[0], id: 'li-2', productCode: 'LK-200' }],
+  };
+  renderDialog({ registerPo: gainedProject }, [...baseMocks(), costCodesMock()]);
+
+  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
+  expect(screen.getByLabelText('Job cost line 2')).toBeChecked();
+});
+
+it('ticks job cost on a projectless draft when its project is picked here', async () => {
+  renderDialog({ registerPo: stockDraft });
+
+  const project = await screen.findByLabelText(/^Project/i);
+  typeInto(project, 'JOB-200');
+  fireEvent.click(await screen.findByText('Elm St Job'));
+
+  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
+});
+
+it('leaves a project draft whose lines were set one by one as they are', async () => {
+  const mixed: PurchaseOrder = {
+    ...projectDraft,
+    lineItems: [
+      projectDraft.lineItems[0],
+      { ...projectDraft.lineItems[0], id: 'li-2', productCode: 'LK-200', jobCost: false },
+    ],
+  };
+  renderDialog({ registerPo: mixed }, [...baseMocks(), costCodesMock()]);
+
+  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
+  expect(screen.getByLabelText('Job cost line 2')).not.toBeChecked();
+});
+
 // #689: the field used to be a list of every project, scannable by name only. A PO user knows the job
 // by its number, and JOB-200's name says nothing about 200.
 it('finds a project by its number, not only by its name', async () => {

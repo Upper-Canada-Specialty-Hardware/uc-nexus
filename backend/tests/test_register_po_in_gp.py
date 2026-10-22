@@ -307,6 +307,63 @@ def test_a_draft_adopting_a_project_at_register_gets_job_cost_lines(db_session):
     assert line.cost_code == "210-200-2"
 
 
+def test_a_stock_draft_given_a_project_books_its_lines_to_the_job(db_session):
+    """#1949: the draft's lines were stored off the job, there being none, and stayed off it once the
+    draft was given a project - the register dialog then sent them that way. They book to the job the
+    way a project PO's lines do from creation, on the PO's cost code when they carry none of their own."""
+    project = _make_project(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {"hardware_category": "HINGE", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 10.0},
+            # The dialog sends an explicit false for every line of a projectless draft.
+            {
+                "hardware_category": "CLOSER",
+                "product_code": "CL-4000",
+                "ordered_quantity": 1,
+                "unit_cost": 90.0,
+                "job_cost": False,
+            },
+        ],
+        project_id=None,
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    assert all(li.job_cost is False for li in po.line_items)
+
+    po_repository.update_po(db_session, po.id, project_id=project.id)
+    db_session.flush()
+
+    lines = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).all()
+    assert [li.job_cost for li in lines] == [True, True]
+    assert {li.cost_code for li in lines} == {"210-200-2"}
+
+
+def test_resending_a_drafts_own_project_leaves_its_lines_alone(db_session):
+    """Only gaining a project moves the lines; a line deliberately off the job stays off it."""
+    project = _make_project(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {
+                "hardware_category": "HINGE",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 10.0,
+                "job_cost": False,
+            }
+        ],
+        project_id=project.id,
+        company="TUBC",
+    )
+
+    po_repository.update_po(db_session, po.id, project_id=project.id)
+    db_session.flush()
+
+    line = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).first()
+    assert line.job_cost is False
+
+
 def test_register_rejects_non_draft(db_session):
     project = _make_project(db_session)
     po = _import_draft_po(db_session, project)
