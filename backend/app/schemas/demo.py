@@ -64,9 +64,11 @@ def _read(data: dict | None, read_at) -> DemoSourceRead:
 
 def _status() -> DemoMirrorStatus:
     with SessionLocal() as session:
-        source = demo_mirror.load_source(session)
+        # #1833: polled every few seconds while a build or the masters read runs, and it only counts, so
+        # the summary source - no schedules, no PO lines - and the snapshot without its rows a second time.
+        source = demo_mirror.load_source(session, summary=True)
         entries = demo_snapshot.inventory_entries(source.rows, source.job_numbers)
-        snapshot = demo_snapshot_repository.current(session)
+        snapshot = demo_snapshot_repository.current(session, with_rows=False)
         masters = state.get(session, state.GP_MASTERS) or {}
         build = state.get(session, state.BUILD) or {}
         nightly = state.get(session, state.NIGHTLY) or {}

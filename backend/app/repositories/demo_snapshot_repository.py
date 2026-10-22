@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.models.demo_inventory_snapshot import DemoInventorySnapshot
 from app.services.demo_snapshot import SnapshotRow
@@ -24,8 +24,13 @@ def store(session: Session, *, file_name: str, rows: list[SnapshotRow], uploaded
     return snapshot
 
 
-def current(session: Session) -> DemoInventorySnapshot | None:
-    return session.scalars(select(DemoInventorySnapshot).order_by(DemoInventorySnapshot.uploaded_at.desc())).first()
+def current(session: Session, *, with_rows: bool = True) -> DemoInventorySnapshot | None:
+    """The stored snapshot. Without its rows (#1833), for a reader that wants only when it was read and how
+    many rows it has: the rows are the whole legacy list as JSON."""
+    query = select(DemoInventorySnapshot).order_by(DemoInventorySnapshot.uploaded_at.desc())
+    if not with_rows:
+        query = query.options(defer(DemoInventorySnapshot.rows))
+    return session.scalars(query).first()
 
 
 def rows(session: Session) -> list[SnapshotRow]:

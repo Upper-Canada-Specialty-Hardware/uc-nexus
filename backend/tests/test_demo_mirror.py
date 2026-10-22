@@ -362,6 +362,31 @@ def test_an_admin_sees_what_the_demo_is_built_from(mirrored):
     }
 
 
+def test_the_status_counts_what_the_build_reads_without_reading_a_schedule(mirrored, monkeypatch):
+    # #1833: the status is polled every few seconds while a build runs, and only counts. It reads the summary
+    # source - no schedule, no PO line - and that counts the same jobs, POs and vendors the build reads.
+    from app.database import SessionLocal
+    from app.services import demo_mirror
+
+    with SessionLocal() as session:
+        full = demo_mirror.load_source(session)
+        summary = demo_mirror.load_source(session, summary=True)
+    assert (summary.jobs, summary.rows, summary.masters) == (full.jobs, full.rows, full.masters)
+    assert [(p["po_number"], p["vendor_id"], p["vendor_name"]) for p in summary.open_pos] == [
+        (p["po_number"], p["vendor_id"], p["vendor_name"]) for p in full.open_pos
+    ]
+    assert "T-200" in full.schedules and summary.schedules == {}
+
+    def _refused(*args, **kwargs):
+        raise AssertionError("the status read a schedule")
+
+    monkeypatch.setattr(demo_mirror, "_schedules", _refused)
+    monkeypatch.setattr(demo_mirror.import_repository, "get_project_hardware_schedule", _refused)
+    result = _run("{ demoMirror { legacyRows vendorCount projectCount openPoCount } }", dict(_ADMIN))
+    assert result.errors is None, result.errors
+    assert result.data["demoMirror"] == {"legacyRows": 14, "vendorCount": 1, "projectCount": 4, "openPoCount": 1}
+
+
 def test_only_an_admin_sees_or_rebuilds_the_demo(mirrored):
     owner = {"request": None, "_auth_user_id": "u_owner", "_auth_roles": ["Tenant Owner"], "_auth_company": "UBC"}
     for document in ("{ demoMirror { source } }", "mutation { rebuildDemo { building } }"):
@@ -446,7 +471,7 @@ def test_a_vendor_whose_contact_gp_cannot_read_keeps_the_rest_of_the_read(monkey
         masters={},
         open_pos=[{"po_number": "P1", "vendor_id": "MVEND"}],
     )
-    monkeypatch.setattr(demo_mirror, "ubc_source", lambda session: source)
+    monkeypatch.setattr(demo_mirror, "ubc_source", lambda session, **kw: source)
     answers = {
         "list_vendors": {
             "vendors": [{"vendor_id": "MVEND", "vendor_name": "Mirror Hardware Supply", "contact": "Pat"}]
