@@ -793,10 +793,13 @@ def test_reopenable_only_excludes_worked_shop_assembly_requests(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=10)
     worked = _finalize_shop_assembly(db_session, project, qty=2, opening_number="A01")["shop_assembly_request"]
+    db_session.flush()
+    # Batched before the next finalize: each finalize sends the schedule it holds, A02's alone here, and a
+    # line its opening's schedule no longer asks for is not batched (#1954).
+    worked_batch = batch_request(db_session, worked.id)
     fresh = _finalize_shop_assembly(db_session, project, qty=2, opening_number="A02")["shop_assembly_request"]
     db_session.flush()
 
-    worked_batch = batch_request(db_session, worked.id)
     batch_request(db_session, fresh.id)
     db_session.flush()
 
