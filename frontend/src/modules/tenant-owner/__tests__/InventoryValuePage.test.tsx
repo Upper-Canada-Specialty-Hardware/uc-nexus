@@ -304,6 +304,40 @@ it('saves the average door cost', async () => {
   expect(screen.getByText(/updated .* by Greg/)).toBeInTheDocument();
 });
 
+it('saves an average door cost written with a dollar sign and thousands commas whole (#1912)', async () => {
+  let savedAmount: number | null = null;
+  const costMock: MockedResponse = {
+    request: { query: SET_AVERAGE_DOOR_COST, variables: { company: COMPANY, amount: 1250 } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      savedAmount = 1250;
+      return { data: { setAverageDoorCost: { ...PAGE, averageDoorCost: 1250 } } };
+    },
+  };
+
+  renderPage([costMock]);
+
+  const input = await screen.findByLabelText('Average door cost');
+  fireEvent.change(input, { target: { value: ' $1,250.00 ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(savedAmount).toBe(1250));
+});
+
+it('refuses an average door cost that is not a whole amount of zero or more (#1912)', async () => {
+  renderPage();
+
+  const input = await screen.findByLabelText('Average door cost');
+  for (const typed of ['', '12abc', '-5', '1e999']) {
+    fireEvent.change(input, { target: { value: typed } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByText('Enter a dollar amount of zero or more.')).toBeInTheDocument();
+  }
+  fireEvent.change(input, { target: { value: '0' } });
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  // Four re-renders of the whole page; more than the 5s default allows on a loaded runner.
+}, 20_000);
+
 it('reads the updated time as the utc instant the server stored (#1271)', async () => {
   renderPage();
   // The fixture's '2026-09-08T12:00:00' is naive UTC; read as local time it prints the wrong hour.

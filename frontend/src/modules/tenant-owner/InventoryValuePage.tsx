@@ -565,8 +565,12 @@ function AverageDoorCostCard({ company, value }: { company: string; value: Inven
     },
   );
 
-  const parsed = Number.parseFloat(draft);
-  const invalid = Number.isNaN(parsed) || parsed < 0;
+  // #1912: the whole amount or nothing, as #1558 made the door counts - parseFloat stopped at the
+  // first comma and saved a typed "1,250.00" as 1. Thousands commas, a dollar sign and spaces are how
+  // people write money, so they are dropped; anything else left over refuses the amount.
+  const cleaned = draft.replace(/[,$\s]/g, '');
+  const parsed = cleaned === '' ? NaN : Number(cleaned);
+  const invalid = !Number.isFinite(parsed) || parsed < 0;
 
   const updated = value.averageDoorCostUpdatedAt
     ? parseServerDate(value.averageDoorCostUpdatedAt).toLocaleString()
