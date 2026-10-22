@@ -448,8 +448,11 @@ class RelayQueries:
         # rank_vendors returns []); return empty without the wasted list_vendors relay round-trip.
         if not key:
             return VendorSuggestion(manufacturer=manufacturer, saved_mapping=False, candidates=[])
+        # #1870: resolved before the saved mapping is read, not only before the relay call - a mapping is
+        # another company's vendor choice, and the raw argument let a scoped caller read any company's.
+        company = resolve_gp_company(info, gp_company)
         with SessionLocal() as session:
-            mapping = manufacturer_vendor_map_repository.lookup(session, gp_company, key)
+            mapping = manufacturer_vendor_map_repository.lookup(session, company, key)
             if mapping is not None:
                 return VendorSuggestion(
                     manufacturer=manufacturer,
@@ -463,7 +466,7 @@ class RelayQueries:
                     ],
                 )
 
-        result = await relay_gateway.relay_call(resolve_gp_company(info, gp_company), "list_vendors")
+        result = await relay_gateway.relay_call(company, "list_vendors")
         ranked = manufacturer_match.rank_vendors(manufacturer, result["vendors"])
         return VendorSuggestion(
             manufacturer=manufacturer,
