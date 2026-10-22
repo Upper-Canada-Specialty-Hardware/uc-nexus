@@ -194,6 +194,8 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         message={retryTarget?.failureKind === 'ambiguous' ? AMBIGUOUS_RETRY_WARNING : NORMAL_RETRY_WARNING}
         confirmLabel={retrying ? 'Queueing…' : 'Retry'}
         onConfirm={handleRetry}
+        // #1846: held while the retry is in flight, so a second click can't queue it twice.
+        busy={retrying}
         onCancel={() => setRetryTarget(null)}
       />
 
@@ -204,6 +206,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"
         onConfirm={handleCancel}
+        busy={cancelling}
         onCancel={() => setCancelTarget(null)}
       />
     </Box>

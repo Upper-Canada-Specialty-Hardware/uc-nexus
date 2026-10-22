@@ -241,6 +241,24 @@ it('requires the confirm dialog before removing an install', async () => {
   await waitFor(() => expect(deleted).toBe(true), GRID_TIMEOUT);
 });
 
+// #1846: the confirm stays up until the remove answers; without busy a second click sent it again.
+it('holds the remove confirm while the remove is in flight', async () => {
+  const pendingDelete: MockedResponse = {
+    request: { query: DELETE_RELAY_INSTALL, variables: { installId: 'install-1' } },
+    result: { data: { deleteRelayInstall: true } },
+    delay: Number.POSITIVE_INFINITY,
+  };
+
+  renderPage([statusMock, installsMock, windowMock(null), pendingDelete]);
+
+  fireEvent.click(await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT));
+  fireEvent.click(await screen.findByRole('button', { name: /remove install/i }, GRID_TIMEOUT));
+
+  const dialog = await screen.findByRole('dialog', {}, GRID_TIMEOUT);
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: /removing/i })).toBeDisabled(), GRID_TIMEOUT);
+  expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled();
+});
+
 it('disables Remove on the install that is currently connected', async () => {
   // Deleting the live install would revoke the secret out from under a running relay and take GP down
   // mid-write. The backend refuses it; the button must not offer it either.

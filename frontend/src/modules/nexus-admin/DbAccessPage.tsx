@@ -506,6 +506,8 @@ export default function DbAccessPage() {
         onConfirm={() => {
           if (revokeTarget) revoke({ variables: { dbRole: revokeTarget.dbRole } });
         }}
+        // #1846: held while the revoke is in flight, so a second click can't send it again.
+        busy={revoking}
         onCancel={() => setRevokeTarget(null)}
       />
 

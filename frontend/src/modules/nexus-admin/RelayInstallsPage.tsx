@@ -534,6 +534,8 @@ export default function RelayInstallsPage() {
         onConfirm={() => {
           if (adoptTarget) armAdopt({ variables: { installId: adoptTarget.id } });
         }}
+        // #1846: held while the mutation is in flight, so a second click can't send it again.
+        busy={arming}
         onCancel={() => setAdoptTarget(null)}
       />
 
@@ -546,6 +548,7 @@ export default function RelayInstallsPage() {
         onConfirm={() => {
           if (deleteTarget) deleteInstall({ variables: { installId: deleteTarget.id } });
         }}
+        busy={deleting}
         onCancel={() => setDeleteTarget(null)}
       />
 
