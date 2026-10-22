@@ -330,10 +330,17 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
                 and_(
                     GpWriteOutbox.status == "FAILED",
                     # A refusal after the relay looked the key up says GP holds no receipt under it
-                    # (#1849): only a keyed receipt is retried into one, so the flag stands down.
+                    # (#1849), so the flag stands down for a keyed receipt - the same rule as the draft
+                    # release. An unkeyed one was never looked up, so its refusal proves nothing.
                     or_(
                         GpWriteOutbox.failure_kind == "ambiguous",
-                        and_(GpWriteOutbox.maybe_in_gp.is_(True), GpWriteOutbox.failure_kind != "gp_rejected"),
+                        and_(
+                            GpWriteOutbox.maybe_in_gp.is_(True),
+                            or_(
+                                GpWriteOutbox.failure_kind != "gp_rejected",
+                                GpWriteOutbox.payload["idempotency_key"].as_string().is_(None),
+                            ),
+                        ),
                     ),
                 ),
             ),
