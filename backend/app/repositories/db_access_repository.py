@@ -61,6 +61,10 @@ _APP_ROLE = (make_url(config.DATABASE_URL).username or "postgres").lower()
 # and the shared group. The page can never be aimed at the account the backend itself runs as.
 _DENYLIST = {"postgres", _GROUP_ROLE} | {_APP_ROLE}
 
+# The tables the group's blanket DML grant is taken back off (#1867): the login registry, its audit, and
+# Alembic's version table. Plain lowercase names, so double-quoting them is all the quoting they need.
+_GROUP_DENIED_TABLES = (PgDirectAccess.__tablename__, PgDirectAccessAudit.__tablename__, "alembic_version")
+
 
 # --- identifiers, passwords, connection strings --------------------------------------------------
 
@@ -275,6 +279,11 @@ def _ensure_group() -> None:
         conn.exec_driver_sql(
             f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {grp}"
         )
+        # #1867: taken back off the tables a login must never write - the registry and its audit (a login
+        # could list itself, or erase who handed it out) and the migration table. After the blanket grant,
+        # so every re-run takes them back; the default privileges reach only tables made later.
+        denied = ", ".join(f'public."{t}"' for t in _GROUP_DENIED_TABLES)
+        conn.exec_driver_sql(f"REVOKE ALL ON TABLE {denied} FROM {grp}")
         session.commit()
 
 

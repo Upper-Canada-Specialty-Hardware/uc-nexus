@@ -261,6 +261,39 @@ def test_a_mint_sweeps_before_the_group_is_granted(monkeypatch):
     assert calls == ["sweep", "grant"]
 
 
+# --- the tables the group can't touch (#1867) -----------------------------------------------------
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.statements = []
+
+    def exec_driver_sql(self, sql):
+        self.statements.append(" ".join(sql.split()))
+
+
+def test_the_group_grant_is_taken_back_off_the_registry_the_audit_and_alembic_version(monkeypatch):
+    """The blanket DML grant reached the registry (a login could list itself), the audit (or erase who
+    handed it out) and alembic_version. The REVOKE comes after the grant, so every re-run takes it back."""
+    conn = _RecordingConn()
+    session = _FakeSession(listed=[])
+    session.connection = lambda: conn
+    monkeypatch.setattr(repo, "SessionLocal", lambda: session)
+
+    repo._ensure_group()
+
+    grant = next(
+        i for i, s in enumerate(conn.statements) if s.startswith("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL")
+    )
+    [revoke] = [i for i, s in enumerate(conn.statements) if s.startswith("REVOKE")]
+    assert revoke > grant
+    assert conn.statements[revoke] == (
+        'REVOKE ALL ON TABLE public."pg_direct_access", public."pg_direct_access_audit", '
+        'public."alembic_version" FROM "nexus_rw"'
+    )
+    assert session.committed
+
+
 # --- a holder who lost UC Nexus Admin (#1866) ----------------------------------------------------
 
 
