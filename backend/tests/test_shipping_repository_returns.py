@@ -421,6 +421,63 @@ def test_a_scheduled_shipment_of_only_manual_lines_can_be_cancelled(db_session):
     assert slip.status == ShipmentStatus.CANCELLED
 
 
+def _pickup_notices(session, project, slip):
+    """Raise the slip's scheduled-for-pickup notice the way a confirm does, and another slip's beside it."""
+    from app.models.enums import NotificationType
+    from app.services import notification_service
+
+    other = _make_slip(session, project.id)
+    for ps in (slip, other):
+        notification_service.create_notification(
+            session,
+            project_id=project.id,
+            recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
+            notification_type=NotificationType.SHIPMENT_COMPLETED,
+            message=f"Shipment {ps.packing_slip_number} scheduled for pickup. 1 items on it.",
+            packing_slip_id=ps.id,
+        )
+    session.flush()
+    return other
+
+
+def _notice_slips(session, project) -> set:
+    from app.models.notification import Notification
+
+    return set(session.scalars(select(Notification.packing_slip_id).where(Notification.project_id == project.id)))
+
+
+def test_cancelling_a_shipment_withdraws_its_pickup_notice(db_session):
+    # #1942: no truck is coming for it, so the warehouse's bell must not send anybody to load one.
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    _make_manual_item(db_session, slip.id)
+    other = _pickup_notices(db_session, project, slip)
+
+    shipping_repository.cancel_shipment(db_session, slip.id)
+    db_session.flush()
+
+    assert _notice_slips(db_session, project) == {other.id}
+
+
+def test_a_shipment_cancelled_by_its_last_return_withdraws_its_pickup_notice(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    item = _make_loose_item(db_session, slip.id, qty=2)
+    other = _pickup_notices(db_session, project, slip)
+    wh_id = _wh(db_session)
+
+    _return(db_session, slip.id, wh_id, [_back(item, 1)])
+    db_session.flush()
+    assert _notice_slips(db_session, project) == {slip.id, other.id}  # one unit still going
+
+    _return(db_session, slip.id, wh_id, [_back(item, 1)])
+    db_session.flush()
+    assert slip.status == ShipmentStatus.CANCELLED
+    assert _notice_slips(db_session, project) == {other.id}
+
+
 def test_cancel_is_refused_while_hardware_is_still_returnable(db_session):
     # Restocking goes through a return, which cancels the shipment on its own once nothing is left.
     project = _make_project(db_session)

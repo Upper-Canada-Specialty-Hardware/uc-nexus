@@ -35,6 +35,12 @@ class Notification(Base):
             "receive_draft_id",
             postgresql_where=text("receive_draft_id IS NOT NULL"),
         ),
+        # A shipment's scheduled-for-pickup notice is withdrawn by its slip (#1942).
+        Index(
+            "ix_notifications_packing_slip_id",
+            "packing_slip_id",
+            postgresql_where=text("packing_slip_id IS NOT NULL"),
+        ),
         # A person-targeted notification is looked up by its one recipient (#1111).
         Index("ix_notifications_recipient_user_id", "recipient_user_id"),
         # Every notification is for exactly one of: an audience, or a person (#1111).
@@ -70,6 +76,11 @@ class Notification(Base):
     # withdraw it; its message names only the PO. SET NULL for the reason pull_request_id gives.
     receive_draft_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("receive_drafts.id", ondelete="SET NULL"), nullable=True
+    )
+    # The packing slip a scheduled-for-pickup notice is about (#1942), so cancelling the shipment can
+    # withdraw it; its message names only the slip number. SET NULL for the reason pull_request_id gives.
+    packing_slip_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("packing_slips.id", ondelete="SET NULL"), nullable=True
     )
     # Read by at least one person. Each person's own read state is a NotificationRead row (#1111);
     # this flag stays because the pull dedupe keys on "has anybody seen it yet".

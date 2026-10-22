@@ -518,6 +518,9 @@ def test_the_new_slip_notice_says_scheduled_and_counts_only_real_hardware(db_ses
 
     messages = db_session.scalars(select(Notification.message).where(Notification.project_id == project.id)).all()
     assert f"Shipment {slip.packing_slip_number} scheduled for pickup. 2 items on it." in messages
+    # #1942: named by its slip, so a cancel can withdraw it.
+    notice = db_session.scalars(select(Notification).where(Notification.project_id == project.id)).one()
+    assert notice.packing_slip_id == slip.id
 
 
 def test_a_manual_line_in_the_box_does_not_free_real_stock_keyed_the_same(db_session):

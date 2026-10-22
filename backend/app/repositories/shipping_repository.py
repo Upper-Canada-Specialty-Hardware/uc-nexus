@@ -397,6 +397,8 @@ def confirm_shipment(
         recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} scheduled for pickup. {item_count} items on it.",
+        # #1942: named by its slip, so a cancel can withdraw it.
+        packing_slip_id=packing_slip.id,
     )
 
     return packing_slip
@@ -510,6 +512,8 @@ def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip
             field="id",
         )
     ps.status = ShipmentStatus.CANCELLED
+    # #1942: no truck is coming for it, so the warehouse is no longer told to load one.
+    notification_service.withdraw_shipment_scheduled(session, ps.id)
     return ps
 
 
@@ -926,6 +930,8 @@ def create_shipment_return(
         returnable = [psi for psi in ps.items if not psi.is_manual]
         if returnable and all(returned.get(psi.id, 0) >= psi.quantity for psi in returnable):
             ps.status = ShipmentStatus.CANCELLED
+            # #1942: the same as a cancel - nothing is waiting for pickup any more.
+            notification_service.withdraw_shipment_scheduled(session, ps.id)
 
     return shipment_return
 
