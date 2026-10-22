@@ -484,6 +484,12 @@ def _lock_po_for_mirror(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         .unique()
         .one()
     )
+    # #1958: the project between the PO and its lines, in the mode finalize and the tie paths take, so a
+    # tie this pass releases never interleaves with a finalize on the same project (#1398).
+    if row.project_id is not None:
+        from app.models.project import Project
+
+        session.execute(select(Project.id).where(Project.id == row.project_id).with_for_update(key_share=True))
     session.execute(
         select(POLineItem)
         .where(POLineItem.po_id == po_id)
