@@ -536,7 +536,8 @@ function ContentsPanel({ selected, warehouseLabel, onClose, onChanged }: Content
         </Box>
       )}
       {error && <Alert severity="error">Error: {userMessage(error, { reading: true })}</Alert>}
-      {!loading && totalCount === 0 && (
+      {/* #1879: a failed read is not an empty bin. */}
+      {!loading && !error && totalCount === 0 && (
         <Alert severity="info">No items at this location.</Alert>
       )}
 

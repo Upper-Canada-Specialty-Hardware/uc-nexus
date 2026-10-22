@@ -58,3 +58,18 @@ it('names the project a deficient row belongs to and leaves a stock-pool row bla
   expect(screen.getByText('HG-200')).toBeInTheDocument();
   expect(screen.getAllByText('Old Library')).toHaveLength(1);
 });
+
+it('shows no clear-queue state beside a failed read (#1879)', async () => {
+  render(
+    <MockedProvider
+      mocks={[{ request: { query: GET_DEFICIENT_ITEMS, variables: { source: null } }, error: new Error('Network down') }]}
+    >
+      <MemoryRouter>
+        <DeficientItemsReview />
+      </MemoryRouter>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/network down|connection/i)).toBeInTheDocument();
+  expect(screen.queryByText('No deficient items pending review')).not.toBeInTheDocument();
+});
