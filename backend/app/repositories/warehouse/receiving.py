@@ -69,6 +69,9 @@ def validate_receive_eligibility(
     po_id: uuid.UUID,
     received_by: str,
     line_items_input: list[dict],
+    *,
+    check_bins: bool = False,
+    warehouse_id: uuid.UUID | None = None,
 ) -> tuple[str, str, list[dict]]:
     """Read-only pre-flight for create_receive, run BEFORE the GP receipt is posted (issue #202 #1).
 
@@ -77,7 +80,13 @@ def validate_receive_eligibility(
     range, location sums - but persists nothing, so an over-receive / receive-against-a-complete-PO
     never reaches GP. Returns (po_number, gp_company, receipt_line_items) where receipt_line_items is the
     per-line gp_line_ord/quantity/locations shape build_create_receipt_payload expects. create_receive
-    re-validates authoritatively on persist."""
+    re-validates authoritatively on persist.
+
+    `check_bins` is the approval's (#1850): every bin a line names must be defined and active in the
+    receiving warehouse (`warehouse_id`, or the PO company's primary, as create_receive resolves it).
+    A count is not held to it - a bin can still be defined before the count is approved - but the
+    approval is, because create_receive refuses an undefined bin only after GP has taken the receipt,
+    leaving it in GP, the draft stuck approving and the PO's GP sync held behind it."""
     stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
@@ -104,6 +113,12 @@ def validate_receive_eligibility(
     # either. This runs when a count is drafted, edited and resubmitted as well as at approval, so the
     # warehouse is told before it counts hardware that could never be booked into GP.
     project_repository.require_gp_job_open(session, po.project_id)
+
+    if check_bins and warehouse_id is None and any(li_input["locations"] for li_input in line_items_input):
+        from app.repositories import warehouse_admin_repository
+
+        # The building create_receive will book into: its own fallback, scoped to the PO's tenant (#637).
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=po.company)
 
     poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
     receipt_line_items: list[dict] = []
@@ -138,7 +153,9 @@ def validate_receive_eligibility(
                         "deficient_quantity must satisfy 0 <= deficient_quantity <= quantity",
                         field="deficient_quantity",
                     )
-                _normalize_and_validate_location_fields(loc["aisle"], loc["row"], loc["bay"])
+                aisle, row, bay = _normalize_and_validate_location_fields(loc["aisle"], loc["row"], loc["bay"])
+                if check_bins:
+                    ensure_registered_location(session, warehouse_id, aisle, row, bay)
 
         receipt_line_items.append(
             {

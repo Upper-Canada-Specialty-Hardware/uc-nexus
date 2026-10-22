@@ -152,7 +152,7 @@ def _prepare_create_receive(
 
     with SessionLocal() as session:
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
-            session, po_id, received_by, line_items_data
+            session, po_id, received_by, line_items_data, check_bins=True, warehouse_id=warehouse_id
         )
         # The TENANT, not `gp_company` (#637). They carry the same value on a PO registered through
         # Nexus - `register_po_in_gp` refuses a mismatch - but they answer two different questions,

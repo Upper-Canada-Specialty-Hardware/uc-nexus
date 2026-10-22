@@ -901,6 +901,51 @@ def test_a_failure_before_the_relay_call_releases_the_claim(committed, monkeypat
     assert relay.calls == [], "nothing should have reached GP"
 
 
+def test_a_bin_that_is_not_defined_is_refused_before_gp(committed, monkeypatch, approve_env):
+    """#1850: the persist refuses an undefined or retired bin, but only after GP has taken the receipt -
+    which left the receipt in GP, the draft stuck approving and the PO's GP sync held behind it. The
+    approval's pre-flight refuses it first, and the draft goes back in the queue."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.receive_draft import ReceiveDraftLineItem
+
+    f = committed()
+    with SessionLocal() as session:
+        line = session.scalars(
+            select(ReceiveDraftLineItem).where(ReceiveDraftLineItem.receive_draft_id == f.draft_id)
+        ).one()
+        line.locations = [{"aisle": "ZZ1850", "row": "9", "bay": "9", "quantity": line.quantity_received}]
+        session.commit()
+
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(f.draft_id)
+
+    assert excinfo.value.field == "location"
+    assert relay.calls == [], "nothing should have reached GP"
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_count_may_name_a_bin_that_is_defined_before_it_is_approved(db_session):
+    """#1850 holds the approval to the registry, not the count: a bin can still be defined in between."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    lines = [
+        {
+            "po_line_item_id": li.id,
+            "quantity_received": 2,
+            "locations": [{"aisle": "ZZ1850", "row": "9", "bay": "9", "quantity": 2}],
+        }
+    ]
+    warehouse_repository.validate_receive_eligibility(db_session, po.id, AUTHOR_NAME, lines)
+    with pytest.raises(ValidationError) as excinfo:
+        warehouse_repository.validate_receive_eligibility(db_session, po.id, AUTHOR_NAME, lines, check_bins=True)
+    assert excinfo.value.field == "location"
+
+
 def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeypatch, approve_env):
     """GP said no, which means GP did not commit - so the draft belongs back where somebody can act
     on it once the cause is fixed (#425's broken job being the usual one).
