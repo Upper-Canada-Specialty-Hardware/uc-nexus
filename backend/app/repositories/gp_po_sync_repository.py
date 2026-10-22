@@ -329,7 +329,12 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
                 GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
                 and_(
                     GpWriteOutbox.status == "FAILED",
-                    or_(GpWriteOutbox.failure_kind == "ambiguous", GpWriteOutbox.maybe_in_gp.is_(True)),
+                    # A refusal after the relay looked the key up says GP holds no receipt under it
+                    # (#1849): only a keyed receipt is retried into one, so the flag stands down.
+                    or_(
+                        GpWriteOutbox.failure_kind == "ambiguous",
+                        and_(GpWriteOutbox.maybe_in_gp.is_(True), GpWriteOutbox.failure_kind != "gp_rejected"),
+                    ),
                 ),
             ),
         )

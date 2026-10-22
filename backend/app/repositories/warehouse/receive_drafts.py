@@ -824,6 +824,16 @@ def mark_approved(
 _NEVER_REACHED_GP_KINDS = ("gp_rejected", "exhausted")
 
 
+def _refused_after_its_key_was_looked_up(entry) -> bool:
+    from app.repositories import gp_outbox_repository
+
+    return (
+        entry.status == "FAILED"
+        and entry.failure_kind == "gp_rejected"
+        and gp_outbox_repository.retry_is_safe(entry.relay_op, entry.payload)
+    )
+
+
 def outbox_entry_never_reached_gp(session: Session, entry) -> bool:
     """True when a queued receipt's outbox row is finished and GP never committed it (#1298).
 
@@ -835,7 +845,9 @@ def outbox_entry_never_reached_gp(session: Session, entry) -> bool:
         return False
     # #1849: an earlier attempt may have left the receipt in GP under this row's key, whatever the row's
     # last outcome says. Released, the draft would be approved under a new key and posted a second time.
-    if entry.maybe_in_gp:
+    # Except a keyed receipt GP then refused: the relay looks the key up before anything else, so a
+    # refusal after that lookup says GP holds no receipt under it.
+    if entry.maybe_in_gp and not _refused_after_its_key_was_looked_up(entry):
         return False
     if entry.status == "CANCELLED":
         if entry.failure_kind not in (None, *_NEVER_REACHED_GP_KINDS):
