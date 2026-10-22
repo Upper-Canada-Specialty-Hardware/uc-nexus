@@ -228,6 +228,16 @@ def _registration_stale_reason(context: dict) -> str | None:
     return None
 
 
+# #1857: relay refusals that are not GP saying no, and pass on their own. `sql_error` is any database
+# error on the relay's side (a connect failure, a network blip, a deadlock victim), `internal_error` an
+# exception nothing on the relay planned for, and `company_not_allowed` a relay that could not read GP's
+# company list just then. Each is asked again under the attempt budget rather than held as GP refusing.
+_TRANSIENT_RELAY_ERRORS = ("sql_error", "internal_error", "company_not_allowed")
+# The relay rolls back a write that raised a database error and refuses an unserved company before any
+# work, so neither leaves the write in GP. An unplanned exception can come after the commit.
+_MAYBE_COMMITTED_RELAY_ERRORS = ("internal_error",)
+
+
 def _load_row(row_id: uuid.UUID):
     with SessionLocal() as session:
         return gp_outbox_repository.get_entry(session, row_id)
@@ -452,6 +462,33 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await _fail_if_exhausted(row_id)
         return
     except RelayCallError as e:
+        relay_error = str((e.detail or {}).get("error") or "")
+        if relay_error in _TRANSIENT_RELAY_ERRORS:
+            maybe_in_gp = relay_error in _MAYBE_COMMITTED_RELAY_ERRORS
+            if maybe_in_gp and not retry_safe:
+                # Like a timeout: the write may be in GP and asking again could post it twice.
+                await asyncio.to_thread(
+                    _finish,
+                    row_id,
+                    "mark_failed",
+                    kind="ambiguous",
+                    error=str(e.message),
+                    error_code=e.code,
+                    maybe_in_gp=True,
+                )
+                await asyncio.to_thread(_notify_failure, row_id)
+                return
+            await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_retry",
+                error=str(e.message),
+                error_code=e.code,
+                bump_attempts=True,
+                maybe_in_gp=maybe_in_gp,
+            )
+            await _fail_if_exhausted(row_id)
+            return
         # GP itself said no. Deterministic - retrying never helps. A refusal because the job is
         # inactive, closed or not in GP (#730) is recorded in the words and code the online paths use,
         # so the held write reads the same as the error the person would have seen at the time.

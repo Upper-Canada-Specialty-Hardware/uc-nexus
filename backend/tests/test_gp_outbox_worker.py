@@ -338,6 +338,63 @@ def test_a_gp_rejection_fails_as_gp_rejected(_migrate_database, monkeypatch):
         _delete(row_id)
 
 
+@pytest.mark.parametrize(
+    ("relay_error", "payload", "maybe_in_gp"),
+    [
+        ("sql_error", None, False),
+        ("company_not_allowed", None, False),
+        ("internal_error", _KEYED_RECEIPT, True),
+    ],
+    ids=["sql-error", "no-company-served", "internal-error-keyed"],
+)
+def test_a_transient_relay_error_is_asked_again_not_held_as_gp_refusing(
+    _migrate_database, monkeypatch, relay_error, payload, maybe_in_gp
+):
+    """#1857: a deadlock victim, a blip on the relay's database link or a relay that could not read
+    GP's company list is not GP refusing the write. A database error is rolled back on the relay, so
+    that attempt left nothing in GP; an unplanned relay exception may have come after the commit."""
+    row_id, _key = _enqueue_committed(payload=payload)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayCallError("relay failed", detail={"error": relay_error}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["attempts"]) == ("PENDING", None, 1)
+        assert state["maybe_in_gp"] is maybe_in_gp
+    finally:
+        _delete(row_id)
+
+
+def test_an_unkeyed_receipt_the_relay_raised_on_unexpectedly_fails_as_ambiguous(_migrate_database, monkeypatch):
+    # #1857: the exception may have come after GP took it, and nothing would recognise a second send.
+    row_id, _key = _enqueue_committed()
+    try:
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("boom", detail={"error": "internal_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "ambiguous", True)
+    finally:
+        _delete(row_id)
+
+
+def test_a_sql_error_on_the_last_attempt_exhausts_the_row(_migrate_database, monkeypatch):
+    from app.database import SessionLocal
+
+    row_id, _key = _enqueue_committed()
+    try:
+        with SessionLocal() as session:
+            gp_outbox_repository.get_entry(session, row_id).attempts = gp_outbox_repository.MAX_ATTEMPTS
+            session.commit()
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("deadlock victim", detail={"error": "sql_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "exhausted", False)
+    finally:
+        _delete(row_id)
+
+
 def test_a_successful_drain_calls_the_persist_helper_and_marks_succeeded(_migrate_database, monkeypatch):
     row_id, key = _enqueue_committed()
     try:
