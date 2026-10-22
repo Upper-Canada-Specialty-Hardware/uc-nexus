@@ -598,11 +598,15 @@ def apply_wennsoft_integration(
         .fetchone()
     )
     if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        # #1862: a WennSoft proc, so its states are not taErrorCode entries - its own text is the reason,
+        # carried on proc_message the way _exec_job_master carries wsiJCJobMaster's.
         raise EConnectError(
             f"wsiWSCreateUpdatePurchaseOrderIntegration failed for line ORD={line_ord} (PI={product_indicator}): "
-            f"{row.err_string.strip()}",
+            f"{message}",
             proc="wsiWSCreateUpdatePurchaseOrderIntegration",
             error_state=row.error_state,
+            proc_message=message or None,
         )
 
 
