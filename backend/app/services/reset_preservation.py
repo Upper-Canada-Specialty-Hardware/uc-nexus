@@ -34,6 +34,7 @@ from sqlalchemy.engine import Connection
 from app.models import Base
 from app.models.demo_inventory_snapshot import DemoInventorySnapshot
 from app.models.manufacturer_vendor_map import ManufacturerVendorMap
+from app.models.pg_direct_access import PgDirectAccess, PgDirectAccessAudit
 from app.models.po_document_settings import PODocumentSettings
 from app.models.relay_install import RelayInstall
 from app.models.warehouse import Warehouse
@@ -50,6 +51,11 @@ PRESERVED_MODELS = (
     # The legacy inventory list as last read (#1638, #1657): the demo is built from it, and a read that fails
     # next time falls back on it.
     DemoInventorySnapshot,
+    # The direct-Postgres login registry and its audit (#1865). The logins themselves are cluster-level
+    # roles the schema drop never touches, so losing their registry left live logins no page could list
+    # or revoke. Neither table references the other.
+    PgDirectAccess,
+    PgDirectAccessAudit,
 )
 
 # Human labels for the reset's summary line. `/admin/reset-data` returns `message` and the frontend
@@ -61,6 +67,8 @@ PRESERVED_LABELS: dict[str, tuple[str, str]] = {
     "manufacturer_vendor_map": ("manufacturer/vendor mapping", "manufacturer/vendor mappings"),
     "po_document_settings": ("PO document setting", "PO document settings"),
     "demo_inventory_snapshots": ("demo inventory snapshot", "demo inventory snapshots"),
+    "pg_direct_access": ("database login record", "database login records"),
+    "pg_direct_access_audit": ("database access audit entry", "database access audit entries"),
 }
 
 

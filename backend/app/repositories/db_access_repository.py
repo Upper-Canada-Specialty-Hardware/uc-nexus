@@ -191,6 +191,49 @@ def _sweep_role(conn, role: str) -> None:
     conn.exec_driver_sql(f"DROP ROLE IF EXISTS {_q(role)}")
 
 
+def _group_member_roles(conn) -> list[tuple[str, bool]]:
+    """Every member of nexus_rw, login or not, with whether it is a superuser. Empty before the group
+    exists (a first-ever mint)."""
+    rows = conn.execute(
+        text(
+            """
+            SELECT r.rolname, r.rolsuper
+              FROM pg_roles r
+              JOIN pg_auth_members m ON m.member = r.oid
+              JOIN pg_roles g ON g.oid = m.roleid
+             WHERE g.rolname = :grp
+            """
+        ),
+        {"grp": _GROUP_ROLE},
+    ).all()
+    return [(row[0], bool(row[1])) for row in rows]
+
+
+def _sweep_unlisted_members(*, actor_clerk_id: str) -> list[str]:
+    """Sweep every nexus_rw member the registry has no live row for, and audit each as a REVOKE with no
+    target (#1865).
+
+    Roles are cluster-level, so a data reset that dropped the registry left its logins alive in the
+    group with nothing listing them, and revoke refuses a role the registry does not know. Run before
+    `_ensure_group` re-grants the group, so an orphan is gone before it is handed DML on the rebuilt
+    tables. The denylist (postgres, the app's own role, the group), a superuser and a name this page
+    could never have minted are left alone: this only ever drops what looks like one of our logins."""
+    with SessionLocal() as session:
+        conn = session.connection()
+        listed = set(session.scalars(select(PgDirectAccess.db_role).where(PgDirectAccess.revoked_at.is_(None))).all())
+        swept = []
+        for role, is_super in _group_member_roles(conn):
+            if role in listed or role in _DENYLIST or is_super or not _ROLE_NAME_RE.fullmatch(role):
+                continue
+            _sweep_role(conn, role)
+            session.add(
+                PgDirectAccessAudit(actor_clerk_id=actor_clerk_id, action="REVOKE", db_role=role, target_clerk_id=None)
+            )
+            swept.append(role)
+        session.commit()
+    return swept
+
+
 # --- group setup ---------------------------------------------------------------------------------
 
 
@@ -263,13 +306,16 @@ def _display_name(user: dict | None) -> str | None:
 def mint(clerk_user_id: str, *, actor_clerk_id: str) -> dict:
     """Mint a login for a Clerk user and return its connection strings once.
 
-    Ensures the group, refuses if the user already has a live grant, sweeps any orphan the deterministic
-    name would collide with, then creates + configures the role and writes the registry row and a MINT
-    audit event - the role DDL and the registry insert in ONE transaction, so a lost race rolls the
-    role back with the row and leaves no orphan."""
+    Sweeps every group member the registry does not list, ensures the group, refuses if the user already
+    has a live grant, sweeps any orphan the deterministic name would collide with, then creates +
+    configures the role and writes the registry row and a MINT audit event - the role DDL and the
+    registry insert in ONE transaction, so a lost race rolls the role back with the row and leaves no
+    orphan."""
     _require_enabled()
     role = _derive_role_name(clerk_user_id)
     _assert_manageable(role)
+    # The sweep first: the grants below reach every member of the group, orphans included (#1865).
+    _sweep_unlisted_members(actor_clerk_id=actor_clerk_id)
     _ensure_group()
 
     password = _generate_password()

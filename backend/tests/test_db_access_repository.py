@@ -168,3 +168,94 @@ def test_require_enabled_refuses_when_the_feature_is_off(monkeypatch):
 def test_require_enabled_passes_when_the_feature_is_on(monkeypatch):
     monkeypatch.setattr(config, "db_direct_access_enabled", lambda: True)
     repo._require_enabled()  # must not raise
+
+
+# --- the pre-mint sweep of unlisted group members (#1865) ----------------------------------------
+
+
+class _FakeScalars:
+    def __init__(self, values):
+        self._values = values
+
+    def all(self):
+        return list(self._values)
+
+
+class _FakeSession:
+    """Just enough of a Session for the sweep: the live registry roles, and what it adds and commits."""
+
+    def __init__(self, listed):
+        self.listed = listed
+        self.added = []
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def connection(self):
+        return "conn"
+
+    def scalars(self, _stmt):
+        return _FakeScalars(self.listed)
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def commit(self):
+        self.committed = True
+
+
+def test_a_mint_sweeps_every_group_member_the_registry_does_not_list(monkeypatch):
+    """A data reset dropped the registry while the roles, cluster-level, lived on in nexus_rw - and the
+    next mint re-granted the group DML on every rebuilt table. The sweep drops each one the registry
+    does not list, audits it, and leaves the protected roles, a superuser and a hand-made name alone."""
+    session = _FakeSession(listed=["user_live"])
+    monkeypatch.setattr(repo, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        repo,
+        "_group_member_roles",
+        lambda conn: [
+            ("user_live", False),
+            ("user_orphan", False),
+            (repo._APP_ROLE, False),
+            ("nexus_rw", False),
+            ("user_super", True),
+            ("HandMade", False),
+        ],
+    )
+    swept = []
+    monkeypatch.setattr(repo, "_sweep_role", lambda conn, role: swept.append(role))
+
+    assert repo._sweep_unlisted_members(actor_clerk_id="user_actor") == ["user_orphan"]
+
+    assert swept == ["user_orphan"]
+    assert session.committed
+    [audit] = session.added
+    assert (audit.action, audit.db_role, audit.target_clerk_id, audit.actor_clerk_id) == (
+        "REVOKE",
+        "user_orphan",
+        None,
+        "user_actor",
+    )
+
+
+def test_a_mint_sweeps_before_the_group_is_granted(monkeypatch):
+    """The order is the fix: a sweep after `_ensure_group` would leave the orphans holding the grants for
+    as long as the mint took, and for good if the mint then failed."""
+    monkeypatch.setattr(config, "db_direct_access_enabled", lambda: True)
+    calls = []
+    monkeypatch.setattr(repo, "_sweep_unlisted_members", lambda *, actor_clerk_id: calls.append("sweep"))
+
+    def _ensure_group():
+        calls.append("grant")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(repo, "_ensure_group", _ensure_group)
+
+    with pytest.raises(RuntimeError):
+        repo.mint("user_2abc", actor_clerk_id="user_actor")
+
+    assert calls == ["sweep", "grant"]
