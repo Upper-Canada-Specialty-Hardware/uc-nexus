@@ -12,6 +12,7 @@ import {
 import { Plus, X } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
+import LoadError from '../../../components/LoadError';
 import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import ProjectPicker from '../../../components/ProjectPicker';
 import { useToast } from '../../../components/Toast';
@@ -146,12 +147,8 @@ export default function AllocateStockModal({
 
   // #1046: the pre-locate bin is optional, but when given it is a strict pick from the stock item's
   // warehouse - the server refuses any bin not on the Locations tab. All three or none.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
-    [item.warehouseId],
-    aisle,
-    row,
-    bay,
-  );
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryLoaded, registryError, refetchRegistry, noOptionsText } =
+    useDefinedLocationPick([item.warehouseId], aisle, row, bay);
   const binBlank = !aisle.trim() && !row.trim() && !bay.trim();
   const binOk = binBlank || isDefinedPick;
 
@@ -375,10 +372,14 @@ export default function AllocateStockModal({
         <Typography variant="body2" color="text.secondary">
           Optional: pre-locate the new inventory row at a defined location (leave blank for unlocated).
         </Typography>
+        {/* #1878: a failed registry read left the pickers offering nothing, as if no bin were defined. */}
+        {registryError && !registryLoaded && (
+          <LoadError what="the defined locations" error={registryError} onRetry={refetchRegistry} />
+        )}
         <Stack direction="row" spacing={2}>
-          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
-          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
-          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
+          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} noOptionsText={noOptionsText} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} noOptionsText={noOptionsText} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} noOptionsText={noOptionsText} />
         </Stack>
         {blockedReason && !submitting && (
           <Typography variant="body2" color="text.secondary" data-testid="blocked-reason">

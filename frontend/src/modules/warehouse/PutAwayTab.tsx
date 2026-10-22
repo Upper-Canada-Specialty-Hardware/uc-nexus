@@ -24,7 +24,10 @@ import {
 import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
-import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
+import LocationAutocomplete, {
+  LOCATIONS_NOT_LOADED_TEXT,
+  NO_DEFINED_LOCATIONS_TEXT,
+} from '../../components/LocationAutocomplete';
 import {
   GET_PROJECTS,
   GET_WAREHOUSES,
@@ -238,10 +241,16 @@ export default function PutAwayTab() {
   const warehouseFilter = warehousesData?.warehouses.some((w) => w.id === warehousePick) ? warehousePick : '';
   // #632: the defined-locations registry (active only) - the three pickers are strict picks from it,
   // filtered to the item's warehouse, and Assign is gated on an exact registry match.
-  const { data: registryData } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(
-    GET_WAREHOUSE_LOCATIONS,
-    { variables: { activeOnly: true }, fetchPolicy: 'cache-and-network' },
-  );
+  const {
+    data: registryData,
+    error: registryError,
+    refetch: refetchRegistry,
+  } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(GET_WAREHOUSE_LOCATIONS, {
+    variables: { activeOnly: true },
+    fetchPolicy: 'cache-and-network',
+  });
+  // #1878: until the registry has loaded, a picker's empty list says nothing about what is defined.
+  const pickerNoOptionsText = registryData ? undefined : LOCATIONS_NOT_LOADED_TEXT;
 
   const {
     data: unlocatedData,
@@ -692,6 +701,18 @@ export default function PutAwayTab() {
         description="Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row, or tick several rows from one warehouse and put them all in one bin — locations are defined on the Locations tab."
       />
 
+      {/* #1878: a failed registry read left every picker offering nothing, as if no bin were defined. */}
+      {registryError &&
+        (registryData ? (
+          <RefreshFailedNote what="the defined locations" error={registryError} />
+        ) : (
+          <LoadError
+            what="the defined locations"
+            error={registryError}
+            onRetry={() => refetchRegistry()}
+            sx={{ mb: 2 }}
+          />
+        ))}
       {/* #1345: with nothing in the registry no row can ever be put away - say what to set up. */}
       {registryData && registry.length === 0 && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -881,6 +902,7 @@ export default function PutAwayTab() {
                                 onChange={(v) => updateLocationInput(id, 'aisle', v)}
                                 options={rowOptions.aisles}
                                 freeSolo={false}
+                                noOptionsText={pickerNoOptionsText}
                               />
                               <LocationAutocomplete
                                 label="Row"
@@ -888,6 +910,7 @@ export default function PutAwayTab() {
                                 onChange={(v) => updateLocationInput(id, 'row', v)}
                                 options={rowOptions.rows}
                                 freeSolo={false}
+                                noOptionsText={pickerNoOptionsText}
                               />
                               <LocationAutocomplete
                                 label="Bay"
@@ -895,6 +918,7 @@ export default function PutAwayTab() {
                                 onChange={(v) => updateLocationInput(id, 'bay', v)}
                                 options={rowOptions.bays}
                                 freeSolo={false}
+                                noOptionsText={pickerNoOptionsText}
                               />
                             </Box>
                           </TableCell>
@@ -1029,6 +1053,7 @@ export default function PutAwayTab() {
                         onChange={(v) => updateLocationInput(id, 'aisle', v)}
                         options={rowOptions.aisles}
                         freeSolo={false}
+                        noOptionsText={pickerNoOptionsText}
                       />
                       <LocationAutocomplete
                         label="Row"
@@ -1036,6 +1061,7 @@ export default function PutAwayTab() {
                         onChange={(v) => updateLocationInput(id, 'row', v)}
                         options={rowOptions.rows}
                         freeSolo={false}
+                        noOptionsText={pickerNoOptionsText}
                       />
                       <LocationAutocomplete
                         label="Bay"
@@ -1043,6 +1069,7 @@ export default function PutAwayTab() {
                         onChange={(v) => updateLocationInput(id, 'bay', v)}
                         options={rowOptions.bays}
                         freeSolo={false}
+                        noOptionsText={pickerNoOptionsText}
                       />
                     </Box>
                   </TableCell>
@@ -1085,6 +1112,7 @@ export default function PutAwayTab() {
               onChange={(v) => setBulkLocation((prev) => ({ ...prev, aisle: v }))}
               options={bulkOptions.aisles}
               freeSolo={false}
+              noOptionsText={pickerNoOptionsText}
               disabled={bulkRunning}
             />
             <LocationAutocomplete
@@ -1093,6 +1121,7 @@ export default function PutAwayTab() {
               onChange={(v) => setBulkLocation((prev) => ({ ...prev, row: v }))}
               options={bulkOptions.rows}
               freeSolo={false}
+              noOptionsText={pickerNoOptionsText}
               disabled={bulkRunning}
             />
             <LocationAutocomplete
@@ -1101,6 +1130,7 @@ export default function PutAwayTab() {
               onChange={(v) => setBulkLocation((prev) => ({ ...prev, bay: v }))}
               options={bulkOptions.bays}
               freeSolo={false}
+              noOptionsText={pickerNoOptionsText}
               disabled={bulkRunning}
             />
           </Box>

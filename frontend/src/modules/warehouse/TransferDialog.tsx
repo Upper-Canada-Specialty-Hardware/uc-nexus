@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import { useApolloClient, useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
+import LoadError from '../../components/LoadError';
 import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
@@ -85,12 +86,17 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   const [quantity, setQuantity] = useState<string>(single ? String(single.available) : '');
   // #1046: the destination is a strict pick from the destination warehouse's defined locations - the
   // server refuses any bin not on the Locations tab - with the same cascading picks put away makes.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryEmpty } = useDefinedLocationPick(
-    [destWarehouseId],
-    aisle,
-    row,
-    bay,
-  );
+  const {
+    aisleOptions,
+    rowOptions,
+    bayOptions,
+    isDefinedPick,
+    registryEmpty,
+    registryLoaded,
+    registryError,
+    refetchRegistry,
+    noOptionsText,
+  } = useDefinedLocationPick([destWarehouseId], aisle, row, bay);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // #1205: sources already moved in an earlier attempt. A batch that fails partway leaves the dialog
@@ -320,10 +326,14 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
             ))}
           </Select>
         </FormControl>
+        {/* #1878: a failed registry read left the pickers offering nothing, as if no bin were defined. */}
+        {registryError && !registryLoaded && (
+          <LoadError what="the defined locations" error={registryError} onRetry={refetchRegistry} />
+        )}
         <Stack direction="row" spacing={2}>
-          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
-          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
-          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
+          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} noOptionsText={noOptionsText} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} noOptionsText={noOptionsText} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} noOptionsText={noOptionsText} />
         </Stack>
         {destWarehouseId && registryEmpty ? (
           <Typography variant="caption" color="text.secondary">

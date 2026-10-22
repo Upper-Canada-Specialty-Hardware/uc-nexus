@@ -3,6 +3,7 @@ import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../components/Toast';
+import { LOCATIONS_NOT_LOADED_TEXT, NO_DEFINED_LOCATIONS_TEXT } from '../../../components/LocationAutocomplete';
 import TransferDialog, { type TransferSource } from '../TransferDialog';
 import { isAtDestination, normalizeLocationPart } from '../transferLocation';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
@@ -228,6 +229,38 @@ describe('TransferDialog', () => {
 
     setLocation('A1', 'R1', 'B1');
     await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+  });
+
+  it('says a failed registry read, with a Retry, and no picker claims nothing is defined (#1878)', async () => {
+    const source: TransferSource = {
+      type: 'INVENTORY_LOCATION',
+      id: 'inv-1',
+      productCode: 'HG-100',
+      quantity: 6,
+      available: 6,
+      warehouseId: 'wh-1',
+    };
+    render(
+      <MockedProvider
+        mocks={[
+          warehousesMock,
+          {
+            request: { query: GET_WAREHOUSE_LOCATIONS, variables: { activeOnly: true } },
+            error: new Error('Network down'),
+          },
+        ]}
+      >
+        <ToastProvider>
+          <TransferDialog sources={[source]} onClose={vi.fn()} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    expect(await screen.findByText(/couldn.t load the defined locations/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Aisle' }), { key: 'ArrowDown' });
+    expect(screen.getByText(LOCATIONS_NOT_LOADED_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(NO_DEFINED_LOCATIONS_TEXT)).not.toBeInTheDocument();
   });
 
   it('closes on a row-changed refusal, so a resend after a lost reply cannot move it twice (#1552)', async () => {

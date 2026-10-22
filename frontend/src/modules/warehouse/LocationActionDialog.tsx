@@ -10,6 +10,7 @@ import {
 } from '@mui/material';
 import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
+import LoadError from '../../components/LoadError';
 import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
@@ -81,7 +82,17 @@ export default function LocationActionDialog({
 
   // #975: a move lands only on a defined location, so the pickers offer only those - the same strict,
   // cascading picks put away makes (#632), defined in every selected item's warehouse.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryEmpty } = useDefinedLocationPick(
+  const {
+    aisleOptions,
+    rowOptions,
+    bayOptions,
+    isDefinedPick,
+    registryEmpty,
+    registryLoaded,
+    registryError,
+    refetchRegistry,
+    noOptionsText,
+  } = useDefinedLocationPick(
     targets.map((t) => t.warehouseId),
     aisle,
     row,
@@ -336,16 +347,21 @@ export default function LocationActionDialog({
 
       {mode === 'move' && (
         <Stack spacing={2}>
+          {/* #1878: a failed registry read left the pickers offering nothing, as if no bin were defined. */}
+          {registryError && !registryLoaded && (
+            <LoadError what="the defined locations" error={registryError} onRetry={refetchRegistry} />
+          )}
           <LocationAutocomplete
             label="Aisle"
             value={aisle}
             onChange={setAisle}
             options={aisleOptions}
             freeSolo={false}
+            noOptionsText={noOptionsText}
             autoFocus
           />
-          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
-          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} noOptionsText={noOptionsText} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} noOptionsText={noOptionsText} />
           <Typography variant="caption" color="text.secondary">
             {registryEmpty
               ? NO_DEFINED_LOCATIONS_TEXT
