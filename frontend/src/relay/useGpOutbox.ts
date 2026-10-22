@@ -36,6 +36,8 @@ const EMPTY: GpOutboxState = {
 export function useGpOutbox(options?: { skip?: boolean }): GpOutboxState {
   const { data } = useQuery<{ gpOutboxSummary: GpOutboxSummary }>(GET_GP_OUTBOX_SUMMARY, {
     pollInterval: 15_000,
+    // A tab nobody is looking at does not poll (#1894); polling resumes the moment it is shown.
+    skipPollAttempt: () => document.hidden,
     fetchPolicy: 'cache-and-network',
     skip: options?.skip,
   });

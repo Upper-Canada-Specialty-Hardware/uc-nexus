@@ -1,5 +1,7 @@
 """Repository for Clerk user management via Clerk Backend API."""
 
+from typing import NamedTuple
+
 import httpx
 
 from app.config import CLERK_SECRET_KEY
@@ -119,12 +121,9 @@ def get_user(user_id: str) -> dict:
 
 
 def get_user_roles(user_id: str) -> list[str]:
-    """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set."""
-    resp = _client.get(f"/users/{user_id}", headers=_headers())
-    resp.raise_for_status()
-    u = resp.json()
-    metadata = u.get("public_metadata") or {}
-    return metadata.get("roles") or []
+    """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set. A Clerk failure
+    is CLERK_UNAVAILABLE, as every other metadata read's is (#1894)."""
+    return _public_metadata(user_id).get("roles") or []
 
 
 def _merge_public_metadata(user_id: str, patch: dict) -> dict:
@@ -246,11 +245,24 @@ def update_user_demo_mode(user_id: str, enabled: bool) -> dict:
     return _merge_public_metadata(user_id, {DEMO_MODE_METADATA_KEY: True if enabled else None})
 
 
-def get_user_tenancy(user_id: str) -> tuple[str | None, bool]:
-    """#1608: the account's company and whether it is in demo mode - two keys of one metadata object,
-    read together so a request that needs both makes one Clerk round trip."""
+class UserAccess(NamedTuple):
+    """What a request needs to authorize and scope its caller: three keys of one metadata object."""
+
+    roles: list[str]
+    company: str | None
+    demo_mode: bool
+
+
+def get_user_access(user_id: str) -> UserAccess:
+    """#1894: the account's roles, company and demo flag from one Clerk read. A scoped request needs all
+    three, and reading roles and the company apart made two `GET /users/{id}` calls in series on every
+    one of them."""
     metadata = _public_metadata(user_id)
-    return normalize_company(metadata.get("company")), bool(metadata.get(DEMO_MODE_METADATA_KEY))
+    return UserAccess(
+        roles=metadata.get("roles") or [],
+        company=normalize_company(metadata.get("company")),
+        demo_mode=bool(metadata.get(DEMO_MODE_METADATA_KEY)),
+    )
 
 
 def _public_metadata(user_id: str) -> dict:

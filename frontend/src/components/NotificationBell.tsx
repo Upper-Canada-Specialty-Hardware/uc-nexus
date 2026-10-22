@@ -15,8 +15,7 @@ import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@apollo/client/react';
 import {
-  GET_NOTIFICATIONS,
-  GET_NOTIFICATION_UNREAD_COUNT,
+  GET_NOTIFICATION_BELL,
   MARK_ALL_NOTIFICATIONS_AS_READ,
   MARK_NOTIFICATION_AS_READ,
 } from '../graphql/shared';
@@ -75,25 +74,23 @@ export default function NotificationBell() {
   const [markingAll, setMarkingAll] = useState(false);
   const navigate = useNavigate();
 
-  const { data, error, refetch: refetchRecent } = useQuery<{ notifications: Notification[] }>(
-    GET_NOTIFICATIONS,
+  // One poll for the list and the count (#1894), and none from a tab nobody is looking at: every
+  // open tab polls, and each poll is a Clerk read on the server.
+  const { data, error, refetch } = useQuery<{ notifications: Notification[]; notificationUnreadCount: number }>(
+    GET_NOTIFICATION_BELL,
     {
       variables: { limit: 5 },
       pollInterval: 30000,
+      skipPollAttempt: () => document.hidden,
     },
-  );
-
-  // #1112: one scalar, so the badge is not capped at the length of a fetched list.
-  const { data: unreadData, refetch: refetchUnread } = useQuery<{ notificationUnreadCount: number }>(
-    GET_NOTIFICATION_UNREAD_COUNT,
-    { pollInterval: 30000 },
   );
 
   const [markAsRead] = useMutation(MARK_NOTIFICATION_AS_READ);
   const [markAllAsRead] = useMutation(MARK_ALL_NOTIFICATIONS_AS_READ);
 
   const notifications = data?.notifications ?? [];
-  const unreadCount = unreadData?.notificationUnreadCount ?? 0;
+  // #1112: one scalar, so the badge is not capped at the length of a fetched list.
+  const unreadCount = data?.notificationUnreadCount ?? 0;
   // The server stops counting at 100 (#1224), so anything past 99 reads as 99+, matching the badge.
   const unreadLabel = unreadCount > 99 ? '99+' : String(unreadCount);
   const open = Boolean(anchorEl);
@@ -111,13 +108,7 @@ export default function NotificationBell() {
       try {
         await markAsRead({
           variables: { id: notification.id },
-          refetchQueries: [
-            {
-              query: GET_NOTIFICATIONS,
-              variables: { limit: 5 },
-            },
-            { query: GET_NOTIFICATION_UNREAD_COUNT },
-          ],
+          refetchQueries: [{ query: GET_NOTIFICATION_BELL, variables: { limit: 5 } }],
         });
       } catch {
         // A failed read must not cost the click its navigation; the next poll reconciles the badge.
@@ -137,7 +128,7 @@ export default function NotificationBell() {
       // One mutation clears the whole backlog (#1112), then the list and the count refetch once: the
       // count is a scalar Apollo cannot re-derive from the rows it has cached.
       await markAllAsRead();
-      await Promise.all([refetchRecent(), refetchUnread()]);
+      await refetch();
     } catch {
       // A read that fails, or a refetch the browser aborts because this unmounted or a poll
       // superseded it, is not worth surfacing: the reads that landed stay landed and the next poll
@@ -200,7 +191,7 @@ export default function NotificationBell() {
 
         {/* #1503: a failed read is not "nothing to review" - the poll retries on its own, Retry now. */}
         {error && !data ? (
-          <LoadError what="your notifications" error={error} onRetry={() => refetchRecent()} sx={{ m: 1.5 }} />
+          <LoadError what="your notifications" error={error} onRetry={() => refetch()} sx={{ m: 1.5 }} />
         ) : notifications.length === 0 ? (
           <Box
             sx={{

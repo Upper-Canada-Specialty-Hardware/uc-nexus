@@ -53,9 +53,12 @@ export const GET_PRIOR_ORDER_AS_VALUES = gql`
   }
 `;
 
-export const GET_NOTIFICATIONS = gql`
-  query GetNotifications($projectId: ID, $unreadOnly: Boolean, $limit: Int) {
-    notifications(projectId: $projectId, unreadOnly: $unreadOnly, limit: $limit) {
+// The bell's one poll (#1894): the latest few and the unread count ride together, so every open tab
+// makes one request a tick rather than two. #1112: the badge reads the count, not the length of a
+// capped list.
+export const GET_NOTIFICATION_BELL = gql`
+  query GetNotificationBell($limit: Int) {
+    notifications(limit: $limit) {
       id
       projectId
       recipientRole
@@ -64,12 +67,6 @@ export const GET_NOTIFICATIONS = gql`
       isRead
       createdAt
     }
-  }
-`;
-
-// #1112: the badge reads a count, not the length of a capped list.
-export const GET_NOTIFICATION_UNREAD_COUNT = gql`
-  query GetNotificationUnreadCount {
     notificationUnreadCount
   }
 `;

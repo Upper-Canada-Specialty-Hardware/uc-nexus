@@ -1,11 +1,10 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import NotificationBell from '../NotificationBell';
 import {
-  GET_NOTIFICATIONS,
-  GET_NOTIFICATION_UNREAD_COUNT,
+  GET_NOTIFICATION_BELL,
   MARK_ALL_NOTIFICATIONS_AS_READ,
   MARK_NOTIFICATION_AS_READ,
 } from '../../graphql/shared';
@@ -28,17 +27,22 @@ function notification(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function notificationsMocks(items: Record<string, unknown>[], unreadCount?: number): MockedResponse[] {
+function notificationsMocks(
+  items: Record<string, unknown>[],
+  unreadCount?: number,
+  polls: { count: number } = { count: 0 },
+): MockedResponse[] {
   return [
     {
-      request: { query: GET_NOTIFICATIONS, variables: { limit: 5 } },
-      result: { data: { notifications: items } },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-    },
-    {
-      request: { query: GET_NOTIFICATION_UNREAD_COUNT },
-      result: {
-        data: { notificationUnreadCount: unreadCount ?? items.filter((n) => !n.isRead).length },
+      request: { query: GET_NOTIFICATION_BELL, variables: { limit: 5 } },
+      result: () => {
+        polls.count += 1;
+        return {
+          data: {
+            notifications: items,
+            notificationUnreadCount: unreadCount ?? items.filter((n) => !n.isRead).length,
+          },
+        };
       },
       maxUsageCount: Number.POSITIVE_INFINITY,
     },
@@ -201,11 +205,10 @@ describe('NotificationBell', () => {
       <MockedProvider
         mocks={[
           {
-            request: { query: GET_NOTIFICATIONS, variables: { limit: 5 } },
+            request: { query: GET_NOTIFICATION_BELL, variables: { limit: 5 } },
             error: new Error('Network down'),
             maxUsageCount: Number.POSITIVE_INFINITY,
           },
-          notificationsMocks([])[1],
         ]}
       >
         <MemoryRouter>
@@ -217,5 +220,42 @@ describe('NotificationBell', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
     expect(await screen.findByText(/couldn.t load your notifications/i, undefined, SLOW)).toBeInTheDocument();
     expect(screen.queryByText('Nothing to review right now')).not.toBeInTheDocument();
+  });
+
+  describe('polling (#1894)', () => {
+    let hidden = false;
+
+    beforeEach(() => {
+      hidden = false;
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      // The jsdom getter lives on Document.prototype; deleting the own property restores it.
+      delete (document as { hidden?: boolean }).hidden;
+    });
+
+    it('polls the list and the count as one request, and not from a hidden tab', async () => {
+      const polls = { count: 0 };
+      render(
+        <MockedProvider mocks={notificationsMocks([notification()], undefined, polls)}>
+          <MemoryRouter>
+            <NotificationBell />
+          </MemoryRouter>
+        </MockedProvider>,
+      );
+      await screen.findByRole('button', { name: 'Notifications, 1 unread' }, SLOW);
+      expect(polls.count).toBe(1);
+
+      hidden = true;
+      await act(() => vi.advanceTimersByTimeAsync(65_000));
+      expect(polls.count).toBe(1);
+
+      hidden = false;
+      await act(() => vi.advanceTimersByTimeAsync(31_000));
+      await vi.waitFor(() => expect(polls.count).toBeGreaterThan(1), SLOW);
+    });
   });
 });
