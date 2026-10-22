@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { userMessage } from '../../graphql/userMessage';
 import RefreshFailedNote from '../../components/RefreshFailedNote';
+import LoadError from '../../components/LoadError';
 import {
   Box,
   Typography,
@@ -166,14 +167,26 @@ export default function SharePointMigrationPage() {
     // ground under answers the user already gave.
     { fetchPolicy: 'network-only', notifyOnNetworkStatusChange: true },
   );
-  const { data: whData } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
+  const {
+    data: whData,
+    error: whError,
+    refetch: refetchWarehouses,
+  } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
   });
   // cache-and-network: the project list gates the whole Projects step, and a cached empty list
   // from before a sync would silently drop every project row from the migration.
-  const { data: projData } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS, {
+  const {
+    data: projData,
+    error: projError,
+    refetch: refetchProjects,
+  } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS, {
     fetchPolicy: 'cache-and-network',
   });
+  // #1842: a failed projects read left every SharePoint project unset - "rows will be skipped" - with
+  // Migrate still enabled, so a run landed only the stock rows; a failed warehouses read did the same to
+  // the location mapping. Neither is a mapping anybody chose, so the wizard waits for both reads.
+  const referenceReadsBlocked = !whData || !projData || whError !== undefined || projError !== undefined;
   const { types: itemTypes } = useInventoryItemTypes({ activeOnly: true });
 
   const [migrate, { loading: migrating }] = useMutation(MIGRATE_SHAREPOINT_INVENTORY);
@@ -536,6 +549,9 @@ export default function SharePointMigrationPage() {
           </Step>
         ))}
       </Stepper>
+
+      {whError && <LoadError what="the Nexus warehouses" error={whError} onRetry={refetchWarehouses} sx={{ mb: 2 }} />}
+      {projError && <LoadError what="the Nexus projects" error={projError} onRetry={refetchProjects} sx={{ mb: 2 }} />}
 
       {result ? (
         <Card variant="outlined">
@@ -1131,7 +1147,8 @@ export default function SharePointMigrationPage() {
                 // snap, the classification rows and the marking are all built from it.
                 disabled={
                   (step === CLASSIFICATION_STEP && unclassifiedRequired.length > 0) ||
-                  (step >= 2 && scheduleProductsBlocked)
+                  (step >= 2 && scheduleProductsBlocked) ||
+                  referenceReadsBlocked
                 }
                 onClick={() => setStep((s) => s + 1)}
               >
@@ -1146,6 +1163,7 @@ export default function SharePointMigrationPage() {
                   undecidedTypes.length > 0 ||
                   unclassifiedRequired.length > 0 ||
                   scheduleProductsBlocked ||
+                  referenceReadsBlocked ||
                   // A re-run adds every row again; the server refuses it unless confirmed (#1366).
                   (alreadyMigrated && !rerunConfirmed)
                 }
