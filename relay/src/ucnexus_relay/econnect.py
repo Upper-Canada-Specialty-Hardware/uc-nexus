@@ -834,7 +834,7 @@ def read_po_receipt_context(conn, po_number: str):
         .execute(
             "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
             "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
-            "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST, "
+            "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.QTYCANCE, l.UNITCOST, "
             "l.POLNESTA, ISNULL(r.prev_received, 0) AS prev_received "
             "FROM dbo.POP10110 l "
             "LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
@@ -858,6 +858,8 @@ def read_po_receipt_context(conn, po_number: str):
             "uofm": r.uofm,
             "vnditnum": r.vnditnum or r.item,  # legacy uses item number when VNDITNUM is blank
             "qtyorder": r.QTYORDER,
+            # #1861: what GP cancelled on the line is not there to receive; the guard nets it off
+            "qtycance": r.QTYCANCE or 0,
             "unitcost": r.UNITCOST,  # AUTOCOST pulls this onto the receipt line; header subtotal must match
             "polnesta": int(r.POLNESTA),  # PO line status; the legacy only receives lines with < 4
             "prev_received": r.prev_received,  # SUM(POP10500.QTYSHPPD) already received against this line

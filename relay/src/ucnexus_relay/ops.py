@@ -1010,14 +1010,15 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
                 "line_not_receivable",
                 f"line ORD {rl.po_line_ord} is closed/cancelled (POLNESTA={pl['polnesta']})",
             )
-        # validate against REMAINING (ordered - already received), not just ordered, so cumulative
-        # over-receipt across multiple receives is blocked.
-        remaining = pl["qtyorder"] - pl["prev_received"]
+        # validate against REMAINING (ordered - cancelled - already received), not just ordered, so
+        # cumulative over-receipt across multiple receives is blocked, and so is receiving what GP has
+        # cancelled on the line (#1861; the demo's simulated GP nets it the same way).
+        remaining = pl["qtyorder"] - pl["qtycance"] - pl["prev_received"]
         if rl.quantity > remaining:
             raise RelayOpError(
                 "qty_exceeds_remaining",
                 f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
-                f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})",
+                f"(ordered {pl['qtyorder']}, cancelled {pl['qtycance']}, already received {pl['prev_received']})",
             )
 
     # #730: a receipt books cost to every job its lines carry, so each one must still be open for it in

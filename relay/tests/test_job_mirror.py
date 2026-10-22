@@ -386,6 +386,7 @@ def _receipt_context(jobs_by_ord: dict[int, str]):
             "qtyorder": Decimal("5"),
             "unitcost": Decimal("12.50"),
             "polnesta": 2,
+            "qtycance": Decimal("0"),
             "prev_received": Decimal("0"),
         }
         for ord_, job in jobs_by_ord.items()
