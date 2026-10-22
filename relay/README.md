@@ -416,7 +416,9 @@ the apply helper health-gates its relaunch, but `/health` answers as soon as uvi
 nothing about whether the new build can still reach the backend. a build that starts cleanly and never
 connects would therefore record `success` and leave the workstation dark, with nobody on site to notice.
 
-so the first app start after an update lands watches for up to five minutes:
+so the first app start after an update lands waits for the apply helper to record its result (the
+helper writes it only once this app's `/health` answers, so the first read finds `applying`; #1926), then
+watches for up to five minutes:
 
 - `/health` reports the backend channel connected -> the ledger is stamped and that is the end of it
 - it never connects, and a previous `app-<build>\` folder is still on disk -> the `current` junction is

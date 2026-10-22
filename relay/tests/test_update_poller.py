@@ -479,6 +479,89 @@ def test_the_rollback_restarts_serve_from_the_junction_not_the_running_exe(monke
     assert calls == [("stop", tmp_path), ("start", tmp_path / "current" / layout.ASSET_NAME)]
 
 
+class _HelperFinishes(threading.Event):
+    """A stop event standing in for the apply helper: the self-check's first wait is when the helper,
+    having seen this app's /health answer, writes its result to the ledger."""
+
+    def __init__(self, tmp_path, status="success"):
+        super().__init__()
+        self._tmp_path, self._status, self.waits = tmp_path, status, 0
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.waits == 1:
+            updater._finish_ledger(self._tmp_path, self._status, None)
+        return False
+
+
+def _in_flight_ledger(tmp_path, seconds_ago=5.0) -> None:
+    stamped = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    _landed_ledger(tmp_path, status="applying", updated_at=stamped.isoformat(timespec="seconds"))
+
+
+def test_self_check_started_while_the_helper_is_still_applying_runs_once_it_records_success(monkeypatch, tmp_path):
+    # #1926: the helper writes `success` only after this app's /health answers, so the app's first read of
+    # the ledger finds `applying`. Reading once and giving up meant no self-check ever ran.
+    _in_flight_ledger(tmp_path)
+    previous, landed = _versions(tmp_path, _PREVIOUS, _LANDED)
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _health(False))
+    monkeypatch.setattr(layout, "current_target", lambda d: landed)
+    repoints = []
+    monkeypatch.setattr(layout, "repoint_current", lambda d, target: repoints.append(target) or True)
+    monkeypatch.setattr(update_poller, "_restart_serve_from_current", lambda d: None)
+    ticks = iter((0.0, 0.0, 10_000.0))
+    stop = _HelperFinishes(tmp_path)
+
+    verdict = update_poller.self_check(_FakeApp(tmp_path), stop, monotonic=lambda: next(ticks, 10_000.0))
+
+    assert stop.waits >= 1  # it waited for the helper rather than reading once
+    assert verdict == "rolled_back"
+    assert repoints == [previous]
+
+
+def test_self_check_does_not_judge_an_update_the_helper_recorded_as_failed(monkeypatch, tmp_path):
+    _in_flight_ledger(tmp_path)
+    _versions(tmp_path, _PREVIOUS, _LANDED)
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+
+    def _no_health():
+        raise AssertionError("the helper recorded a failure - there is nothing landed to verify")
+
+    monkeypatch.setattr(update_poller, "_read_health", _no_health)
+
+    assert update_poller.self_check(_FakeApp(tmp_path), _HelperFinishes(tmp_path, "failed")) is None
+
+
+def test_self_check_settles_an_abandoned_applying_ledger_the_way_startup_does(monkeypatch, tmp_path):
+    # A helper that died before writing its result: once the ledger reads as abandoned, reconcile_ledger
+    # records the landed build as applied (#369), and the check goes ahead on it.
+    _in_flight_ledger(tmp_path, seconds_ago=updater.ABANDONED_AFTER_SECONDS + 60)
+    _versions(tmp_path, _PREVIOUS, _LANDED)
+    app = _FakeApp(tmp_path)
+
+    assert _self_check(monkeypatch, app, health=_health(True)) == "connected"
+    led = updater.read_ledger(tmp_path)
+    assert (led["status"], led["self_check"]) == ("success", "connected")
+
+
+def test_self_check_leaves_a_ledger_it_cannot_age_in_flight_and_unjudged(monkeypatch, tmp_path):
+    # No readable updated_at never reads as abandoned ("cannot tell" is in flight), so once the wait runs
+    # out the check stands down rather than racing a helper that may still be working.
+    _landed_ledger(tmp_path, status="applying")
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+
+    def _no_health():
+        raise AssertionError("an in-flight update is never judged")
+
+    monkeypatch.setattr(update_poller, "_read_health", _no_health)
+    ticks = iter((0.0, updater.ABANDONED_AFTER_SECONDS + 1))
+    stop = _NoWait(5)
+
+    assert update_poller.self_check(_FakeApp(tmp_path), stop, monotonic=lambda: next(ticks)) is None
+    assert updater.read_ledger(tmp_path)["status"] == "applying"
+
+
 def test_self_check_never_takes_the_app_down_with_it(monkeypatch, tmp_path):
     _landed_ledger(tmp_path)
     monkeypatch.setattr(updater, "current_build", lambda: _LANDED)

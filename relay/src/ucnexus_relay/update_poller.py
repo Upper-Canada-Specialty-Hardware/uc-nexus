@@ -50,6 +50,11 @@ BUSY_GRACE_SECONDS = 120
 SELF_CHECK_SECONDS = 300.0
 SELF_CHECK_POLL_SECONDS = 15.0
 
+# How often the self-check re-reads a ledger the apply helper has not settled yet (#1926). The helper
+# relaunches this build and writes `success` only once its /health answers, so the new app's first read
+# almost always finds `applying`.
+LEDGER_SETTLE_POLL_SECONDS = 5.0
+
 
 def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[bool, str]:
     """Decide whether to stage the update `check` describes. Returns (stage?, reason).
@@ -274,10 +279,35 @@ def _roll_back(install_dir, target: str) -> str:
     return "rolled_back"
 
 
+def _settled_ledger(install_dir, stop: threading.Event, monotonic) -> dict | None:
+    """The ledger once the apply helper has recorded its result, or None if the app shut down first.
+
+    This runs in the app the helper just relaunched, and the helper writes `success` only after that
+    app's /health answers - seconds AFTER this thread first looks (#1926). Reading once found `applying`
+    and skipped the check for good. So a staging/applying ledger is waited out, on the same rules the
+    rest of the updater uses: until the helper settles it, or until it is abandoned, when
+    reconcile_ledger settles it exactly as startup would (#369). A ledger that never reads as abandoned
+    (no readable timestamp) is still in flight after the wait, and in-flight is never judged."""
+    deadline = None
+    while True:
+        ledger = updater.read_ledger(install_dir)
+        if ledger.get("status") not in ("staging", "applying"):
+            return ledger
+        if updater.ledger_is_abandoned(ledger):
+            updater.reconcile_ledger(install_dir, logger)
+            return updater.read_ledger(install_dir)
+        if deadline is None:
+            deadline = monotonic() + updater.ABANDONED_AFTER_SECONDS
+        elif monotonic() >= deadline:
+            return ledger
+        if stop.wait(LEDGER_SETTLE_POLL_SECONDS):
+            return None
+
+
 def _self_check(app, stop: threading.Event, monotonic) -> str | None:
     install_dir = app._install_dir()
-    ledger = updater.read_ledger(install_dir)
-    if not needs_self_check(ledger):
+    ledger = _settled_ledger(install_dir, stop, monotonic)
+    if ledger is None or not needs_self_check(ledger):
         return None
     target = ledger.get("target_build") or ""
     deadline = monotonic() + SELF_CHECK_SECONDS
