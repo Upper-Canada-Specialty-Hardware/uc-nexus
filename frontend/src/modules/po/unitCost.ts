@@ -6,3 +6,6 @@
 export function pastTheCent(text: string): boolean {
   return (text.trim().split('.')[1] ?? '').replace(/0+$/, '').length > 2;
 }
+
+/** #1936: a line's unit cost column is Numeric(19,5), so the server refuses anything at or above this. */
+export const MAX_UNIT_COST = 1e14;

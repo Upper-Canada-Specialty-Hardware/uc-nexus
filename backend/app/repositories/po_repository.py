@@ -333,11 +333,24 @@ def unit_cost_past_cents(unit_cost) -> bool:
     return Decimal(str(unit_cost)).normalize().as_tuple().exponent < -_UNIT_COST_PLACES
 
 
+# A line's unit_cost column is Numeric(19,5), so anything at or above this overflows at flush (#1936) - the
+# masked server error, on a draft save or a cost edit, where a typo of a few extra digits should be named.
+_MAX_UNIT_COST = Decimal(10) ** 14
+
+
+def refuse_unit_cost_too_large(unit_cost) -> None:
+    """Refuse a unit cost too large for its column, as a field error rather than an overflow (#1936)."""
+    if unit_cost is not None and Decimal(str(unit_cost)) >= _MAX_UNIT_COST:
+        raise ValidationError(f"Unit cost must be less than {_MAX_UNIT_COST:,}", field="unit_cost")
+
+
 def validate_line_unit_costs(line_items: list[dict]) -> None:
     """Refuse a PO whose line unit costs GP would refuse, before anything reaches GP or the outbox (#1394).
 
     GP holds a line's unit cost to the cent, so 0.33333 fails inside eConnect with an error a buyer can't
     act on. Refused here instead, naming each line, so the buyer rounds it and registers again."""
+    for li in line_items:
+        refuse_unit_cost_too_large(li.get("unit_cost"))
     past = [
         f"{li.get('product_code') or li.get('hardware_category') or 'a line'} at {li['unit_cost']}"
         for li in line_items
@@ -476,6 +489,7 @@ def create_po(
         unit_cost = li_data.get("unit_cost")
         if unit_cost is not None and unit_cost < 0:
             raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+        refuse_unit_cost_too_large(unit_cost)
 
         line_job_cost = gp_po.line_is_job_cost(li_data, has_project=has_project)
         # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
@@ -681,6 +695,7 @@ def register_po_in_gp(
         unit_cost = li_data.get("unit_cost")
         if unit_cost is None or unit_cost < 0:
             raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+        refuse_unit_cost_too_large(unit_cost)
 
         classification_val = li_data.get("classification")
         if isinstance(classification_val, str):
@@ -1980,6 +1995,7 @@ def update_line_item_unit_cost(
     # #1172: zero is a no-charge line, which drafting and registration already accept.
     if unit_cost < 0:
         raise ValidationError("Unit cost cannot be negative", field="unit_cost")
+    refuse_unit_cost_too_large(unit_cost)
     if unit_cost_past_cents(unit_cost):
         raise ValidationError("GP keeps a unit cost to the cent - use at most 2 decimal places", field="unit_cost")
 

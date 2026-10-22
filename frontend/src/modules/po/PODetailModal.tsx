@@ -38,7 +38,7 @@ import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
 import { canUploadPoDocuments, poDocumentGate } from './poDocumentGate';
-import { pastTheCent } from './unitCost';
+import { MAX_UNIT_COST, pastTheCent } from './unitCost';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -94,7 +94,8 @@ function formatFileSize(bytes: number): string {
 function unitCostInvalid(val: string): boolean {
   if (val === '') return false;
   const parsed = parseFloat(val);
-  return isNaN(parsed) || parsed < 0 || pastTheCent(val);
+  // #1936: at or past MAX_UNIT_COST the line's cost column cannot hold it, and the server refuses it.
+  return isNaN(parsed) || parsed < 0 || pastTheCent(val) || parsed >= MAX_UNIT_COST;
 }
 
 // --- Props ---

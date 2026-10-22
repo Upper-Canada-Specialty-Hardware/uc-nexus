@@ -723,6 +723,8 @@ def test_notes_on_a_po_that_does_not_exist_is_not_found(db_session):
         ({"ordered_quantity": 0}, "ordered_quantity"),
         ({"ordered_quantity": -5}, "ordered_quantity"),
         ({"unit_cost": -10}, "unit_cost"),
+        # #1936: too large for the Numeric(19,5) column, refused on the field rather than at flush.
+        ({"unit_cost": 1e14}, "unit_cost"),
     ],
 )
 def test_create_po_refuses_a_line_it_could_not_register(db_session, override, field):

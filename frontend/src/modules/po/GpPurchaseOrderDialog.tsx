@@ -57,7 +57,7 @@ import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { computeRegisterTotals, formatMoney } from './registerTotals';
-import { pastTheCent } from './unitCost';
+import { MAX_UNIT_COST, pastTheCent } from './unitCost';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -1051,6 +1051,8 @@ export default function GpPurchaseOrderDialog({
       else if (cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
       // #1394: GP keeps a unit cost to the cent and refuses more places at the line; trailing zeros are fine.
       else if (pastTheCent(costText)) errs[`li_${i}_cost`] = 'To the cent';
+      // #1936: past what the line's cost column holds, which the server refuses.
+      else if (cost >= MAX_UNIT_COST) errs[`li_${i}_cost`] = 'Too large';
       // A pasted unit that is not one of GP's own would be refused at registration. Only checked on
       // pasted lines, and only once GP's list is known: a line typed here picks from that list.
       if (pastedKeys.has(li.key) && unitsOfMeasure.length > 0 && !unitsOfMeasure.includes(li.uofm))
