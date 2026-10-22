@@ -160,23 +160,28 @@ function ShipmentMoment({
 /**
  * #909: the shipments table fits its width and never scrolls sideways; columns are resizable and
  * remembered per person. Minimums hold a packing slip number, the widest status chip and a local date
- * whole; names, project, method and carrier ellipsize with the full value on hover. The expander is
- * fixed, and the expanded detail row spans the table and wraps as before.
+ * whole; load, names, project, method and carrier ellipsize with the full value on hover. The expander
+ * is fixed, and the expanded detail row spans the table and wraps as before.
+ *
+ * #1836: the all-projects table's minimums outrun the width at 1366 with the rail open, so the columns
+ * that must read whole - the slip number, the status chip and the dates - are protected and keep their
+ * minimums; the text columns give way first.
  */
 function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
   return [
     { id: 'expand', label: 'Expand', min: 44, fixed: 44, header: null, flush: true },
-    { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1 },
-    // #1724: the truck it rides, as the dock names it ("22713-10152026", up to a "-2" suffix).
-    // #1745: wide enough for the longest number whole - a demo load with a suffix, D-23331-10192026-2.
-    { id: 'load', label: 'Load', min: 176, weight: 1 },
+    { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1, protect: true },
+    // #1724: the truck it rides, as the dock names it ("22713-10152026", up to a "-2" suffix). #1836:
+    // wide enough for a plain load number; a suffixed one ellipsizes, whole on hover, rather than
+    // widen the table past a laptop (#1745 had it at 176, which squeezed every other column).
+    { id: 'load', label: 'Load', min: 136, weight: 1 },
     ...(isGlobal ? [{ id: 'project', label: 'Project', min: 120, weight: 1.5 }] : []),
-    { id: 'status', label: 'Status', min: 112, weight: 0.8 },
+    { id: 'status', label: 'Status', min: 112, weight: 0.8, protect: true },
     { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },
-    { id: 'created', label: 'Created', min: 96, weight: 0.7 },
+    { id: 'created', label: 'Created', min: 96, weight: 0.7, protect: true },
     // #961: wide enough for an actual date and time ("Oct 12, 10:45 AM") or "planned 10/12/2026".
-    { id: 'pickup', label: 'Pick-up', min: 120, weight: 0.8 },
-    { id: 'delivery', label: 'Delivery', min: 120, weight: 0.8 },
+    { id: 'pickup', label: 'Pick-up', min: 120, weight: 0.8, protect: true },
+    { id: 'delivery', label: 'Delivery', min: 120, weight: 0.8, protect: true },
     { id: 'method', label: 'Method', min: 88, weight: 0.8 },
     { id: 'carrier', label: 'Carrier / Tag / BOL', min: 120, weight: 1.3 },
   ];
