@@ -901,6 +901,40 @@ def test_a_failure_before_the_relay_call_releases_the_claim(committed, monkeypat
     assert relay.calls == [], "nothing should have reached GP"
 
 
+def test_a_finished_key_answers_again_only_for_its_own_draft(committed, monkeypatch, approve_env):
+    """#1851: a retry under a key that already finished returns that receive, but the early return used
+    to skip every check the claim makes. Sent with another draft, it answered with the first draft's
+    receive and left the second untouched; now it is refused, and nothing reaches GP."""
+    first, second = committed(), committed()
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    key = str(uuid.uuid4())
+    done = _approve(first.draft_id, key=key)
+
+    again = _approve(first.draft_id, key=key)
+    assert again.receive_record.id == done.receive_record.id
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(second.draft_id, key=key)
+    assert excinfo.value.field == "idempotency_key"
+    assert len(relay.calls) == 1
+    assert _read_draft(second.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_finished_key_is_refused_to_a_caller_outside_the_drafts_company(committed, monkeypatch, approve_env):
+    """#1851: the tenant check the claim runs now runs ahead of the finished-key answer too."""
+    from app.errors import NotFoundError
+
+    f = committed()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    key = str(uuid.uuid4())
+    _approve(f.draft_id, key=key)
+
+    monkeypatch.setattr(warehouse_module, "tenant_scope", lambda info: "SOMEONE-ELSE")
+    with pytest.raises(NotFoundError):
+        _approve(f.draft_id, key=key)
+
+
 def test_a_bin_that_is_not_defined_is_refused_before_gp(committed, monkeypatch, approve_env):
     """#1850: the persist refuses an undefined or retired bin, but only after GP has taken the receipt -
     which left the receipt in GP, the draft stuck approving and the PO's GP sync held behind it. The

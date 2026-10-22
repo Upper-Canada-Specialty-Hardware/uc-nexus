@@ -15,7 +15,13 @@ from app.auth import (
     tenant_scope,
 )
 from app.database import SessionLocal
-from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.errors import (
+    RelayCallError,
+    RelayOpUnsupportedError,
+    RelayTimeoutError,
+    RelayUnavailableError,
+    ValidationError,
+)
 from app.repositories import custom_items_repository, project_repository, tenancy, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.repositories.project_labels import project_labels
@@ -324,6 +330,19 @@ def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
     if set(caller_roles(info.context)) & WAREHOUSE_MANAGERS:
         return
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
+
+
+def _require_finished_approval_of(draft_id, state, scope) -> None:
+    """A key that already finished a receive answers only for the draft that receive was approved from,
+    and only for a caller in its company (#1851). The early return skipped both checks the claim makes,
+    so any manager holding a finished key could read back another draft or another company's receive."""
+    from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+
+    with SessionLocal() as session:
+        tenancy.require_receive_draft_in_scope(session, draft_id, scope)
+        draft = session.get(ReceiveDraftModel, draft_id)
+        if state.op != "create_receive" or draft is None or str(draft.receive_record_id) != state.result_id:
+            raise ValidationError("This approval key was already used for another receive.", field="idempotency_key")
 
 
 def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, scope=None, expected_updated_at=None):
@@ -1195,18 +1214,20 @@ class WarehouseMutations:
         draft_id = uuid.UUID(str(input.draft_id))
         await asyncio.to_thread(_authorize_draft_approval, info, user["user_id"], draft_id)
 
+        # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
+        # company is a Clerk round trip the first time a request asks for it.
+        scope = await asyncio.to_thread(tenant_scope, info)
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
             # Fully finished under this key already. The draft link was written in the same
-            # transaction as the receive, so there is nothing to repair - just answer with it.
+            # transaction as the receive, so there is nothing to repair - just answer with it, once the
+            # key is this draft's and the draft the caller's (#1851).
+            await asyncio.to_thread(_require_finished_approval_of, draft_id, state, scope)
             record = await asyncio.to_thread(_load_receive_type, uuid.UUID(state.result_id))
             draft = await asyncio.to_thread(_load_draft_type, draft_id)
             return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 
         reviewer_name = await asyncio.to_thread(resolve_display_name, user["user_id"])
-        # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
-        # company is a Clerk round trip the first time a request asks for it.
-        scope = await asyncio.to_thread(tenant_scope, info)
         ctx = await asyncio.to_thread(
             _claim_draft_for_approval,
             draft_id,
