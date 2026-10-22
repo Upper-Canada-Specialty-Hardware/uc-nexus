@@ -172,8 +172,16 @@ def _unlink_quietly(p: Path) -> None:
 # --- attempt ledger (update-state.json) ---------------------------------------------------------------
 # One small JSON file the staging step seeds and the helper updates, so a failure is recorded (surfaced in
 # the Updates tab) and repeated attempts at the SAME target build are capped. Shape:
-#   {status, target_build, target_url, target_dir, attempts, last_error, first_attempt_at, updated_at}
-# status in: staging | applying | success | failed | cancelled.
+#   {status, target_build, target_url, target_dir, attempts, last_error, first_attempt_at, updated_at,
+#    previous_dir, failed_dirs, self_check}
+# status in: staging | applying | success | failed | cancelled | rolled_back.
+#
+# previous_dir and failed_dirs outlive the target they were written for (#1932). previous_dir is the folder
+# `current` pointed at before the last update replaced it: what the post-update self-check rolls back to,
+# so cleanup keeps it. failed_dirs names the folders of builds that failed or were rolled back, which
+# cleanup does not count toward the builds it keeps - a failed build held the second slot otherwise, and
+# the good folder it had failed over was deleted out from under the next rollback.
+_FAILED_DIRS_KEPT = 10  # the record only has to outlive a cleanup or two; it is not a history
 
 
 def _now_iso() -> str:
@@ -212,8 +220,22 @@ def _stage_ledger(install_dir: Path, target_build: str, target_url: str, target_
             "last_error": prev.get("last_error") if same else None,
             "first_attempt_at": prev.get("first_attempt_at") if same else None,
             "updated_at": _now_iso(),
+            "previous_dir": prev.get("previous_dir"),
+            "failed_dirs": list(prev.get("failed_dirs") or []),
         },
     )
+
+
+def _record_dir_outcome(ledger: dict, ok: bool) -> None:
+    """Add the target's folder to failed_dirs on a failure, or take it off on a success (a build retried
+    after a failure that then lands is not a failed build)."""
+    name = Path(ledger.get("target_dir") or "").name
+    if not name:
+        return
+    failed = [d for d in (ledger.get("failed_dirs") or []) if d != name]
+    if not ok:
+        failed.append(name)
+    ledger["failed_dirs"] = failed[-_FAILED_DIRS_KEPT:]
 
 
 def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
@@ -221,7 +243,20 @@ def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
     ledger["status"] = status
     ledger["last_error"] = error
     ledger["updated_at"] = _now_iso()
+    if status in ("success", "failed"):
+        _record_dir_outcome(ledger, ok=status == "success")
     _write_ledger(install_dir, ledger)
+
+
+def versions_to_keep(install_dir: str | Path, extra=()) -> set[str]:
+    """layout.versions_to_keep with what the ledger knows (#1932): the folder the last update replaced is
+    always kept, and folders of builds that failed or were rolled back do not count toward the newest two."""
+    ledger = read_ledger(install_dir)
+    return layout.versions_to_keep(
+        install_dir,
+        extra=(*extra, ledger.get("previous_dir")),
+        exclude=ledger.get("failed_dirs") or (),
+    )
 
 
 def record_self_check(install_dir: str | Path, verdict: str) -> None:
@@ -245,6 +280,7 @@ def mark_rolled_back(install_dir: str | Path, error: str) -> None:
     install_dir = Path(install_dir)
     ledger = read_ledger(install_dir)
     ledger.update(status="rolled_back", last_error=error, self_check="rolled_back", updated_at=_now_iso())
+    _record_dir_outcome(ledger, ok=False)
     _write_ledger(install_dir, ledger)
 
 
@@ -681,6 +717,12 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
         return {"ok": False, "error": msg}
 
     old_target = _current_target(install_dir)  # for rollback
+    if old_target is not None and Path(old_target).name != new_dir.name:
+        # Recorded before anything moves (#1932): the self-check that judges the new build later rolls
+        # back to exactly this folder, and cleanup keeps it until another update replaces it.
+        ledger = read_ledger(install_dir)
+        ledger["previous_dir"] = str(old_target)
+        _write_ledger(install_dir, ledger)
     deadline = _monotonic() + _GLOBAL_DEADLINE_SECONDS
 
     _wait_for_pid_exit(app_pid, deadline, log)
@@ -708,7 +750,7 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
         _finish_ledger(install_dir, "success", None)
         # Keep the version we just left as well as the new one. WE are still running from it, and it is
         # what the next update rolls back to if that one fails (#376). Anything older goes now.
-        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(new_dir, old_target)))
+        layout.cleanup_old_versions(install_dir, versions_to_keep(install_dir, extra=(new_dir, old_target)))
         log.info("update applied: now on %s", target)
         return {"ok": True}
 
@@ -740,7 +782,7 @@ def apply_update(url: str, install_dir: str | Path) -> dict:
     except Exception:  # noqa: BLE001
         pass
     if ok:
-        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(ver, old_target)))
+        layout.cleanup_old_versions(install_dir, versions_to_keep(install_dir, extra=(ver, old_target)))
         return {"ok": True, "restarted": True, "note": "reopen the window to load the updated UI"}
     if old_target is not None:
         layout.repoint_current(install_dir, old_target)

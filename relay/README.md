@@ -423,7 +423,10 @@ watches for up to five minutes:
 - `/health` reports the backend channel connected -> the ledger is stamped and that is the end of it
 - it never connects, and a previous `app-<build>\` folder is still on disk -> the `current` junction is
   repointed back to it, the serve child is restarted from that junction (not from the running exe, which
-  IS the build being rolled back), and `update-state.json` records `rolled_back` with the reason
+  IS the build being rolled back), and `update-state.json` records `rolled_back` with the reason. the
+  previous folder is the one the update replaced, which the apply helper records in the ledger as
+  `previous_dir` and cleanup always keeps; builds that failed or were rolled back are listed in
+  `failed_dirs` and never count toward the two folders cleanup keeps (#1932)
 - it never connects and there is no previous version left -> the build stays; a broken channel beats no
   relay at all
 

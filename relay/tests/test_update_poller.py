@@ -623,3 +623,88 @@ def test_self_check_never_takes_the_app_down_with_it(monkeypatch, tmp_path):
 
     monkeypatch.setattr(update_poller, "_read_health", _boom)
     assert update_poller.self_check(_FakeApp(tmp_path), threading.Event()) is None
+
+
+# --- the rollback target survives a failed update (#1932) ---------------------------------------------
+# Cleanup kept the two highest build folders, failed ones included, and the rollback took the highest
+# folder that was not current. After 50 -> 51 (failed, back on 50) -> 52 that kept 52 and 51, deleted 50,
+# and a 52 that could not reach the backend was rolled back onto 51 - the one build known not to work.
+
+
+def test_after_a_failed_update_the_next_rollback_goes_to_the_build_it_replaced(monkeypatch, tmp_path):
+    import logging
+
+    from ucnexus_relay import app as appmod
+
+    b50, b51, b52 = (f"relay-v0.1.0-build.{n}" for n in (50, 51, 52))
+    (d50,) = _versions(tmp_path, b50)
+    junction = {"current": d50}
+    monkeypatch.setattr(layout, "current_target", lambda d: junction["current"])
+    monkeypatch.setattr(layout, "repoint_current", lambda d, target: junction.update(current=Path(target)) or True)
+    monkeypatch.setattr(updater, "_update_logger", lambda d: logging.getLogger("relay-test-1932"))
+    monkeypatch.setattr(updater, "_wait_for_pid_exit", lambda pid, deadline, log: None)
+    monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: None)
+    # 51 never comes up and the helper relaunches 50; then 52 comes up.
+    healthy = iter([False, True, True])
+    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: next(healthy))
+    running = {"dir": d50}
+    monkeypatch.setattr(layout, "running_version_dir", lambda: running["dir"])
+    app = appmod.RelayApp()
+    monkeypatch.setattr(app, "_install_dir", lambda: tmp_path)
+
+    def _update_to(build):
+        (ver,) = _versions(tmp_path, build)
+        updater._stage_ledger(tmp_path, build, "https://example.invalid/ucnexus-relay.zip", str(ver))
+        return ver, updater.apply_staged_update(4242, tmp_path)
+
+    # 50 -> 51: 51 does not start, the junction goes back to 50, and the app comes up on 50 and cleans up.
+    _, result = _update_to(b51)
+    assert result["ok"] is False and junction["current"] == d50
+    app._cleanup_old_versions()
+
+    # 50 -> 52 lands; the helper cleans up, then the app it relaunched on 52 cleans up again.
+    d52, result = _update_to(b52)
+    assert result["ok"] is True and junction["current"] == d52
+    running["dir"] = d52
+    app._cleanup_old_versions()
+    assert d50.exists()  # the build 52 replaced survives both cleanups
+
+    # 52 never reaches the backend: back to 50, which 52 replaced, not to 51, which already failed.
+    monkeypatch.setattr(updater, "current_build", lambda: b52)
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _health(False))
+    monkeypatch.setattr(update_poller, "_restart_serve_from_current", lambda d: None)
+    ticks = iter((0.0, 10_000.0))
+    verdict = update_poller.self_check(app, threading.Event(), monotonic=lambda: next(ticks, 10_000.0))
+
+    assert verdict == "rolled_back"
+    assert junction["current"] == d50
+    led = updater.read_ledger(tmp_path)
+    assert led["previous_dir"] == str(d50)
+    assert {layout.version_dir_name(b51), layout.version_dir_name(b52)} <= set(led["failed_dirs"])
+
+
+def test_cleanup_does_not_count_failed_builds_toward_the_two_it_keeps(tmp_path):
+    for build in ("relay-v0.1.0-build.49", "relay-v0.1.0-build.50", "relay-v0.1.0-build.51"):
+        _versions(tmp_path, build)
+    failed = layout.version_dir_name("relay-v0.1.0-build.51")
+    updater._write_ledger(tmp_path, {"status": "failed", "failed_dirs": [failed]})
+
+    keep = updater.versions_to_keep(tmp_path)
+
+    assert keep == {layout.version_dir_name("relay-v0.1.0-build.50"), layout.version_dir_name("relay-v0.1.0-build.49")}
+
+
+def test_cleanup_always_keeps_the_folder_the_last_update_replaced(tmp_path):
+    # The first install is app-installed, which carries no build number and so never ranks in the two.
+    (installed,) = _versions(tmp_path, "installed")
+    _versions(tmp_path, "relay-v0.1.0-build.51", "relay-v0.1.0-build.52")
+    updater._write_ledger(tmp_path, {"status": "success", "previous_dir": str(installed)})
+
+    assert installed.name in updater.versions_to_keep(tmp_path)
+
+
+def test_a_build_that_lands_after_failing_is_no_longer_recorded_as_failed(tmp_path):
+    ver = tmp_path / layout.version_dir_name(_LANDED)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_dir": str(ver), "failed_dirs": [ver.name]})
+    updater._finish_ledger(tmp_path, "success", None)
+    assert updater.read_ledger(tmp_path)["failed_dirs"] == []

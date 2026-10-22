@@ -244,11 +244,24 @@ def needs_self_check(ledger: dict) -> bool:
 
 
 def _previous_version_dir(install_dir):
-    """The highest-build app-<build>/ folder that is NOT the one `current` points at, or None if this
-    install has no earlier version left to fall back to (layout keeps two)."""
+    """The folder to roll back to: the one the update replaced, as the apply helper recorded it in the
+    ledger (#1932), or None if this install has no earlier version left to fall back to.
+
+    It used to be the highest-build folder that is not `current`, which after 50 -> 51 (failed, back on
+    50) -> 52 is 51, the build that already failed - and cleanup had deleted 50 by then. The highest
+    folder that is neither current nor recorded as failed stands in only when the ledger names none (an
+    update applied by a helper older than the record) or the one it names is gone."""
+    ledger = updater.read_ledger(install_dir)
     current = layout.current_target(install_dir)
+    current_name = Path(current).name if current is not None else None
+    recorded = ledger.get("previous_dir")
+    if recorded:
+        previous = Path(recorded)
+        if previous.name != current_name and (previous / layout.ASSET_NAME).exists():
+            return previous
+    failed = set(ledger.get("failed_dirs") or ())
     for candidate in layout.version_dirs(install_dir):
-        if current is None or candidate.name != Path(current).name:
+        if candidate.name != current_name and candidate.name not in failed:
             return candidate
     return None
 

@@ -277,7 +277,8 @@ class RelayApp:
 
     def _cleanup_old_versions(self) -> None:
         """Discard stale app-<build>/ version folders a past update left behind, keeping the one we run
-        from, the one `current` points at, and the previous build as a rollback target.
+        from, the one `current` points at, and the previous build as a rollback target - the folder the
+        last update replaced, as the ledger recorded it, rather than merely the next-highest (#1932).
 
         Skipped outright while an update is still in flight. This runs in the app the update helper just
         relaunched, and that helper is executing from the PREVIOUS version folder while it health-gates
@@ -295,7 +296,7 @@ class RelayApp:
                 logger.info("skipping stale version cleanup: an update is still in flight")
                 return
             running = layout.running_version_dir()
-            keep = layout.versions_to_keep(install_dir, extra=(running, layout.current_target(install_dir)))
+            keep = updater.versions_to_keep(install_dir, extra=(running, layout.current_target(install_dir)))
             layout.cleanup_old_versions(install_dir, keep)
         except Exception:
             logger.exception("error cleaning up old relay versions")
