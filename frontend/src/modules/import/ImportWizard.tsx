@@ -563,7 +563,11 @@ export default function ImportWizard({
   // can never disagree. Runs for every re-import purpose (PO, shop assembly, shipping) - the breakdown
   // is informational everywhere; the purpose-specific gates (over-order for PO, available-to-pull for
   // the requests) live in other columns.
-  const { data: hardwareStatusData } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
+  const {
+    data: hardwareStatusData,
+    error: hardwareStatusError,
+    refetch: refetchHardwareStatus,
+  } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
     GET_HARDWARE_STATUS_BY_PRODUCT,
     {
       variables: { projectIds: existingProjectId ? [existingProjectId] : [] },
@@ -590,7 +594,11 @@ export default function ImportWizard({
   // number that decides nothing - and inviting them to trim a request over stock that may well
   // arrive before the shop needs it. Availability belongs to the manager's batch screen now.
   const requestPurposeActive = open && purpose === 'po' && isReimport;
-  const { data: availabilityData } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+  const {
+    data: availabilityData,
+    error: availabilityError,
+    refetch: refetchAvailability,
+  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
     GET_PROJECT_INVENTORY_AVAILABILITY,
     {
       variables: { projectId: existingProjectId },
@@ -598,6 +606,19 @@ export default function ImportWizard({
       fetchPolicy: 'cache-and-network',
     },
   );
+
+  // #1844: the PO step's Ordered / Received / Available figures and finalize's over-buying check are built
+  // from these two reads, and a failed one read as zero everywhere - a project with stock on the shelf
+  // looked empty, and nothing warned that the drafts might re-buy it. A failed read is said on the PO and
+  // finalize steps, and finishing without the figures is ticked for this file rather than happening quietly.
+  const inventoryReadFailed =
+    purpose === 'po' && isReimport && (hardwareStatusError !== undefined || availabilityError !== undefined);
+  const [inventoryWaivedFor, setInventoryWaivedFor] = useState<typeof parsed | null>(null);
+  const inventoryBlocksFinalize = inventoryReadFailed && !(parsed && inventoryWaivedFor === parsed);
+  const retryInventoryReads = () => {
+    if (hardwareStatusError) void refetchHardwareStatus().catch(() => undefined);
+    if (availabilityError) void refetchAvailability().catch(() => undefined);
+  };
 
   const availabilityByCombo = useMemo(() => {
     const map = new Map<string, InventoryAvailabilityRow>();
@@ -1668,6 +1689,36 @@ export default function ImportWizard({
             </Alert>
           )}
 
+          {/* #1844: on the two steps that show or check the project's inventory figures. */}
+          {inventoryReadFailed && (effectiveStepId === 'purchase-orders' || effectiveStepId === 'finalize') && (
+            <Alert
+              severity="error"
+              sx={{ mb: 2 }}
+              action={
+                <Button color="inherit" size="small" onClick={retryInventoryReads}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn't load this project's inventory figures, so Ordered, Received and Available read as zero and
+              the over-buying check can't see what the project already has.{' '}
+              {userMessage(hardwareStatusError ?? availabilityError, { reading: true })}
+              {effectiveStepId === 'finalize' && (
+                <FormControlLabel
+                  sx={{ display: 'flex', mt: 0.5 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={!inventoryBlocksFinalize}
+                      onChange={(e) => setInventoryWaivedFor(e.target.checked ? parsed : null)}
+                    />
+                  }
+                  label="Finish without the inventory figures"
+                />
+              )}
+            </Alert>
+          )}
+
           {/* One entrance per step. Keyed by the step id so stepping forward or back re-triggers it;
               the step's own content and gating are untouched by the wrapper. It arrives from the
               right going forward and from the left going back (#1086). */}
@@ -2171,7 +2222,13 @@ export default function ImportWizard({
                   variant="contained"
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
-                  disabled={finalizeLoading || isGpSetupBroken(project) || exclusionsBlockFinalize || assemblyHold !== null}
+                  disabled={
+                    finalizeLoading ||
+                    isGpSetupBroken(project) ||
+                    exclusionsBlockFinalize ||
+                    assemblyHold !== null ||
+                    inventoryBlocksFinalize
+                  }
                   onClick={() => (finalizeOverBuy.length > 0 ? setOverBuyOpen(true) : setConfirmOpen(true))}
                 >
                   Finish Import Session

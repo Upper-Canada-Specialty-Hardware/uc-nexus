@@ -14,6 +14,7 @@ import {
   GET_PROJECT_INVENTORY_AVAILABILITY,
 } from '../../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../../graphql/shipping';
+import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../../graphql/admin';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -840,6 +841,60 @@ describe('ImportWizard over-ordering selection', () => {
 
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Proceed anyway/i })).not.toBeInTheDocument();
+  });
+});
+
+// #1844: the PO step's Ordered / Received / Available figures and finalize's over-buying check come from
+// the project's hardware status; a failed read showed them all as zero and said nothing.
+describe('ImportWizard failed inventory read', () => {
+  const RECONCILE_VARIABLES = {
+    projectId: 'proj-1',
+    items: [
+      { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+      { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+    ],
+  };
+  const reconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    result: {
+      data: {
+        reconcileSchedule: [
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 3, status: 'NOT_COVERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantity: 1, status: 'NOT_COVERED' },
+        ],
+      },
+    },
+  };
+  const statusFails: MockedResponse = {
+    request: { query: GET_HARDWARE_STATUS_BY_PRODUCT, variables: { projectIds: ['proj-1'] } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    error: new Error('network down'),
+  };
+
+  it('says so on the PO step, and finishing without the figures is ticked', async () => {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, reconcileMock, statusFails] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    fireEvent.click(screen.getByRole('button', { name: 'UCH Site (2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'UCH Site (2)' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByText(/Couldn't load this project's inventory figures/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+    // Include a draft, the one thing this step asks before Next.
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    clickNext();
+    await flushApollo();
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Finish without the inventory figures' }));
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeEnabled();
   });
 });
 
