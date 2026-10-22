@@ -339,6 +339,40 @@ def test_a_product_given_different_answers_at_different_costs_is_not_listed(db_s
     assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE, Classification.SITE_HARDWARE}
 
 
+def test_a_mixed_products_rows_put_back_keep_the_classification_they_had(db_session):
+    """#1919: a Mixed product is on no list, so a finalize that doesn't pick it (a shop request, a PO
+    finalize that left it alone) put its wiped unordered rows back with no classification at all."""
+    project = _project(db_session)
+    items = [_item("A01", "HG-100"), {**_item("A02", "HG-100"), "unit_cost": 20.0}]
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01"), _opening("A02")],
+            "hardware_items": items,
+            "classifications": [
+                _classified("HG-100", Classification.SHOP_HARDWARE),
+                {**_classified("HG-100", Classification.SITE_HARDWARE), "unit_cost": 20.0},
+            ],
+        },
+    )
+    db_session.flush()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {"project_id": str(project.id), "openings": [_opening("A01"), _opening("A02")], "hardware_items": items},
+    )
+    db_session.flush()
+
+    rows = db_session.execute(
+        select(Opening.opening_number, HardwareItem.classification)
+        .join(Opening, HardwareItem.opening_id == Opening.id)
+        .where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+    ).all()
+    assert sorted(rows) == [("A01", Classification.SHOP_HARDWARE), ("A02", Classification.SITE_HARDWARE)]
+    assert _listed(db_session, project) == {}
+
+
 def _mixed(session, project, codes: list[str]) -> None:
     """Each code on A01 as Shop, plus one ordered row of it as Site: a Mixed product, never listed - the
     state a product whose rows disagreed was left in by the #1443 backfill."""

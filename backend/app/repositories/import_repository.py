@@ -1011,12 +1011,38 @@ def finalize_import_session(
         session, project.id, product_classification, listed
     )
 
+    # #1919: a Mixed product this finalize didn't pick is on neither the list nor this finalize's picks, so
+    # the unordered rows step 2 wipes came back from step 5 with no classification, and the shop composer
+    # stopped counting them. #1443 ruled an import doesn't change a product's classification, so what a row
+    # had is the last fallback - read before the wipe, keyed by cost the way classification_for is asked. A
+    # key whose rows disagree is left out.
+    stored_by_key: dict[tuple[str, str, float], set[Classification]] = defaultdict(set)
+    for category, code, cost, stored in session.execute(
+        select(
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.unit_cost,
+            HardwareItemModel.classification,
+        ).where(
+            HardwareItemModel.project_id == project.id,
+            HardwareItemModel.state == HardwareItemState.AVAILABLE,
+            HardwareItemModel.classification.is_not(None),
+        )
+    ).all():
+        stored_by_key[(category, code, float(cost) if cost else 0.0)].add(stored)
+    stored_classification = {key: next(iter(cls)) for key, cls in stored_by_key.items() if len(cls) == 1}
+
     def classification_for(hardware_category: str, product_code: str, unit_cost: float):
         listed_value = listed.get((hardware_category, product_code))
         if listed_value is not None:
             return listed_value
         exact = classification_map.get((hardware_category, product_code, unit_cost))
-        return exact if exact is not None else product_classification.get((hardware_category, product_code))
+        if exact is not None:
+            return exact
+        product_value = product_classification.get((hardware_category, product_code))
+        if product_value is not None:
+            return product_value
+        return stored_classification.get((hardware_category, product_code, float(unit_cost)))
 
     # #1392: a product the project already has as Shop / Site can't be taken to By Others by a replace.
     # Checked here, before step 2 rewrites the rows, for the same reason.
