@@ -554,36 +554,31 @@ async def _record_connected(websocket: WebSocket, install_id, connected_at: date
     )
 
 
-@app.websocket("/relay-link")
-async def relay_link(websocket: WebSocket):
-    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
-    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
-    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
-    that requested it. Every other slice reaches the relay through relay_call(), never this route
-    directly."""
-    auth_header = websocket.headers.get("authorization") or ""
-    scheme, _, secret = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not secret.strip():
-        await websocket.close(code=4401)
-        return
+def _authenticate_relay_secret(secret: str):
+    """Match the presented secret to an enrolled install, or adopt it through an armed window. Returns
+    (install_id or None, adopted, armed_by).
 
+    Blocking - the lookup, the legacy rows' decrypt scan and the commit - so /relay-link runs it off the
+    event loop (#1923): on the loop, every handshake stalled every other request, and the connected
+    relay's own replies, for as long as the database took. The session opens and closes in here, in the
+    one thread that uses it."""
     adopted = False
     adopted_by: str | None = None
     with SessionLocal() as session:
-        install = relay_repository.authenticate_secret(session, secret.strip())
+        install = relay_repository.authenticate_secret(session, secret)
         if install is None:
             # No install matched. If an admin has armed an adopt window, bind the presented secret to
             # that install instead of refusing (#353 PR B): this is the only recovery path for a relay
             # whose stored secret has drifted from the one it is dialling with, when nobody can reach
             # the workstation to restart it. Adoption is consumed here, single-use.
             #
-            # Never while another relay holds the slot (#1868): try_register below would refuse this
-            # socket anyway, after the window was spent and the presented secret bound over the
+            # Never while another relay holds the slot (#1868): relay_link's try_register would refuse
+            # this socket anyway, after the window was spent and the presented secret bound over the
             # install's own - the live relay's own, when the window was armed on it. Left armed, the
             # window still adopts once the slot is free.
             window = relay_adopt.peek()
             if window is not None and not relay_gateway.connected:
-                install = relay_repository.adopt_secret(session, window.install_id, secret.strip(), window.armed_by)
+                install = relay_repository.adopt_secret(session, window.install_id, secret, window.armed_by)
                 if install is not None and relay_adopt.consume(window.install_id):
                     adopted = True
                     adopted_by = window.armed_by
@@ -608,6 +603,23 @@ async def relay_link(websocket: WebSocket):
         # could ever register (relayStatus stayed false).
         install_id = install.id if install is not None else None
         session.commit()
+    return install_id, adopted, adopted_by
+
+
+@app.websocket("/relay-link")
+async def relay_link(websocket: WebSocket):
+    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
+    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
+    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
+    that requested it. Every other slice reaches the relay through relay_call(), never this route
+    directly."""
+    auth_header = websocket.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        await websocket.close(code=4401)
+        return
+
+    install_id, adopted, adopted_by = await asyncio.to_thread(_authenticate_relay_secret, secret.strip())
     if install_id is None:
         # Nothing matched the presented secret. Recorded because a drifted credential is otherwise
         # invisible from this side: the relay retries forever and nothing but a log line ever says so

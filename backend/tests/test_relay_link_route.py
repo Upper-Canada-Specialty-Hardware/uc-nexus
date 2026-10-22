@@ -651,3 +651,67 @@ def test_a_connection_records_the_build_the_hello_advertised(_migrate_database, 
     assert connected["install_id"] == install_id
     assert connected["build"] == "relay-v0.2.0"
     assert connected["companies"] == ["TUBC"]
+
+
+# --- the secret check runs off the event loop (#1923) ---------------------------------------------
+
+
+class _FakeSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def test_the_secret_check_runs_off_the_event_loop(monkeypatch):
+    """#1923: the lookup and the commit are blocking, and on the loop they stalled every other request
+    while a handshake was being checked. No database: the session and the lookup are faked, and the
+    thread each side runs on is what is compared."""
+    import threading
+
+    threads: dict[str, int] = {}
+
+    def _authenticate(_session, secret):
+        threads["check"] = threading.get_ident()
+        assert secret == "not-enrolled"
+        return None
+
+    async def _capture(_kind, **_fields):
+        threads["loop"] = threading.get_ident()
+
+    monkeypatch.setattr(main, "SessionLocal", _FakeSession)
+    monkeypatch.setattr(main.relay_repository, "authenticate_secret", _authenticate)
+    monkeypatch.setattr(main.relay_adopt, "peek", lambda: None)
+    monkeypatch.setattr(main.relay_events, "write", _capture)
+
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with TestClient(app).websocket_connect("/relay-link", headers={"Authorization": "Bearer  not-enrolled "}):
+            pass
+
+    assert refused.value.code == 4401
+    assert set(threads) == {"check", "loop"}
+    assert threads["check"] != threads["loop"]
+    assert gateway.connected is False
+
+
+def test_a_matched_secret_comes_back_as_its_install_unadopted(monkeypatch):
+    """The thread function answers what the inline block did: the install's id, read before the commit
+    (#366), and no adoption."""
+    install = RelayInstall(label="WS-MATCHED", hostname="WS-MATCHED")
+    install.id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(main, "SessionLocal", _FakeSession)
+    monkeypatch.setattr(main.relay_repository, "authenticate_secret", lambda _session, _secret: install)
+
+    def _no_adopt():
+        raise AssertionError("a matched secret must not look at the adopt window")
+
+    monkeypatch.setattr(main.relay_adopt, "peek", _no_adopt)
+
+    assert main._authenticate_relay_secret("enrolled") == (install.id, False, None)
