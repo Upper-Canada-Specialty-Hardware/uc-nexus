@@ -5,15 +5,16 @@ cursor that records the SQL - what they pin is that the dropdown query hides exa
 create_po guards would refuse (inactive codes, and codes whose account index dangles, #425)."""
 
 from collections import namedtuple
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from ucnexus_relay.config import get_settings
+from ucnexus_relay import auth
 from ucnexus_relay.econnect import list_cost_codes
 from ucnexus_relay.main import create_app
 
 client = TestClient(create_app())
-TOKEN = get_settings().auth.shared_secret
+TOKEN = "an-enrolled-secret"
 
 
 def test_cost_codes_requires_token():
@@ -24,9 +25,11 @@ def test_cost_codes_rejects_bad_token():
     assert client.get("/cost-codes?job=80003", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
-def test_cost_codes_requires_job():
+def test_cost_codes_requires_job(monkeypatch):
     # `job` is a required query param. With a valid token, a missing job is a 422 from param
-    # validation - before the endpoint body opens any SQL connection.
+    # validation - before the endpoint body opens any SQL connection. The relay is enrolled for this:
+    # an empty secret authorizes nothing (#1930), and a checkout has no config.toml to hold one.
+    monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(auth=SimpleNamespace(shared_secret=TOKEN)))
     r = client.get("/cost-codes", headers={"Authorization": f"Bearer {TOKEN}"})
     assert r.status_code == 422
 
