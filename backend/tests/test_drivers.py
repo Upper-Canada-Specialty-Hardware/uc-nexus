@@ -67,6 +67,29 @@ def test_a_driver_only_account_is_refused_the_shipping_departments_changes():
         _refuse_driver_only(_info("Driver"))
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "confirm_shipment_from_containers",
+        "update_shipment_details",
+        "move_shipment_to_load",
+        "cancel_shipment",
+        "create_shipment_return",
+    ],
+)
+def test_booking_correcting_moving_and_calling_off_refuse_a_driver_only_account(mutation):
+    """#1814: booking was left out of the rule its siblings follow, and a return can call a shipment off."""
+    import ast
+    import inspect
+
+    from app.schemas import shipping
+
+    tree = ast.parse(inspect.getsource(shipping))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == mutation)
+    called = {c.func.id for c in ast.walk(fn) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "_refuse_driver_only" in called
+
+
 @pytest.mark.parametrize("roles", [("Driver", "Shipping Out"), ("Shipping Out",), ("Warehouse Staff",)])
 def test_anybody_else_keeps_what_they_had(roles):
     from app.schemas.shipping import _refuse_driver_only

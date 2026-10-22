@@ -652,6 +652,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
+            _refuse_driver_only(info)
             slip = shipment_containers.confirm_shipment_from_containers(
                 session,
                 uuid.UUID(str(input.project_id)),
@@ -958,6 +959,8 @@ class ShippingMutations:
             scope = tenant_scope(info)
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.packing_slip_id)), scope)
             tenancy.require_warehouse_in_scope(session, uuid.UUID(str(input.warehouse_id)), scope)
+            # A return can call the shipment off (everything returnable back), which is shipping's (#1814).
+            _refuse_driver_only(info)
             sr = shipping_repository.create_shipment_return(
                 session,
                 packing_slip_id=uuid.UUID(str(input.packing_slip_id)),
