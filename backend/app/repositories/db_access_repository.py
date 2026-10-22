@@ -295,12 +295,18 @@ def _ensure_group() -> None:
         conn.exec_driver_sql(
             f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {grp}"
         )
-        # #1867: taken back off the tables a login must never write - the registry and its audit (a login
-        # could list itself, or erase who handed it out) and the migration table. After the blanket grant,
-        # so every re-run takes them back; the default privileges reach only tables made later.
-        denied = ", ".join(f'public."{t}"' for t in _GROUP_DENIED_TABLES)
-        conn.exec_driver_sql(f"REVOKE ALL ON TABLE {denied} FROM {grp}")
+        # After the blanket grant, so every re-run takes them back.
+        _revoke_bookkeeping_tables(conn)
         session.commit()
+
+
+def _revoke_bookkeeping_tables(conn) -> None:
+    """#1867: the group has no access to the tables a login must never write - the registry and its audit
+    (a login could list itself, or erase who handed it out) and the migration table. The default
+    privileges reach only tables made later. Run by a mint and by a rotate, so a deployment whose group
+    was granted before this takes it back without waiting for somebody's next mint."""
+    denied = ", ".join(f'public."{t}"' for t in _GROUP_DENIED_TABLES)
+    conn.exec_driver_sql(f"REVOKE ALL ON TABLE {denied} FROM {_q(_GROUP_ROLE)}")
 
 
 # --- guards --------------------------------------------------------------------------------------
@@ -465,6 +471,7 @@ def rotate(db_role: str, *, actor_clerk_id: str) -> dict:
         _assert_not_superuser(conn, db_role)
         if not _is_group_member(conn, db_role):
             raise ConflictError("That role is not a live nexus_rw member. Revoke it and re-mint instead.")
+        _revoke_bookkeeping_tables(conn)
 
         password = _generate_password()
         verifier = _scram_sha256_verifier(password)

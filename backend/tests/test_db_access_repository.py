@@ -384,3 +384,26 @@ def test_rotate_still_rotates_an_admins_login(monkeypatch):
 
     assert call().db_role == "user_holder"
     assert rotated == ["user_holder"]
+
+
+def test_a_rotate_takes_the_bookkeeping_tables_back_too(monkeypatch):
+    """#1867: a group granted before the revoke existed takes it back on a rotate, not only on the
+    next mint somebody makes."""
+    from types import SimpleNamespace
+
+    conn = _RecordingConn()
+    session = _FakeSession(listed=[])
+    session.connection = lambda: conn
+    session.scalar = lambda _stmt: SimpleNamespace(clerk_user_id="user_holder", last_rotated_at=None)
+    monkeypatch.setattr(repo, "SessionLocal", lambda: session)
+    monkeypatch.setattr(config, "db_direct_access_enabled", lambda: True)
+    monkeypatch.setattr(repo, "_assert_not_superuser", lambda conn, role: None)
+    monkeypatch.setattr(repo, "_is_group_member", lambda conn, role: True)
+    monkeypatch.setattr(repo, "_connection_strings", lambda *a, **kw: {}, raising=False)
+
+    try:
+        repo.rotate("user_holder", actor_clerk_id="user_actor")
+    except Exception:  # noqa: BLE001 - what follows the password change is not this test's business
+        pass
+
+    assert any(s.startswith('REVOKE ALL ON TABLE public."pg_direct_access"') for s in conn.statements)
