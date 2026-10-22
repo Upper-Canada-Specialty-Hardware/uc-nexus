@@ -53,6 +53,10 @@ def deliver(email: ClerkEmail) -> str:
                 html=email.html,
                 # Clerk's id is stable across its retries, so the mailer answers a retry with the first send.
                 idempotency_key=f"nexus-clerk-{email.email_id}",
+                # One short try (#1828): this runs inside the transaction holding the lock, and Clerk
+                # retries a failed webhook itself. Three 30s tries held a pooled connection for ~93s.
+                attempts=1,
+                timeout=10.0,
             )
         except mailer.MailerError as exc:
             if exc.code == mailer.RECIPIENT_NOT_INTERNAL:
