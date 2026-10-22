@@ -16,13 +16,11 @@ from app.models.enums import (
     DestockSource,
     InventoryEntrySource,
     PoolKind,
-    PullPickLineState,
     PullRequestSource,
     PullRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_item_type import InventoryItemType
-from app.models.pull_pick_line import PullPickLine
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
@@ -33,6 +31,7 @@ from app.repositories.warehouse import (
     get_project_progress_by_product,
     get_reserved_quantities,
     get_scheduled_pairs,
+    in_pick_stmt,
     location_detail,
 )
 from app.repositories.warehouse.inventory import check_expected_quantity
@@ -313,17 +312,8 @@ def _picked_not_shipped(session: Session, project_id: uuid.UUID) -> dict[tuple[s
         )
         .group_by(PullRequestItem.hardware_category, PullRequestItem.product_code)
     )
-    picking_stmt = (
-        select(PullPickLine.hardware_category, PullPickLine.product_code, func.sum(PullPickLine.quantity))
-        .join(PullRequest, PullPickLine.pull_request_id == PullRequest.id)
-        .where(
-            PullRequest.project_id == project_id,
-            PullRequest.status == PullRequestStatus.IN_PROGRESS,
-            PullPickLine.state == PullPickLineState.APPLIED,
-        )
-        .group_by(PullPickLine.hardware_category, PullPickLine.product_code)
-    )
-    for stmt in (shop_stmt, picking_stmt):
+    # #1939: the in-progress pull's share is the one statement Hardware Status and the reconcile read too.
+    for stmt in (shop_stmt, in_pick_stmt(project_ids=[project_id])):
         for category, code, quantity in session.execute(stmt).all():
             out[(category, code)] = out.get((category, code), 0) + int(quantity or 0)
     return out

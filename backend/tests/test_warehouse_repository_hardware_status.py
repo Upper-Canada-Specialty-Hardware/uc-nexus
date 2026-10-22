@@ -7,6 +7,7 @@ from decimal import Decimal
 from app.models.enums import (
     HardwareItemState,
     POStatus,
+    PullPickLineState,
     PullRequestSource,
     PullRequestStatus,
     ShipmentStatus,
@@ -15,6 +16,7 @@ from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
 from app.models.project_excluded_item import ProjectExcludedItem
+from app.models.pull_pick_line import PullPickLine
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
@@ -616,3 +618,59 @@ def test_manual_slip_lines_are_not_shipped_and_do_not_eat_staged(db_session):
     row = _row(warehouse_repository.get_hardware_status_by_product(db_session, [project.id]), "HG-100")
     assert row["shipped_out"] == 4
     assert row["staged_for_shipping"] == 6
+
+
+def _apply_pick(session, pr: PullRequest, product_code: str, quantity: int, state=PullPickLineState.APPLIED) -> None:
+    session.add(
+        PullPickLine(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            hardware_category=CAT,
+            product_code=product_code,
+            quantity=quantity,
+            state=state,
+            entered_by="picker",
+            applied_at=datetime.utcnow() if state == PullPickLineState.APPLIED else None,
+        )
+    )
+    session.flush()
+
+
+def test_units_picked_for_a_pull_in_progress_are_in_pick(db_session):
+    """#1939: a confirmed pick deducts the shelf, but the pull only completes on hand-over, so its
+    applied lines were in no column. Only applied lines of a pull still in progress count: a draft
+    line has not moved anything, and a completed pull's units are already in Staged or Sent to Shop."""
+    project = _make_project(db_session)
+    other = _make_project(db_session)
+    _make_inventory(db_session, project_id=project.id, product_code="HG-100", quantity=3)
+    for source in (PullRequestSource.SHIPPING_OUT, PullRequestSource.SHOP_ASSEMBLY):
+        pr = _make_pull(
+            db_session,
+            project_id=project.id,
+            source=source,
+            status=PullRequestStatus.IN_PROGRESS,
+            lines=[("A01", "HG-100", 5)],
+        )
+        _apply_pick(db_session, pr, "HG-100", 4)
+        _apply_pick(db_session, pr, "HG-100", 1, state=PullPickLineState.DRAFT)
+    done = _make_pull(
+        db_session,
+        project_id=project.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        lines=[("A01", "HG-100", 2)],
+    )
+    _apply_pick(db_session, done, "HG-100", 2)
+    elsewhere = _make_pull(
+        db_session,
+        project_id=other.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.IN_PROGRESS,
+        lines=[("A01", "HG-100", 7)],
+    )
+    _apply_pick(db_session, elsewhere, "HG-100", 7)
+
+    row = _row(warehouse_repository.get_hardware_status_by_product(db_session, [project.id]), "HG-100")
+    assert row["on_hand"] == 3
+    assert row["in_pick"] == 8
+    assert row["staged_for_shipping"] == 2

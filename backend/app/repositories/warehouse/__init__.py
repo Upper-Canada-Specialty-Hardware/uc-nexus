@@ -47,6 +47,7 @@ from .progress import (
     get_project_product_po_lines,
     get_project_progress_by_product,
     get_warehouse_dashboard,
+    in_pick_stmt,
 )
 from .pull_requests import (
     CancelResult,
@@ -160,6 +161,7 @@ __all__ = [
     "get_pick_sheet",
     "outstanding_needs",
     "get_hardware_status_by_product",
+    "in_pick_stmt",
     "get_po_receiving_details",
     "get_project_availability",
     "get_project_product_po_lines",

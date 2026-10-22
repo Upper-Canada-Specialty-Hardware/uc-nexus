@@ -52,6 +52,7 @@ function status(overrides: Partial<HardwareStatusRow>): Map<string, HardwareStat
     onOrder: 0,
     receivedQuantity: 0,
     onHand: 0,
+    inPick: 0,
     returnedToProject: 0,
     sentToShop: 0,
     stagedForShipping: 0,
@@ -362,6 +363,25 @@ it('a return to project does not double-count into committed', () => {
 
   expect(row.existingCommitted).toBe(40);
   expect(row.overCommitAmount).toBe(0);
+});
+
+it('counts units picked for a pull still in progress, which are in no other figure (#1939)', () => {
+  // 40 migrated units: 25 on the shelf and 15 a pick took off it for a pull not yet handed over.
+  // Without inPick committed read 25 and the selection's 15 looked like it was still needed.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+  const selected = [hi({ opening_number: '101', item_quantity: 15 })];
+
+  const [row] = build({
+    all,
+    selected,
+    rows: [recon('101', 'NOT_COVERED', 40)],
+    selectedKeys: [openingKey('101')],
+    status: status({ requiredQuantity: 40, onHand: 25, inPick: 15 }),
+  });
+
+  expect(row.existingCommitted).toBe(40);
+  expect(row.overOrdersProject).toBe(true);
+  expect(row.lifecycleBreakdown.get('IN_INVENTORY')).toBe(40);
 });
 
 it('a destock that moves units off the project lowers committed', () => {

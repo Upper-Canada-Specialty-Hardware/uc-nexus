@@ -67,6 +67,9 @@ export interface HardwareStatusRow {
   onOrder: number;
   receivedQuantity: number;
   onHand: number;
+  /** Picked off the shelf for a pull still in progress (#1939): not in onHand, and in no completed-pull
+   *  figure until the pull is handed over. */
+  inPick: number;
   /** RETURN_TO_PROJECT shipment-return units: back inside onHand while still counted in the gross
    *  shippedOut, so "where the units are" sums must subtract this once. */
   returnedToProject: number;

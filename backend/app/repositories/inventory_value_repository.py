@@ -1,7 +1,8 @@
 """INVENTORY VALUE: what everything in the building is worth, per GP company (#662).
 
 Three figures - OSSA, NON-OSSA, GENERAL STOCK - each the dollar value of hardware on the shelves plus
-hardware staged for shipping plus doors. Greg's formula, in the vocabulary the schema already uses:
+hardware staged for shipping (or picked for a pull still in progress, #1939) plus doors. Greg's formula,
+in the vocabulary the schema already uses:
 
     (project inventory qty + staged qty + stock qty + non-stock qty) x unit cost
     + every door at AVERAGE DOOR COST
@@ -32,7 +33,7 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse import Warehouse
-from app.repositories import shipping_repository
+from app.repositories import shipping_repository, warehouse
 
 # The three figures the page shows. GENERAL_STOCK is the jobless half - the stock pool and the
 # general DOORS ON HAND row - which is why it has no project side at all.
@@ -233,8 +234,14 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
         .where(
             Project.company == company,
             PullPickLine.state == PullPickLineState.APPLIED,
-            PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
+            # #1939: a pull still in progress has its picked units on the cart, priced by the same lines.
+            or_(
+                and_(
+                    PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+                    PullRequestModel.status == PullRequestStatus.COMPLETED,
+                ),
+                PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
+            ),
             effective_cost.is_not(None),
         )
         .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
@@ -307,8 +314,16 @@ def _priced(price: _Price | None) -> bool:
 
 
 def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.UUID, bool], Decimal]:
-    """Staged hardware per (project, priced in USD) - the same keying as the shelf."""
+    """Staged hardware per (project, priced in USD) - the same keying as the shelf.
+
+    Units picked for a pull still in progress are counted here too (#1939): the pick took them off the
+    shelf, so they are not in the shelf value, and they are not staged until the pull is handed over -
+    but they are still in the building, on the cart, priced the same way as staged units.
+    """
     staged = _staged_quantities(session, company)
+    for row in session.execute(warehouse.in_pick_stmt(company=company, by_project=True)):
+        key = (row.project_id, row.hardware_category, row.product_code)
+        staged[key] = staged.get(key, 0) + int(row.in_pick or 0)
     if not staged:
         return {}
     picked = _picked_unit_costs(session, company)
@@ -367,7 +382,7 @@ def _hardware_field(is_usd: bool) -> str:
 
 
 def get_inventory_value(session: Session, company: str) -> dict:
-    """The whole INVENTORY VALUE page for one GP company, in six statements plus the two get-or-creates.
+    """The whole INVENTORY VALUE page for one GP company, in seven statements plus the two get-or-creates.
 
     The caller commits: a first read for a company creates that company's settings row and general
     DOORS ON HAND row, and those have to persist or every read would create them again.

@@ -2109,6 +2109,8 @@ class HardwareStatusByProduct:
     on_order: int
     received_quantity: int
     on_hand: int
+    # Picked off the shelf for a pull still in progress (#1939): in neither on_hand nor a completed-pull figure.
+    in_pick: int
     sent_to_shop: int
     staged_for_shipping: int
     # Gross packing-slip exits; returns never decrement it.

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.enums import (
     HardwareItemState,
     POStatus,
+    PullPickLineState,
     PullRequestSource,
     PullRequestStatus,
     ReturnDisposition,
@@ -17,6 +18,7 @@ from app.models.enums import (
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project_excluded_item import ProjectExcludedItem as ProjectExcludedItemModel
+from app.models.pull_pick_line import PullPickLine as PullPickLineModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
@@ -397,6 +399,36 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
     ]
 
 
+def in_pick_stmt(*, project_ids: list[uuid.UUID] | None = None, company: str | None = None, by_project: bool = False):
+    """Units a confirmed pick took off the shelf for a pull still in progress, per (category, product) (#1939).
+
+    A pick deducts the rows it names, but the pull only completes when it is handed over (Send to
+    staging, or to the shop), so until then these units are in neither On Hand nor any completed-pull
+    figure. Every reader that counts where a project's units are adds this in: the allocation
+    still-needed figure (#1814), Hardware Status, the reconcile, and INVENTORY VALUE. `by_project`
+    prepends the pull's project to the key, for INVENTORY VALUE's per-project pricing.
+    """
+    group_by = [PullPickLineModel.hardware_category, PullPickLineModel.product_code]
+    if by_project:
+        group_by.insert(0, PullRequestModel.project_id)
+    stmt = (
+        select(*group_by, func.sum(PullPickLineModel.quantity).label("in_pick"))
+        .join(PullRequestModel, PullPickLineModel.pull_request_id == PullRequestModel.id)
+        .where(
+            PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
+            PullPickLineModel.state == PullPickLineState.APPLIED,
+        )
+        .group_by(*group_by)
+    )
+    if project_ids is not None:
+        stmt = stmt.where(PullRequestModel.project_id.in_(project_ids))
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
+    return stmt
+
+
 def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID]) -> list[dict]:
     """Per-product lifecycle rollup across one or more projects (admin Hardware Status page).
 
@@ -413,6 +445,8 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     - on_order: ordered - received on placed POs not yet CLOSED (still expected to arrive)
     - received_quantity: PO receipts on placed POs - NOT current inventory
     - on_hand: current project inventory (inventory_locations.quantity, pulls already deducted)
+    - in_pick: units a confirmed pick took off the shelf for a pull still in progress (#1939) - off
+      the shelf, so not in on_hand, and in no completed-pull figure until the pull is handed over
     - sent_to_shop: requested_quantity on COMPLETED SHOP_ASSEMBLY pulls. Shop assembly is outside
       the Nexus pipeline, so a shop pull is a lifecycle exit, the same shape as a shipment.
     - staged_for_shipping: the staging pool - completed SHIPPING_OUT pulls minus what packing slips
@@ -442,6 +476,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
         "on_order",
         "received_quantity",
         "on_hand",
+        "in_pick",
         "sent_to_shop",
         "staged_for_shipping",
         "shipped_out",
@@ -546,6 +581,10 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     )
     for row in session.execute(on_hand_stmt):
         bucket(row.hardware_category, row.product_code)["on_hand"] = int(row.on_hand)
+
+    # #1939: picked, not yet handed over.
+    for row in session.execute(in_pick_stmt(project_ids=project_ids)):
+        bucket(row.hardware_category, row.product_code)["in_pick"] = int(row.in_pick)
 
     # Exits to the shop.
     shop_stmt = (

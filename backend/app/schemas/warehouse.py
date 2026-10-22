@@ -863,6 +863,7 @@ class WarehouseQueries:
                     on_order=row["on_order"],
                     received_quantity=row["received_quantity"],
                     on_hand=row["on_hand"],
+                    in_pick=row["in_pick"],
                     sent_to_shop=row["sent_to_shop"],
                     staged_for_shipping=row["staged_for_shipping"],
                     shipped_out=row["shipped_out"],

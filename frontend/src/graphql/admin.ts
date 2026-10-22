@@ -245,6 +245,7 @@ export const GET_HARDWARE_STATUS_BY_PRODUCT = gql`
       onOrder
       receivedQuantity
       onHand
+      inPick
       sentToShop
       stagedForShipping
       shippedOut

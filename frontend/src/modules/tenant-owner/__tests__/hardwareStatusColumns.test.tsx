@@ -81,3 +81,15 @@ it('shows Surplus as not applicable when no selected project has a schedule', ()
   expect(screen.getByText('—')).toBeInTheDocument();
   expect(screen.queryByText('4')).not.toBeInTheDocument();
 });
+
+// #1939: units a pick took off the shelf for a pull still in progress were in no column. They are in
+// the building, so On Hand counts them - in its cell and in its sort - and its tooltip says so.
+it('counts units picked for a pull still in progress in On Hand', () => {
+  const onHand = buildColumns(true).find((c) => c.field === 'onHand');
+  const row = { onHand: 3, inPick: 4 };
+  expect((onHand?.valueGetter as unknown as (v: unknown, r: typeof row) => number)(undefined, row)).toBe(7);
+  render(<>{onHand?.renderCell?.({ row } as never)}</>);
+  expect(screen.getByText('7')).toBeInTheDocument();
+  render(<>{onHand?.renderHeader?.({} as GridColumnHeaderParams)}</>);
+  expect(screen.getByLabelText(/picked for a pull still in progress/)).toBeInTheDocument();
+});

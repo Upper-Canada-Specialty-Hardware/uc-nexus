@@ -194,9 +194,10 @@ def _stock_row(session, warehouse, *, quantity, unit_cost, code=CODE, cost_curre
     return stock
 
 
-def _stage_by_picking(session, project, *, quantity: int, ship: int = 0, code=CODE):
-    """The real pipeline: raise a shipping-out request, accept it, pick it off the shelf, complete it,
-    and optionally cut a packing slip for part of what it staged."""
+def _stage_by_picking(session, project, *, quantity: int, ship: int = 0, code=CODE, complete: bool = True):
+    """The real pipeline: raise a shipping-out request, accept it, pick it off the shelf, complete it
+    (unless `complete` is False, leaving the pull in progress), and optionally cut a packing slip for
+    part of what it staged."""
     req = shipping_requests.create_shipping_out_requests(
         session,
         project.id,
@@ -218,6 +219,9 @@ def _stage_by_picking(session, project, *, quantity: int, ship: int = 0, code=CO
     accepted = shipping_repository.accept_shipping_out_request(session, req.id, "acceptor")
     session.flush()
     pick_pull(session, accepted.pull_request_id, "picker")
+    if not complete:
+        session.flush()
+        return accepted
     warehouse_repository.complete_pull_request(session, accepted.pull_request_id, completed_by="picker")
     session.flush()
     if ship:
@@ -351,6 +355,23 @@ def test_staged_hardware_is_priced_off_the_rows_it_was_picked_from(db_session):
 
     # Shelf: the older row is empty, the newer holds 2 at 7.25 = 14.50. Staged: 3 left at 11.45 = 34.35.
     assert value["non_ossa"]["hardware_value"] == Decimal("48.85")
+
+
+def test_hardware_picked_for_a_pull_still_in_progress_is_still_in_the_building(db_session):
+    """#1939: the pick took the units off the shelf, and the pull is not staged until it is handed
+    over - but the units are on the cart, so they are counted and priced like staged ones."""
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("12.50"), quantity=4, age_days=3)
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("7.25"), quantity=3, age_days=1)
+    _stage_by_picking(db_session, project, quantity=5, complete=False)
+
+    value = _value(db_session, company)
+
+    # Shelf: 2 at 7.25 = 14.50. On the cart: 4 x 12.50 + 1 x 7.25 = 57.25. Nothing left the building.
+    assert value["non_ossa"]["hardware_value"] == Decimal("71.75")
 
 
 def test_a_pull_with_no_pick_lines_falls_back_to_the_projects_average_cost(db_session):
