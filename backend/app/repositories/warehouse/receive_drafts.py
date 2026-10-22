@@ -158,6 +158,8 @@ def _notify_submitted(session: Session, draft: ReceiveDraftModel, po: POModel) -
             f"{draft.created_by_name} submitted a receive of {total} "
             f"{'unit' if total == 1 else 'units'} against PO {po.po_number} for approval."
         ),
+        # So deleting the draft withdraws this notice (#1898).
+        receive_draft_id=draft.id,
     )
 
 
@@ -568,6 +570,9 @@ def delete_receive_draft(
     if draft.created_by_user_id != actor_user_id and not actor_is_manager:
         raise ConflictError("Only the person who submitted this draft, or a Warehouse Manager, can delete it")
     slip_id = draft.packing_slip_document_id
+    # #1898: its waiting-for-approval notice goes with it, or every manager's bell keeps a draft the
+    # queue no longer holds.
+    notification_service.withdraw_receive_draft_submitted(session, draft.id)
     session.delete(draft)
     session.flush()
     if slip_id is None:

@@ -16,6 +16,7 @@ def create_notification(
     message: str,
     pull_request_id: uuid.UUID | None = None,
     recipient_user_id: str | None = None,
+    receive_draft_id: uuid.UUID | None = None,
 ) -> Notification:
     """Raise a notification for an audience (`recipient_role`, a key of AUDIENCE_ROLES) or for one
     person (`recipient_user_id`, a Clerk user id). Exactly one of the two (#1111)."""
@@ -31,6 +32,7 @@ def create_notification(
         type=notification_type,
         message=message,
         pull_request_id=pull_request_id,
+        receive_draft_id=receive_draft_id,
         is_read=False,
         created_at=datetime.utcnow(),
     )
@@ -110,6 +112,17 @@ def withdraw_pull_created(session: Session, pull_request_id: uuid.UUID) -> None:
         delete(Notification).where(
             Notification.pull_request_id == pull_request_id,
             Notification.type == NotificationType.PULL_REQUEST_CREATED,
+        )
+    )
+
+
+def withdraw_receive_draft_submitted(session: Session, receive_draft_id: uuid.UUID) -> None:
+    """Delete the "a receive is waiting for approval" notices of a draft that was deleted (#1898): the
+    queue they send a manager to no longer holds it. Read rows cascade with them."""
+    session.execute(
+        delete(Notification).where(
+            Notification.receive_draft_id == receive_draft_id,
+            Notification.type == NotificationType.RECEIVE_DRAFT_SUBMITTED,
         )
     )
 

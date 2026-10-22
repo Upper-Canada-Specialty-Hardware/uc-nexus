@@ -487,6 +487,25 @@ def test_deleting_is_open_to_the_author_and_a_manager_but_not_after_approval(db_
     assert excinfo.value.code == "INVALID_STATE_TRANSITION"
 
 
+def test_deleting_a_draft_withdraws_its_waiting_for_approval_notice(db_session):
+    """#1898: the notice stayed in every manager's bell, sending them to a queue the draft had left. A
+    draft still waiting keeps its own."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    kept = _draft(db_session, po, li, 1)
+    doomed = _draft(db_session, po, li, 2)
+
+    submitted = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_SUBMITTED)
+    assert {n.receive_draft_id for n in submitted} == {kept.id, doomed.id}
+
+    warehouse_repository.delete_receive_draft(db_session, doomed.id, AUTHOR, actor_is_manager=False)
+    db_session.flush()
+    db_session.expire_all()
+
+    left = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_SUBMITTED)
+    assert [n.receive_draft_id for n in left] == [kept.id]
+
+
 def _claim_behind_the_session(session, draft) -> None:
     """Flip a draft to APPROVING without touching the session's copy of it - what an approval claim
     committed by another request looks like to a session that loaded the draft before it landed."""
