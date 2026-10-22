@@ -401,7 +401,7 @@ def _stub_the_approval(monkeypatch, relay_error):
     monkeypatch.setattr(warehouse_schema, "_authorize_draft_approval", lambda info, user_id, draft_id: None)
     monkeypatch.setattr(warehouse_schema.gp_idempotency, "load", lambda key: None)
     monkeypatch.setattr(warehouse_schema, "_claim_draft_for_approval", lambda *a, **k: ctx)
-    monkeypatch.setattr(warehouse_schema, "_prepare_create_receive", lambda **kw: ("TUBC", {"po_number": "PO1"}))
+    monkeypatch.setattr(warehouse_schema, "_prepare_create_receive", lambda **kw: ("TUBC", {"po_number": "PO1"}, None))
     monkeypatch.setattr(warehouse_schema, "_release_draft_claim", lambda draft_id, key: released.append(draft_id))
     monkeypatch.setattr(warehouse_schema, "_po_job_number", lambda po_id: "23093")
 

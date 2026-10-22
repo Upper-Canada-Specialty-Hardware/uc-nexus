@@ -148,12 +148,15 @@ def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
 
 def _prepare_create_receive(
     *, po_id, received_by, line_items_data, warehouse_id=None, idempotency_key=None
-) -> tuple[str, dict]:
+) -> tuple[str, dict, uuid.UUID | None]:
     """Read-only: validate the receive is eligible (before the GP receipt is posted) and build the relay
-    create_receipt payload, carrying the approval's key (#1389). Returns (gp_company, payload).
+    create_receipt payload, carrying the approval's key (#1389). Returns (gp_company, payload,
+    warehouse_id).
 
     The warehouse code rides along because put-away happens after approval now (#501): a line
-    normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
+    normally has no bin yet, and the warehouse is what GP gets told instead of nothing. The warehouse
+    it names is returned (#1946) so a queued receipt is re-checked against, and booked into, the
+    building GP was told, even if the primary warehouse changes before it drains."""
     from sqlalchemy import select
 
     from app.models.purchase_order import PurchaseOrder as POModel
@@ -176,7 +179,7 @@ def _prepare_create_receive(
         # refuses it when the count is drafted; this repeats the check at approval on purpose, so the
         # GP write itself stays guarded however the draft got here.
         project_repository.require_gp_job_open(session, project_id)
-        warehouse_code = _warehouse_code(session, warehouse_id, company)
+        warehouse_id, warehouse_code = _receiving_warehouse(session, warehouse_id, company)
     payload = gp_po.build_create_receipt_payload(
         po_number=po_number,
         received_by=received_by,
@@ -184,11 +187,11 @@ def _prepare_create_receive(
         warehouse_code=warehouse_code,
         idempotency_key=idempotency_key,
     )
-    return gp_company, payload
+    return gp_company, payload, warehouse_id
 
 
-def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | None:
-    """The receiving warehouse's code, falling back to the primary one the booking will use.
+def _receiving_warehouse(session, warehouse_id, company: str | None = None) -> tuple[uuid.UUID | None, str | None]:
+    """The receiving warehouse's (id, code), falling back to the primary one the booking will use.
 
     The fallback is scoped to the PO's TENANT (`purchase_orders.company`, #637) so it picks the same
     building `create_receive` will book into - `is_primary` is one global flag, so an unscoped
@@ -198,7 +201,7 @@ def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | 
     if warehouse_id is None:
         warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
     warehouse = session.get(WarehouseModel, warehouse_id)
-    return warehouse.code if warehouse else None
+    return warehouse_id, (warehouse.code if warehouse else None)
 
 
 def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
@@ -1272,7 +1275,7 @@ class WarehouseMutations:
             relay_result = state.relay_result
         else:
             try:
-                gp_company, payload = await asyncio.to_thread(
+                gp_company, payload, receiving_warehouse_id = await asyncio.to_thread(
                     _prepare_create_receive,
                     po_id=ctx.po_id,
                     received_by=ctx.author_name,
@@ -1306,7 +1309,9 @@ class WarehouseMutations:
                     persist_context={
                         "po_id": str(ctx.po_id),
                         "received_by": ctx.author_name,
-                        "warehouse_id": str(ctx.warehouse_id) if ctx.warehouse_id else None,
+                        # #1946: the building the payload named to GP, resolved at approval, so the
+                        # drain's re-check and its persist use it rather than the primary of the day.
+                        "warehouse_id": str(receiving_warehouse_id) if receiving_warehouse_id else None,
                         "line_items_data": json_line_items,
                         # The worker links the draft when it drains, on the same helper this resolver
                         # calls - so the two routes into the persist cannot record different things.

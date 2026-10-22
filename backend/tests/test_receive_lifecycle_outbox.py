@@ -331,6 +331,61 @@ def test_the_sync_does_not_raise_received_while_an_exhausted_receipt_may_be_in_g
     assert li.received_quantity == 2
 
 
+def _receipt_row_gp_answered(session, po, *, saved: bool):
+    """A queued receipt GP took: its ledger holds the relay's answer, and a receive id only once saved."""
+    row = gp_outbox_repository.enqueue(
+        session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company=COMPANY,
+        payload={},
+        persist_context={},
+        entity_key=f"po:{po.id}",
+        label="Receipt",
+    )
+    session.add(
+        GpWriteIdempotency(
+            key=row.idempotency_key,
+            op="create_receive",
+            relay_result={"receipt_number": "R1"},
+            result_id=str(uuid.uuid4()) if saved else None,
+        )
+    )
+    session.flush()
+    return row
+
+
+@pytest.mark.parametrize("end", ["failed", "cancelled"])
+def test_the_sync_does_not_raise_received_while_gp_holds_a_receipt_nexus_never_saved(db_session, end):
+    """#1946: a persist that failed after GP took the receipt left the row failed as persist_failed with
+    nothing saying it may be in GP, and the sync raised received - then a retried persist added the units
+    a second time. The ledger proves GP took it, so the sync holds whatever the row says."""
+    po_number, po, li = _mirrored(db_session)
+    row = _receipt_row_gp_answered(db_session, po, saved=False)
+    # As a row failed before the flag was set on a persist failure, then perhaps cancelled.
+    gp_outbox_repository.mark_failed(db_session, row, kind="persist_failed", error="bin not defined")
+    if end == "cancelled":
+        gp_outbox_repository.cancel_entry(db_session, row.id)
+    assert row.maybe_in_gp is False
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number, 6), {})
+    db_session.flush()
+    db_session.refresh(li)
+    assert li.received_quantity == 2
+
+
+def test_the_sync_raises_received_once_the_receipt_gp_took_is_saved(db_session):
+    po_number, po, li = _mirrored(db_session)
+    row = _receipt_row_gp_answered(db_session, po, saved=True)
+    gp_outbox_repository.mark_succeeded(db_session, row)
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number, 6), {})
+    db_session.flush()
+    db_session.refresh(li)
+    assert li.received_quantity == 6
+
+
 def test_the_sync_raises_received_once_nothing_is_in_flight(db_session):
     po_number, po, li = _mirrored(db_session)
     _draft(db_session, po, li, 4, status=ReceiveDraftStatus.PENDING_APPROVAL)  # not yet claimed

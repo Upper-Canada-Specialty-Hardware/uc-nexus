@@ -117,10 +117,8 @@ def _persist_register_po_from_context(context: dict, relay_result: dict, key: st
     )
 
 
-def _persist_create_receive_from_context(context: dict, relay_result: dict, key: str) -> None:
-    from app.schemas.warehouse import _persist_create_receive
-
-    line_items_data = [
+def _receive_lines_from_context(context: dict) -> list[dict]:
+    return [
         {
             "po_line_item_id": uuid.UUID(li["po_line_item_id"]),
             "quantity_received": li["quantity_received"],
@@ -128,12 +126,37 @@ def _persist_create_receive_from_context(context: dict, relay_result: dict, key:
         }
         for li in context["line_items_data"]
     ]
+
+
+def _receive_warehouse_from_context(context: dict) -> uuid.UUID | None:
+    return uuid.UUID(context["warehouse_id"]) if context.get("warehouse_id") else None
+
+
+def _recheck_queued_receipt(context: dict) -> None:
+    """Run the approval's own pre-flight again on a queued receipt about to be sent for the first time
+    (#1946): bins defined and active in the warehouse the persist will book into, the PO receivable, the
+    job open. The world can move while a receipt waits for the relay, and the persist only refuses once
+    GP has taken it - leaving the receipt in GP, its draft approved and the PO's sync held behind it.
+    Raises the approval's refusal."""
+    from app.schemas.warehouse import _prepare_create_receive
+
+    _prepare_create_receive(
+        po_id=uuid.UUID(context["po_id"]),
+        received_by=context["received_by"],
+        line_items_data=_receive_lines_from_context(context),
+        warehouse_id=_receive_warehouse_from_context(context),
+    )
+
+
+def _persist_create_receive_from_context(context: dict, relay_result: dict, key: str) -> None:
+    from app.schemas.warehouse import _persist_create_receive
+
     _persist_create_receive(
         key=key,
         po_id=uuid.UUID(context["po_id"]),
         received_by=context["received_by"],
-        line_items_data=line_items_data,
-        warehouse_id=uuid.UUID(context["warehouse_id"]) if context.get("warehouse_id") else None,
+        line_items_data=_receive_lines_from_context(context),
+        warehouse_id=_receive_warehouse_from_context(context),
         relay_result=relay_result,
         # The draft this receipt was approved from, so the drain closes the loop the approval opened.
         # .get() so a row queued before receives had drafts replays exactly as it used to.
@@ -336,6 +359,29 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await asyncio.to_thread(_finish, row_id, "mark_succeeded")
         return
 
+    if op == "create_receive" and not row.maybe_in_gp and (state is None or state.relay_result is None):
+        # #1946: no attempt can have left this receipt in GP, so it is checked again before it is sent.
+        # A refusal is failed like GP's own: nothing was sent, so its draft goes back for review.
+        try:
+            await asyncio.to_thread(_recheck_queued_receipt, context)
+        except AppError as e:
+            logger.warning("gp outbox: queued receipt no longer passes approval, not sent", extra={"label": label})
+            await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="gp_rejected",
+                error=f"Not sent to GP - this receipt no longer passes the approval's checks: {e.message}",
+                error_code=e.code,
+            )
+            await asyncio.to_thread(_notify_failure, row_id)
+            return
+        except Exception as e:  # noqa: BLE001 - nothing was sent; a transient DB error comes back around
+            logger.exception("gp outbox: re-checking a queued receipt raised; will retry", extra={"label": label})
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await _fail_if_exhausted(row_id)
+            return
+
     try:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
@@ -504,10 +550,17 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await asyncio.to_thread(_notify_failure, row_id)
         return
 
+    # #1946: from here GP holds the write, so every outcome short of success marks the row as maybe in
+    # GP - the flag the draft release and the PO's sync hold read, as they do for #1849's.
     handler = _HANDLERS.get(op)
     if handler is None:
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="persist_failed", error=f"unknown outbox op {op!r}"
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="persist_failed",
+            error=f"unknown outbox op {op!r}",
+            maybe_in_gp=True,
         )
         return
 
@@ -518,13 +571,19 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         # receive is no longer eligible, ...). No retry can fix a state disagreement; a human must.
         logger.exception("gp outbox: persist failed after GP committed", extra={"label": label})
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="persist_failed", error=str(e.message), error_code=e.code
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="persist_failed",
+            error=str(e.message),
+            error_code=e.code,
+            maybe_in_gp=True,
         )
         await asyncio.to_thread(_notify_failure, row_id)
         return
     except Exception as e:  # noqa: BLE001 - a transient DB error should come back around
         logger.exception("gp outbox: persist raised; will retry", extra={"label": label})
-        await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+        await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True, maybe_in_gp=True)
         await _fail_if_exhausted(row_id)
         return
 

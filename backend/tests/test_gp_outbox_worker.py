@@ -16,6 +16,15 @@ from app.errors import RelayCallError, RelayTimeoutError, RelayUnavailableError
 from app.repositories import gp_outbox_repository
 from app.services import gp_outbox_worker
 
+_REAL_RECHECK = gp_outbox_worker._recheck_queued_receipt
+
+
+@pytest.fixture(autouse=True)
+def _queued_receipts_pass_the_recheck(monkeypatch):
+    """The receipts here are against made-up POs. #1946's re-check before a first send is tested on its
+    own below; everywhere else it passes, so the drain under test is the one it always was."""
+    monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", lambda context: None)
+
 
 def _enqueue_committed(
     op: str = "create_receive", company: str = "TUBC", payload: dict | None = None
@@ -455,6 +464,8 @@ def test_a_persist_that_raises_an_app_error_fails_as_persist_failed(_migrate_dat
         state = _read(row_id)
         assert state["status"] == "FAILED"
         assert state["failure_kind"] == "persist_failed"
+        # #1946: GP holds it, so however the row ends, its draft is never sent back and the PO's sync holds.
+        assert state["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -468,6 +479,7 @@ def test_a_transient_persist_error_is_retried(_migrate_database, monkeypatch):
         state = _read(row_id)
         assert state["status"] == "PENDING"
         assert state["attempts"] == 1
+        assert state["maybe_in_gp"] is True, "#1946: GP took it; running out later must not release the draft"
     finally:
         _delete(row_id)
 
@@ -548,6 +560,114 @@ def test_a_receipt_queued_before_drafts_existed_still_drains(_migrate_database, 
         assert captured["receive_draft_id"] is None
     finally:
         _delete(row_id)
+
+
+# --- the re-check before a queued receipt is first sent (#1946) -------------------------------------
+
+
+def _set_maybe_in_gp(row_id: uuid.UUID) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        gp_outbox_repository.get_entry(session, row_id).maybe_in_gp = True
+        session.commit()
+
+
+def test_a_queued_receipt_that_no_longer_passes_approval_is_never_sent(_migrate_database, monkeypatch):
+    """A bin retired while the receipt waited for the relay: the persist would refuse it only after GP
+    took it. It fails as GP's own refusal does - nothing sent, so not maybe in GP - and its draft goes
+    back for review by the existing rules."""
+    from app.errors import ValidationError
+
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+
+        def _refuse(context):
+            raise ValidationError("Location A-1-1 is not an active bin in this warehouse", field="location")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _refuse)
+        notified: list = []
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", notified.append)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert calls == [], "nothing may reach GP once the receipt no longer passes approval"
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "gp_rejected", False)
+        assert state["last_error"].startswith("Not sent to GP")
+        assert "not an active bin" in state["last_error"]
+        assert notified == [row_id]
+    finally:
+        _delete(row_id)
+
+
+def test_a_queued_receipt_that_may_be_in_gp_is_sent_without_the_recheck(_migrate_database, monkeypatch):
+    """An earlier attempt may have left it in GP: the relay answers its key with that receipt, and a
+    refusal here would leave a receipt GP holds with nothing in Nexus."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _set_maybe_in_gp(row_id)
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+        _stub_persist(monkeypatch)
+
+        def _must_not_run(context):
+            raise AssertionError("a receipt that may be in GP is not re-checked")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _must_not_run)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert len(calls) == 1
+        assert _read(row_id)["status"] == "SUCCEEDED"
+    finally:
+        _delete(row_id)
+
+
+def test_a_recheck_that_raises_unexpectedly_is_retried_and_nothing_is_sent(_migrate_database, monkeypatch):
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+
+        def _boom(context):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _boom)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert calls == []
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 1, False)
+    finally:
+        _delete(row_id)
+
+
+def test_the_recheck_is_the_approvals_preflight_on_the_stored_warehouse(monkeypatch):
+    """The same check the approval ran, against the building the payload named to GP, which is the one
+    the persist books into."""
+    seen: dict = {}
+    monkeypatch.setattr("app.schemas.warehouse._prepare_create_receive", lambda **kw: seen.update(kw))
+    po_id, line_id, warehouse_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    locations = [{"aisle": "A", "row": "1", "bay": "1", "quantity": 2}]
+
+    _REAL_RECHECK(
+        {
+            "po_id": str(po_id),
+            "received_by": "Wendy Warehouse",
+            "warehouse_id": str(warehouse_id),
+            "line_items_data": [{"po_line_item_id": str(line_id), "quantity_received": 2, "locations": locations}],
+        }
+    )
+
+    assert seen == {
+        "po_id": po_id,
+        "received_by": "Wendy Warehouse",
+        "line_items_data": [{"po_line_item_id": line_id, "quantity_received": 2, "locations": locations}],
+        "warehouse_id": warehouse_id,
+    }
 
 
 # --- GP-PROCESSING after a drained registration (#702) --------------------------------------------

@@ -907,9 +907,16 @@ def test_approving_while_the_relay_is_down_queues_the_receipt_and_still_closes_t
     assert result.draft.outbox_entry_id is not None
     assert result.draft.receive_record_id is None, "nothing is in inventory until the outbox drains"
 
+    from app.repositories import warehouse_admin_repository
+
     with SessionLocal() as session:
         row = session.get(GpWriteOutbox, uuid.UUID(str(result.draft.outbox_entry_id)))
+        primary = warehouse_admin_repository.get_primary_warehouse_id(
+            session, company=session.get(PurchaseOrder, f.po_id).company
+        )
     assert row.persist_context["receive_draft_id"] == str(f.draft_id)
+    # #1946: the building the receipt named to GP, resolved at approval, not left for the drain to pick.
+    assert primary is not None and row.persist_context["warehouse_id"] == str(primary)
     assert row.persist_context["received_by"] == AUTHOR_NAME, (
         "the queued receipt must post in the counter's name too, not the approver's"
     )

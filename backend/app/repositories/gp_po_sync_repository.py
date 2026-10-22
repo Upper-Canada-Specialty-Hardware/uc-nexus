@@ -316,7 +316,8 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
 
     That is a draft mid-approval (a live approval, or one whose relay call went ambiguous and will be
     resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously or after
-    an attempt that may have reached GP (#1849, an exhausted keyed receipt) - a retry persists either.
+    an attempt that may have reached GP (#1849, an exhausted keyed receipt) - a retry persists either -
+    or one GP answered that Nexus has not saved, in any state (#1946).
     A queued approval is covered by its outbox row. The sync must not raise received_quantity then:
     the persist adds its own units on top of what is stored."""
     from app.models.enums import ReceiveDraftStatus
@@ -360,7 +361,24 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
         )
         .limit(1)
     )
-    return outbox_hit is not None
+    if outbox_hit is not None:
+        return True
+    # #1946: GP answered with the receipt and Nexus never saved it - a persist that failed, or is still to
+    # be retried. Held whatever the row says, since only the ledger proves GP took it (a row failed or
+    # cancelled before the flag was set on those still holds it). A ledger row whose relay_result is
+    # JSON null recorded nothing, so the test is made here rather than in SQL.
+    from app.models.gp_write import GpWriteIdempotency
+
+    taken = session.scalars(
+        select(GpWriteIdempotency.relay_result)
+        .join(GpWriteOutbox, GpWriteOutbox.idempotency_key == GpWriteIdempotency.key)
+        .where(
+            GpWriteOutbox.op == "create_receive",
+            GpWriteOutbox.entity_key == f"po:{po_id}",
+            GpWriteIdempotency.result_id.is_(None),
+        )
+    ).all()
+    return any(result is not None for result in taken)
 
 
 def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
