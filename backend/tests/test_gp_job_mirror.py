@@ -724,7 +724,7 @@ def test_gp_receive_entry_refuses_a_closed_job_even_on_a_po_already_in_gp(monkey
     monkeypatch.setattr(
         warehouse_schema.warehouse_repository,
         "validate_receive_eligibility",
-        lambda session, po_id, received_by, lines: ("PO730001", "TUBC", []),
+        lambda session, po_id, received_by, lines, **kw: ("PO730001", "TUBC", []),
     )
 
     with pytest.raises(GpJobNotOpenError):
