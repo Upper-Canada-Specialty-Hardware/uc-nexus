@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react';
-import { useHardwareScheduleParser } from '../useHardwareScheduleParser';
+import { useHardwareScheduleParser, WORKER_START_FAILED } from '../useHardwareScheduleParser';
 import type { ParseResult } from '../../types/hardwareSchedule';
 
 // ---------------------------------------------------------------------------
@@ -425,6 +425,42 @@ describe('useHardwareScheduleParser', () => {
 
     expect(result.current.state).toBe('error');
     expect(result.current.error).toBe('Worker script threw an exception');
+  });
+
+  // -----------------------------------------------------------------------
+  // 10b. #1920: a worker that can't load (its file gone after a deploy)
+  // -----------------------------------------------------------------------
+  it('says to reload when the worker cannot start, and starts a new one next time', () => {
+    let workersCreated = 0;
+    const Base = MockWorker;
+    vi.stubGlobal(
+      'Worker',
+      class extends Base {
+        constructor() {
+          super();
+          workersCreated += 1;
+          // eslint-disable-next-line @typescript-eslint/no-this-alias
+          latestMockWorker = this;
+        }
+      },
+    );
+    const { result } = renderHook(() => useHardwareScheduleParser());
+
+    act(() => result.current.parseFile(createMockFile()));
+    act(() => latestMockFileReader.onload!());
+    const failed = latestMockWorker;
+    // A failed script load fires a bare error event: no message.
+    act(() => failed.onerror!(new ErrorEvent('error')));
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe(WORKER_START_FAILED);
+    expect(failed.terminate).toHaveBeenCalledTimes(1);
+
+    act(() => result.current.parseFile(createMockFile()));
+    act(() => latestMockFileReader.onload!());
+    expect(workersCreated).toBe(2);
+    expect(latestMockWorker).not.toBe(failed);
+    expect(latestMockWorker.postMessage).toHaveBeenCalledTimes(1);
   });
 
   // -----------------------------------------------------------------------

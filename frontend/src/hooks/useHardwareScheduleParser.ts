@@ -3,6 +3,9 @@ import type { ParseResult, WorkerOutboundMessage, WorkerParseRequest } from '../
 
 export type ParserState = 'idle' | 'reading' | 'parsing' | 'done' | 'error';
 
+export const WORKER_START_FAILED =
+  "The file reader couldn't start, most likely because the app was updated. Reload the page and try again.";
+
 export interface ParserProgress {
   percent: number;
   phase: string;
@@ -90,8 +93,14 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
         }
       };
 
+      // #1920: the worker is its own hashed file, so a tab opened before a deploy asks for one that is
+      // gone. The failed load's error has no message (an empty red alert), and the broken worker was
+      // kept, so every try again failed the same way. It is dropped, so the next try starts a new one,
+      // and a load failure says what will fix it. The worker posts its own parse errors as messages.
       worker.onerror = (event: ErrorEvent) => {
-        setErrorState(event.message);
+        worker.terminate();
+        if (workerRef.current === worker) workerRef.current = null;
+        setErrorState(event.message || WORKER_START_FAILED);
         setState('error');
       };
 
