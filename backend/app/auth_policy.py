@@ -482,6 +482,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "moveInventoryLocation": SIGNED_IN,
     "overrideInventoryQuantity": SIGNED_IN,
     "rejectReceiveDraft": WAREHOUSE_MANAGERS,
+    # #1945: releasing an approval held on GP rests on a manager's check of GP, so it is approval's authority.
+    "releaseHeldReceiveApproval": WAREHOUSE_MANAGERS,
     "resubmitReceiveDraft": SIGNED_IN,
     "savePickDraft": SIGNED_IN,
     "startPullRequestPick": SIGNED_IN,

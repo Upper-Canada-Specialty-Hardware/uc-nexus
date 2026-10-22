@@ -1178,6 +1178,19 @@ class WarehouseMutations:
         return _load_draft_type(draft_id)
 
     @strawberry.mutation
+    def release_held_receive_approval(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
+        """Send a held approval back to the queue, on a manager's word that GP holds no receipt for it
+        (#1945). A resumed approval refused on its re-check keeps its claim, since an earlier attempt may
+        have posted the receipt, and before this nothing could release it."""
+        user = current_user(info)
+        draft_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, draft_id, tenant_scope(info))
+            warehouse_repository.release_held_approval(session, draft_id, resolve_display_name(user["user_id"]))
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
     def delete_receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> bool:
         """Throw away a count that should not have been entered. Refused once approval has started."""
         user = current_user(info)

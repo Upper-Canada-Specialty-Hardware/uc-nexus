@@ -10,6 +10,7 @@ import {
   APPROVE_RECEIVE_DRAFT,
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
+  RELEASE_HELD_RECEIVE_APPROVAL,
 } from '../../../graphql/warehouse';
 import { GET_PROJECTS, GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
 import { GraphQLError } from 'graphql';
@@ -469,6 +470,41 @@ describe('ReceiveDraftReviewModal', () => {
         timeout: 15_000,
       });
       expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+    });
+
+    const RELEASE = "I've checked GP - no receipt was posted: release it";
+
+    it('lets a manager who checked GP release it, behind a confirm that warns of a second receipt', async () => {
+      let released = 0;
+      const releaseMock: MockedResponse = {
+        request: { query: RELEASE_HELD_RECEIVE_APPROVAL, variables: { id: 'draft-1' } },
+        result: () => {
+          released += 1;
+          return { data: { releaseHeldReceiveApproval: { ...draft(), __typename: 'ReceiveDraft' } } };
+        },
+      };
+      await openModal([approveMock, rereadMock('APPROVING'), releaseMock, rereadMock('PENDING_APPROVAL')]);
+
+      await approveViaConfirm();
+      fireEvent.click(await screen.findByRole('button', { name: RELEASE }, { timeout: 15_000 }));
+      const confirm = await screen.findByRole('dialog', { name: 'Release this held approval' }, SLOW);
+      expect(confirm).toHaveTextContent(/posted to GP twice/);
+      expect(released).toBe(0);
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Release it' }));
+
+      await vi.waitFor(() => expect(released).toBe(1), SLOW);
+      expect(await screen.findByRole('button', { name: 'Approve & Post to GP' }, { timeout: 15_000 })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+
+    it('offers the release on reopening a draft still held, and not on a pending one', async () => {
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1' }));
+      expect(screen.getByRole('button', { name: RELEASE })).toBeInTheDocument();
+    });
+
+    it('does not offer the release on a draft awaiting approval', async () => {
+      await openModal();
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
     });
   });
 

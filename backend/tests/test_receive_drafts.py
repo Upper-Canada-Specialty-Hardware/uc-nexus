@@ -1318,6 +1318,54 @@ def test_a_resumed_approval_gp_refuses_after_its_key_lookup_is_released(committe
     assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
 
 
+def _release(draft_id):
+    return warehouse_module.WarehouseMutations().release_held_receive_approval(_Info(), str(draft_id))
+
+
+def test_a_manager_who_checked_gp_releases_a_held_approval(committed, monkeypatch, approve_env):
+    """#1945: a resumed approval refused on its re-check kept its claim, and nothing released it. A manager
+    who checked GP lets it go: the draft is pending again with the reason on it, and approves afresh."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    released = _release(f.draft_id)
+
+    assert released.status.value == "PENDING_APPROVAL"
+    draft = _read_draft(f.draft_id)
+    assert draft.approval_idempotency_key is None
+    assert MANAGER_NAME in draft.rejection_reason and "checked GP" in draft.rejection_reason
+    assert relay.calls == []
+
+    _set_po_status(f.po_id, POStatus.GP_REGISTERED)
+    result = _approve(f.draft_id)
+    ((_, _, payload),) = relay.calls
+    assert payload["idempotency_key"] != key
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_only_a_held_approval_gp_never_answered_can_be_released(committed, monkeypatch, approve_env):
+    from app.errors import ConflictError, InvalidStateTransitionError
+    from app.services import gp_idempotency
+
+    f = committed()
+    with pytest.raises(InvalidStateTransitionError):
+        _release(f.draft_id)  # pending: nothing is held
+
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    # GP answered under the claim's key: the receipt is in GP, and the same-key retry books it.
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001945"})
+    with pytest.raises(ConflictError, match="GP already took this receipt"):
+        _release(f.draft_id)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVING
+
+
 def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):
     """A project-less PO routes to the stock pool. Drafts apply to it and approve unchanged."""
     f = committed(with_project=False, quantity=2)

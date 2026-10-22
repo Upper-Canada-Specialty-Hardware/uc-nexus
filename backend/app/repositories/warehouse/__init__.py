@@ -86,6 +86,7 @@ from .receive_drafts import (
     mark_approved,
     reject_receive_draft,
     release_approval_claim,
+    release_held_approval,
     resubmit_receive_draft,
     update_receive_draft,
 )
@@ -191,6 +192,7 @@ __all__ = [
     "override_inventory_quantity",
     "reject_receive_draft",
     "release_approval_claim",
+    "release_held_approval",
     "release_partial_reservations",
     "release_reservations",
     "resubmit_receive_draft",

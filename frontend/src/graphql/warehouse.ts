@@ -573,6 +573,13 @@ export const REJECT_RECEIVE_DRAFT = gql`
   }
 `;
 
+// #1945: a manager's word, after checking GP, that a held approval posted no receipt - back to pending.
+export const RELEASE_HELD_RECEIVE_APPROVAL = gql`
+  mutation ReleaseHeldReceiveApproval($id: ID!) {
+    releaseHeldReceiveApproval(id: $id) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
 export const DELETE_RECEIVE_DRAFT = gql`
   mutation DeleteReceiveDraft($id: ID!) {
     deleteReceiveDraft(id: $id)

@@ -808,6 +808,39 @@ def release_approval_claim(session: Session, draft_id: uuid.UUID, idempotency_ke
     )
 
 
+def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: str) -> ReceiveDraftModel:
+    """Let go of an approval claim GP may have taken, once a manager has checked GP holds no receipt (#1945).
+
+    A resumed approval refused on its re-check keeps its claim, because the attempt before it may have
+    posted the receipt, and nothing else released an APPROVING draft: it sat claimed for good. Only a
+    person can answer the question the claim is guarding, by looking in GP, so only a manager's word lets
+    it go. Refused while the ledger holds GP's answer for the claim's key: GP took that receipt, and the
+    same-key retry is what books it."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    draft = _lock_draft(session, draft_id)
+    if draft.status != ReceiveDraftStatus.APPROVING or draft.receive_record_id is not None:
+        raise InvalidStateTransitionError(
+            f"Only an approval still held on GP can be released; this draft is {status_label(draft.status)}. "
+            f"{REFRESH_HINT}"
+        )
+    ledger = session.get(GpWriteIdempotency, draft.approval_idempotency_key) if draft.approval_idempotency_key else None
+    if ledger is not None and ledger.relay_result is not None:
+        raise ConflictError(
+            "GP already took this receipt, so the approval can't be released. Retry posting to book it here."
+        )
+    draft.status = ReceiveDraftStatus.PENDING_APPROVAL
+    draft.approval_idempotency_key = None
+    draft.reviewed_by_user_id = None
+    draft.reviewed_by_name = None
+    draft.reviewed_at = None
+    draft.rejection_reason = (
+        f"Back for review: {manager_name} checked GP and released the held approval, as no receipt was posted"
+    )
+    session.flush()
+    return draft
+
+
 def mark_approved(
     session: Session,
     draft_id: uuid.UUID,
