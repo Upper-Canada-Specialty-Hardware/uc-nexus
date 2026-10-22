@@ -33,9 +33,13 @@ from app.models.inventory_item_type import (
 )
 from app.models.purchase_order import POLineItem
 from app.models.stock_item import StockItem
+from app.services.gp_po import _MAX_ITEM_NUMBER
 
 # Column widths (#1210). An over-long value is a field error here, not an overflow at flush.
 MAX_TYPE_NAME_LENGTH = 100
+# A type's code is a PO line's hardware category, which GP holds as its 30-character item number
+# (#1911) - narrower than the code column's 50, so GP's width is the one that binds.
+MAX_TYPE_CODE_LENGTH = _MAX_ITEM_NUMBER
 MAX_ATTRIBUTE_NAME_LENGTH = 100
 MAX_PRODUCT_CODE_LENGTH = 100
 MAX_DESCRIPTION_LENGTH = 255
@@ -126,9 +130,22 @@ def create_item_type(session: Session, *, name: str, code: str | None = None, so
     if not company:
         raise ValidationError("A GP company is required for an inventory item type.", field="company")
 
+    explicit = bool(code)
     code = _normalize_code(code or name)
     if not code:
         raise ValidationError("An inventory item type needs a code.", field="code")
+    # The code is what a PO line sends GP as its item number (#1911). A code past GP's 30 characters
+    # registered cut short, so the line came back as a different hardware category than the stock was
+    # catalogued under. A derived code is cut to fit; a code given outright is refused, since cutting
+    # one the user chose would store a code they did not choose - and it can never be changed.
+    if len(code) > MAX_TYPE_CODE_LENGTH:
+        if explicit:
+            raise ValidationError(
+                f"A type code must be {MAX_TYPE_CODE_LENGTH} characters or fewer - GP's item number holds "
+                f"no more; {code} is {len(code)}.",
+                field="code",
+            )
+        code = code[:MAX_TYPE_CODE_LENGTH]
 
     _check_type_name_free(session, name, company)
     _check_code_free(session, code, company)
@@ -459,7 +476,7 @@ def _normalize_code(raw: str) -> str:
     code = "".join(cleaned).strip("_")
     while "__" in code:
         code = code.replace("__", "_")
-    return code[:50]
+    return code
 
 
 def _check_type_name_free(session: Session, name: str, company: str) -> None:
