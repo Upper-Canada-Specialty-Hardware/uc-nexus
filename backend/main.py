@@ -736,6 +736,38 @@ def _release_reset_lock(conn) -> None:
         conn.close()
 
 
+def _stored_file_keys(conn) -> list[str]:
+    """The storage key of every file a row about to be dropped names (#1925): PO documents (packing
+    slips among them) and shipment photos, the only tables whose rows stand for an object in storage.
+
+    A table the database does not have yet is skipped, the same tolerance reset_preservation gives, so a
+    half-migrated database can still be reset."""
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select
+
+    from app.models.purchase_order import PODocument
+    from app.models.shipment_photo import ShipmentPhoto
+
+    present = set(sa_inspect(conn).get_table_names())
+    keys: list[str] = []
+    for model in (PODocument, ShipmentPhoto):
+        if model.__tablename__ in present:
+            keys += list(conn.execute(select(model.s3_key)).scalars())
+    return keys
+
+
+def _delete_stored_files(keys: list[str]) -> None:
+    """Best effort, after the rebuild has committed, as demo_reset._wipe_committed does: a file left
+    behind is a few bytes nobody can reach, while a storage hiccup must not cost the reset."""
+    from app.services import storage
+
+    for key in keys:
+        try:
+            storage.delete_file(key)
+        except Exception:  # noqa: BLE001
+            logger.warning("reset-data: could not delete stored file %s", key)
+
+
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
@@ -752,7 +784,8 @@ def reset_data(request: Request):
     re-enrols on the workstation. A dev-convenience reset must not take GP down as a side effect.
 
     Projects are deliberately NOT preserved - they are re-adopted straight from GP by a forced sync
-    pass right after the rebuild, since GP owns them."""
+    pass right after the rebuild, since GP owns them. The files of the PO documents and shipment photos
+    it drops are deleted from storage with them (#1925)."""
     from alembic.config import Config
     from sqlalchemy import text
 
@@ -796,6 +829,9 @@ def reset_data(request: Request):
     try:
         with engine.connect() as conn:
             snap = reset_preservation.snapshot(conn)
+            # #1925: the drop takes the rows and leaves their files in the bucket, where nothing can
+            # reach them again. Read the keys while the rows are still there.
+            stored_keys = _stored_file_keys(conn)
 
         with engine.connect() as conn:
             conn.execute(text("DROP SCHEMA public CASCADE"))
@@ -811,6 +847,8 @@ def reset_data(request: Request):
             conn.commit()
     finally:
         _release_reset_lock(lock_conn)
+
+    _delete_stored_files(stored_keys)
 
     # Re-adopt every GP job straight after the rebuild, since GP owns them. Skipped silently when no
     # relay is connected - see run_once_blocking - and the background poll re-adopts them later.
