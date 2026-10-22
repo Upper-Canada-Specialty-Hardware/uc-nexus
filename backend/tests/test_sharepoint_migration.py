@@ -1440,6 +1440,33 @@ def test_a_stock_row_on_an_undefined_shelf_is_refused_before_any_write(db_sessio
     assert db_session.query(StockItem).count() == 0
 
 
+def test_every_bad_shelf_is_named_in_one_refusal(db_session):
+    """#1907: the first bad shelf used to stop the check, so the admin learned about them one by one."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session,
+            [
+                _entry(wh, product_code="GOOD-1"),
+                _entry(wh, aisle="F", row="37", bay=None),
+                _entry(wh, aisle="Q", row="99", bay="Z"),
+                _entry(wh, aisle="Q", row="99", bay="Z", product_code="SAME-SHELF"),
+                _entry(wh, aisle="Q", row="98", bay="Y"),
+            ],
+            ACTOR,
+        )
+    message = e.value.message
+    assert e.value.field == "location"
+    assert message.startswith("3 location(s)")
+    assert "Entry 2" in message and "F / 37: aisle, row and bay must all be given together" in message
+    assert "Entry 3" in message and "Q / 99 / Z is not a defined location" in message
+    assert "(and 1 more entry)" in message
+    assert "Entry 4" not in message
+    assert "Entry 5" in message and "Q / 98 / Y" in message
+    assert "Entry 1 " not in message
+    assert db_session.query(StockItem).count() == 0
+
+
 def test_a_stock_shelf_is_matched_and_written_in_canonical_form(db_session):
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     migration_repo.migrate_inventory(db_session, [_entry(wh, aisle=" a ", product_code="CANON-1")], ACTOR)

@@ -18,6 +18,8 @@ import {
   buildClassificationPayload,
   classificationStepKey,
   distinctLocations,
+  autoLocationResolutions,
+  shelfProblems,
   distinctProjects,
   emptyCategoryCount,
   unresolvedItemTypes,
@@ -346,6 +348,74 @@ describe('distinctLocations', () => {
       item({ locations: 'A-67, B-79R, Coast', projectInventoryQty: 1 }),
     ]);
     expect(distinctLocations(candidates)[0].autoParsed).toBe(false);
+  });
+
+  it('leaves a coordinate with no bay for the user, since the server takes a whole shelf (#1907)', () => {
+    const locations = distinctLocations(
+      toCandidates([
+        item({ locations: 'F-37', projectInventoryQty: 1 }),
+        item({ locations: 'A-62R, F-59', projectInventoryQty: 1 }),
+        item({ locations: 'G8R', projectInventoryQty: 1 }),
+      ]),
+    );
+    const byRaw = new Map(locations.map((l) => [l.raw, l]));
+    expect(byRaw.get('F-37')?.autoParsed).toBe(false);
+    expect(byRaw.get('A-62R, F-59')?.autoParsed).toBe(false);
+    expect(byRaw.get('G8R')?.autoParsed).toBe(true);
+
+    const auto = autoLocationResolutions(locations, 'wh1');
+    expect(auto.has('F-37')).toBe(false);
+    expect(auto.has('A-62R, F-59')).toBe(false);
+    expect(auto.get('G8R')).toMatchObject({ aisle: 'G', row: '8', bay: 'R' });
+  });
+});
+
+describe('shelfProblems (#1907)', () => {
+  const resolution = (overrides: Partial<LocationResolution> = {}): LocationResolution => ({
+    excluded: false,
+    warehouseId: 'wh1',
+    aisle: 'A',
+    row: '62',
+    bay: 'R',
+    ...overrides,
+  });
+  const registry = [{ warehouseId: 'wh1', aisle: 'A', row: '62', bay: 'R' }];
+
+  it('flags a partial shelf and a whole one the warehouse has not defined', () => {
+    const flags = shelfProblems(
+      new Map([
+        ['A-62R', resolution()],
+        ['a-62r', resolution({ aisle: ' a ', bay: 'r' })],
+        ['F-37', resolution({ aisle: 'F', row: '37', bay: null })],
+        ['Q-99Z', resolution({ aisle: 'Q', row: '99', bay: 'Z' })],
+        ['other wh', resolution({ warehouseId: 'wh2' })],
+        ['', resolution({ aisle: null, row: null, bay: null })],
+        ['excluded', resolution({ excluded: true, aisle: 'Q', row: '1', bay: null })],
+      ]),
+      registry,
+      'wh1',
+    );
+    expect([...flags.entries()]).toEqual([
+      ['F-37', 'INCOMPLETE'],
+      ['Q-99Z', 'UNDEFINED'],
+      ['other wh', 'UNDEFINED'],
+    ]);
+  });
+
+  it('checks a blank warehouse against the default one', () => {
+    expect(shelfProblems(new Map([['A-62R', resolution({ warehouseId: '' })]]), registry, 'wh1').size).toBe(0);
+  });
+
+  it('checks completeness only until the registry has loaded', () => {
+    const flags = shelfProblems(
+      new Map([
+        ['F-37', resolution({ bay: null })],
+        ['Q-99Z', resolution({ aisle: 'Q' })],
+      ]),
+      null,
+      'wh1',
+    );
+    expect([...flags.entries()]).toEqual([['F-37', 'INCOMPLETE']]);
   });
 });
 

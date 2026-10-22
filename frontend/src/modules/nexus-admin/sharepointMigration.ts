@@ -83,7 +83,9 @@ export interface ParsedLocation {
 }
 
 /**
- * `A-62R` -> aisle A, row 62, bay R. The bay letter is optional (`F-37`).
+ * `A-62R` -> aisle A, row 62, bay R. The bay letter is optional (`F-37`) to the parser, but a shelf
+ * without one is not a location Nexus can hold, so such a value is never resolved on its own - see
+ * `distinctLocations` (#1907).
  *
  * Aisles run A..L as single letters today, but the pattern allows up to three so a future `AA` row
  * parses rather than silently falling through to the manual-mapping list.
@@ -645,8 +647,10 @@ export function distinctLocations(
         parsed,
         // Only fully-read strings are auto-resolved. A partial read (`G-22L - Blue Stand Up Rack`)
         // goes to the user, because the leftover text may well be a location qualifier that
-        // changes where the hardware actually is.
-        autoParsed: parsed.length > 0 && unparsed.length === 0,
+        // changes where the hardware actually is. So does a coordinate with no bay (`F-37`): the
+        // server takes a whole aisle/row/bay or none (#1369), and which bay is the user's to say,
+        // not a reason for the whole batch to be refused (#1907).
+        autoParsed: parsed.length > 0 && unparsed.length === 0 && parsed.every((p) => p.bay !== null),
       };
     })
     .sort((a, b) => b.rowCount - a.rowCount || a.raw.localeCompare(b.raw));
@@ -713,6 +717,55 @@ export function autoLocationResolutions(
         row: null,
         bay: null,
       });
+    }
+  }
+  return out;
+}
+
+/** A defined location in the warehouse registry (#632), as the registry read returns it. */
+export interface RegistryLocation {
+  warehouseId: string;
+  aisle: string;
+  row: string;
+  bay: string;
+}
+
+/** Why an included location's shelf will be refused: not all of aisle, row and bay, or a whole one
+ *  the warehouse has not defined. */
+export type ShelfProblem = 'INCOMPLETE' | 'UNDEFINED';
+
+/** The server's normalize_location_value: trim, collapse inner spaces, uppercase. */
+const canonicalShelfPart = (value: string | null) => (value ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+/**
+ * The included locations whose shelf the migration would be refused for (#1907).
+ *
+ * The server takes a shelf only when it is a whole aisle/row/bay defined in the entry's warehouse
+ * (#1369), and refuses the batch otherwise - so the Locations step says so where the answer is given,
+ * rather than at the end of the wizard. A location with no shelf at all is fine and never listed.
+ * `registry` null (still loading, or failed) checks completeness only.
+ */
+export function shelfProblems(
+  resolutions: Map<string, LocationResolution>,
+  registry: RegistryLocation[] | null,
+  defaultWarehouseId: string,
+): Map<string, ShelfProblem> {
+  const shelfKey = (warehouseId: string, aisle: string, row: string, bay: string) =>
+    `${warehouseId}|${aisle}|${row}|${bay}`;
+  const defined = new Set(
+    (registry ?? []).map((l) =>
+      shelfKey(l.warehouseId, canonicalShelfPart(l.aisle), canonicalShelfPart(l.row), canonicalShelfPart(l.bay)),
+    ),
+  );
+  const out = new Map<string, ShelfProblem>();
+  for (const [raw, r] of resolutions) {
+    if (r.excluded) continue;
+    const parts = [r.aisle, r.row, r.bay].map(canonicalShelfPart);
+    const given = parts.filter(Boolean).length;
+    if (given === 0) continue;
+    if (given < 3) out.set(raw, 'INCOMPLETE');
+    else if (registry && !defined.has(shelfKey(r.warehouseId || defaultWarehouseId, parts[0], parts[1], parts[2]))) {
+      out.set(raw, 'UNDEFINED');
     }
   }
   return out;

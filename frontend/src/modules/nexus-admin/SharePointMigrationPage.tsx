@@ -35,6 +35,7 @@ import {
   MIGRATE_SHAREPOINT_INVENTORY,
 } from '../../graphql/admin';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_WAREHOUSE_LOCATIONS } from '../../graphql/warehouse';
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
@@ -67,6 +68,8 @@ import {
   buildPoLinkResolutions,
   resolvedPoLinks,
   poLinkCounts,
+  shelfProblems,
+  type RegistryLocation,
   type SharepointInventoryItem,
   type LocationResolution,
   type NexusProject,
@@ -188,6 +191,16 @@ export default function SharePointMigrationPage() {
   // the location mapping. Neither is a mapping anybody chose, so the wizard waits for both reads.
   const referenceReadsBlocked = !whData || !projData || whError !== undefined || projError !== undefined;
   const { types: itemTypes } = useInventoryItemTypes({ activeOnly: true });
+  // #1907: the defined locations, so the Locations step can say which shelves the server will refuse
+  // before the whole batch is sent - active only, since that is what the server accepts.
+  const {
+    data: registryData,
+    error: registryError,
+    refetch: refetchRegistry,
+  } = useQuery<{ warehouseLocations: RegistryLocation[] }>(GET_WAREHOUSE_LOCATIONS, {
+    variables: { activeOnly: true },
+    fetchPolicy: 'cache-and-network',
+  });
 
   const [migrate, { loading: migrating }] = useMutation(MIGRATE_SHAREPOINT_INVENTORY);
   const [result, setResult] = useState<{
@@ -294,6 +307,10 @@ export default function SharePointMigrationPage() {
     () =>
       mergeResolutions(autoLocationResolutions(locations, defaultWarehouseId), locationOverrides),
     [locations, defaultWarehouseId, locationOverrides],
+  );
+  const shelfFlags = useMemo(
+    () => shelfProblems(locationResolutions, registryData?.warehouseLocations ?? null, defaultWarehouseId),
+    [locationResolutions, registryData, defaultWarehouseId],
   );
   const projectResolutions = useMemo(
     () => mergeResolutions(autoProjectResolutions(spProjects, projects), projectOverrides),
@@ -424,17 +441,19 @@ export default function SharePointMigrationPage() {
   const setLocation = useCallback(
     (raw: string, patch: Partial<LocationResolution>) => {
       // Seed from the effective value so editing one field of an auto-parsed row keeps the rest,
-      // rather than the override starting from blank.
+      // rather than the override starting from blank. A value the parser read but left unresolved
+      // (`F-37`, no bay - #1907) seeds its aisle and row, so the bay is all the user has to give.
+      const parsed = locations.find((l) => l.raw === raw)?.parsed[0];
       const current = locationResolutions.get(raw) ?? {
         excluded: true,
         warehouseId: defaultWarehouseId,
-        aisle: null,
-        row: null,
-        bay: null,
+        aisle: parsed?.aisle ?? null,
+        row: parsed?.row ?? null,
+        bay: parsed?.bay ?? null,
       };
       setLocationOverrides((prev) => new Map(prev).set(raw, { ...current, ...patch }));
     },
-    [locationResolutions, defaultWarehouseId],
+    [locations, locationResolutions, defaultWarehouseId],
   );
 
   const handleCommit = useCallback(async () => {
@@ -639,10 +658,21 @@ export default function SharePointMigrationPage() {
                   {locations.filter((l) => l.autoParsed).length} of {locations.length} location
                   values were read automatically. The rest need a warehouse and shelf, or excluding.
                 </Typography>
+                {registryError && (
+                  <LoadError
+                    what="the defined locations"
+                    error={registryError}
+                    onRetry={refetchRegistry}
+                    sx={{ mb: 2 }}
+                  />
+                )}
                 <FitTable storageKey="sharepoint-migration-locations" columns={LOCATION_COLUMNS} maxHeight={480}>
                       {locations.map((loc) => {
                         const r = locationResolutions.get(loc.raw);
                         const included = !!r && !r.excluded;
+                        const shelfFlag = shelfFlags.get(loc.raw);
+                        // Unresolved, the parser's read is the hint for what typing one field fills.
+                        const hint = r ? undefined : loc.parsed[0];
                         return (
                           <TableRow key={loc.raw || '(blank)'} hover>
                             <TableCell sx={monoSx} title={loc.raw || undefined}>
@@ -655,6 +685,15 @@ export default function SharePointMigrationPage() {
                                   size="small"
                                   color="info"
                                   label={`${loc.parsed.length} locations`}
+                                  sx={{ ml: 1 }}
+                                  variant="outlined"
+                                />
+                              )}
+                              {shelfFlag && (
+                                <Chip
+                                  size="small"
+                                  color="warning"
+                                  label={shelfFlag === 'INCOMPLETE' ? 'needs aisle, row and bay' : 'not a defined shelf'}
                                   sx={{ ml: 1 }}
                                   variant="outlined"
                                 />
@@ -688,6 +727,8 @@ export default function SharePointMigrationPage() {
                                   size="small"
                                   fullWidth
                                   value={r?.[field] ?? ''}
+                                  placeholder={hint?.[field] ?? undefined}
+                                  error={!!shelfFlag}
                                   inputProps={{ maxLength: 20 }}
                                   onChange={(e) =>
                                     // Only the Include button changes inclusion. Typing a shelf into
@@ -724,6 +765,14 @@ export default function SharePointMigrationPage() {
                   <Alert severity="info" sx={{ mt: 2 }}>
                     {unresolvedLocations.length} location values are still unset and their rows will
                     be skipped.
+                  </Alert>
+                )}
+                {shelfFlags.size > 0 && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    {shelfFlags.size} included location value{shelfFlags.size === 1 ? ' names' : 's name'} a
+                    shelf that is not a whole aisle, row and bay defined in its warehouse, and the
+                    migration is refused while any does. Complete each one, define it on the warehouse
+                    Locations tab, or exclude it.
                   </Alert>
                 )}
               </CardContent>
