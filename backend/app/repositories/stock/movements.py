@@ -641,6 +641,10 @@ def transfer_inventory(
     drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
     row (same origin + location) or a new row is created. Same- and cross-warehouse use one path.
 
+    A new destination row keeps the source row's `received_at`, as a split does (#1880): a transfer is a
+    change of shelf, not a receipt, and FIFO orders picks by that date. A merge leaves the row it lands
+    on with its own date.
+
     `expected_quantity` is the source row's count the dialog showed; a row that moved since is
     refused, so a resend after a lost reply cannot move the units twice (#1552).
     """
@@ -665,8 +669,6 @@ def transfer_inventory(
         session, dest_warehouse_id, company=None, field="dest_warehouse_id"
     )
     ensure_registered_location(session, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
-
-    now = datetime.utcnow()
 
     if source_type == "INVENTORY_LOCATION":
         # Locked and re-read (#1119): the source shrinks by a count read here, and a merge target of the
@@ -708,7 +710,7 @@ def transfer_inventory(
                 aisle=dest_aisle,
                 row=dest_row,
                 bay=dest_bay,
-                received_at=now,
+                received_at=il.received_at,
             )
             session.add(target)
         session.flush()
@@ -773,7 +775,7 @@ def transfer_inventory(
             aisle=dest_aisle,
             row=dest_row,
             bay=dest_bay,
-            received_at=now,
+            received_at=si.received_at,
             # The units keep their Stock / Overhead flag and their price wherever they go (#832, #942).
             kind=si.kind,
             unit_cost=si.unit_cost,

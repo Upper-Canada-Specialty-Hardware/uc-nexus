@@ -6,6 +6,7 @@ shipment_return_item_id on the transfer create path (or two different return ori
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 from sqlalchemy import select
@@ -457,6 +458,57 @@ def test_transfer_stock_item_source_moves_between_locations(db_session):
     )
     assert len(dest) == 1
     assert dest[0].quantity == 4
+
+
+def test_a_transfer_keeps_the_units_received_date(db_session):
+    """#1880: the new destination row was dated the moment of the move, so FIFO took the moved units for
+    fresh stock. A new row keeps the source's date, as a split does; a merge keeps the target's own."""
+    received = datetime(2026, 1, 5, 9, 30)
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10, aisle="A", row="1", bay="1")
+    si = make_stock_item(db_session, quantity=10, aisle="A", row="1", bay="1")
+    il.received_at = received
+    si.received_at = received
+    define_location(db_session, il.warehouse_id, "B", "2", "2")
+    db_session.flush()
+
+    for source_type, source_id in (("INVENTORY_LOCATION", il.id), ("STOCK_ITEM", si.id)):
+        stock_repository.transfer_inventory(
+            db_session,
+            source_type=source_type,
+            source_id=source_id,
+            quantity=4,
+            dest_warehouse_id=wh_id(db_session),
+            dest_aisle="B",
+            dest_row="2",
+            dest_bay="2",
+            performed_by="warehouse",
+        )
+
+    [inv_dest] = _dest_rows(db_session, project.id, "B", "2", "2")
+    assert inv_dest.received_at == received
+    [pool_dest] = db_session.scalars(
+        select(StockItem).where(StockItem.aisle == "B", StockItem.row == "2", StockItem.bay == "2")
+    ).all()
+    assert pool_dest.received_at == received
+
+    # A second, newer source merged onto the pool row leaves the row's date as it was.
+    newer = make_stock_item(db_session, quantity=3, aisle="C", row="3", bay="3")
+    newer.received_at = datetime(2026, 6, 1)
+    db_session.flush()
+    stock_repository.transfer_inventory(
+        db_session,
+        source_type="STOCK_ITEM",
+        source_id=newer.id,
+        quantity=3,
+        dest_warehouse_id=wh_id(db_session),
+        dest_aisle="B",
+        dest_row="2",
+        dest_bay="2",
+        performed_by="warehouse",
+    )
+    assert pool_dest.quantity == 7
+    assert pool_dest.received_at == received
 
 
 def test_transfer_stock_item_beyond_available_is_refused(db_session):
