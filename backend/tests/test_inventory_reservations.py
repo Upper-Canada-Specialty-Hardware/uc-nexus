@@ -619,6 +619,35 @@ def test_reupload_flags_a_surviving_request(db_session):
     assert "re-uploaded" in sar.integrity_note
 
 
+def test_batching_clears_the_schedule_changed_note_which_asks_for_a_review_before_batching(db_session):
+    """#1855: a shop request has no accept step, so the note asks for the review before batching - and
+    the batch, the manager acting on it, clears it instead of leaving it on the request for good."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _finalize_sar(
+        db_session,
+        project,
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
+        ],
+    )["shop_assembly_request"]
+    db_session.flush()
+
+    _reupload(db_session, project, ["A01", "A02"])
+    db_session.flush()
+    db_session.refresh(sar)
+    assert sar.integrity_note.endswith("Review it before batching.")
+    assert "accept" not in sar.integrity_note
+
+    batch_request(db_session, sar.id, openings=["A01"])  # A02 still waiting: the note goes all the same
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.PENDING
+    assert sar.integrity_note is None
+
+
 def test_reupload_leaves_a_batched_openings_pull_alone(db_session):
     """Once the pull exists it is the authority on what the warehouse will hand over; shrinking it
     underneath the puller would be worse than a stale bill of hardware. Flag only."""

@@ -448,6 +448,17 @@ SCHEDULE_CHANGED_DROPPED_NOTE = (
     "no longer exist; those were dropped, along with any claim they were holding on inventory. "
     "Review what is left before accepting."
 )
+# #1855: a shop-assembly request has no accept step - the manager batches it - so its notes ask for the
+# review before batching, and batching clears them (`create_shop_assembly_batch`). Its dropped openings
+# were pending, which never hold a claim (#646), so there is none to mention.
+SHOP_SCHEDULE_CHANGED_NOTE = (
+    "The hardware schedule was re-uploaded after this request was created, so its bill of hardware "
+    "may no longer match the schedule. Review it before batching."
+)
+SHOP_SCHEDULE_CHANGED_DROPPED_NOTE = (
+    "The hardware schedule was re-uploaded after this request was created and some of its openings "
+    "no longer exist; those were dropped. Review what is left before batching."
+)
 
 
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
@@ -627,7 +638,7 @@ def _handle_schedule_replacement(
                 sar.rejected_at = datetime.utcnow()
             continue
 
-        sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SCHEDULE_CHANGED_NOTE
+        sar.integrity_note = SHOP_SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SHOP_SCHEDULE_CHANGED_NOTE
 
     for req in _live_shipping_out_requests(session, project.id):
         pending = req.status == ShippingOutRequestStatus.PENDING

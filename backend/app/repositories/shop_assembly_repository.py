@@ -749,6 +749,11 @@ def create_shop_assembly_batch(
         opening.status = ShopAssemblyOpeningStatus.BATCHED
         opening.batch_id = batch.id
 
+    # #1855: the schedule-changed note asks for a review before batching, and the batch is the manager
+    # acting on that review, against today's schedule (the #1442 check above) and stock. Nothing else
+    # cleared it, so it stayed on the request for good.
+    request.integrity_note = None
+
     _close_if_nothing_pending(session, request, closed_by=created_by)
     session.flush()
     return batch
