@@ -65,6 +65,8 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
   MISCELLANEOUS: 'Miscellaneous',
   GENERATED_PO: 'Generated PO',
+  // Receiving files the delivery's packing slip as a PO document (#1902).
+  PACKING_SLIP: 'Packing Slip',
 };
 
 function formatDate(dateStr: string | null | undefined): string {
