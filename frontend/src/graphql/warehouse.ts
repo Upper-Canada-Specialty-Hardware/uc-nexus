@@ -521,8 +521,10 @@ const RECEIVE_DRAFT_FIELDS = `
 `;
 
 export const GET_RECEIVE_DRAFTS = gql`
-  query GetReceiveDrafts($status: ReceiveDraftStatus, $poId: ID, $mine: Boolean) {
-    receiveDrafts(status: $status, poId: $poId, mine: $mine) { ${RECEIVE_DRAFT_FIELDS} }
+  query GetReceiveDrafts($status: ReceiveDraftStatus, $statuses: [ReceiveDraftStatus!], $poId: ID, $mine: Boolean) {
+    receiveDrafts(status: $status, statuses: $statuses, poId: $poId, mine: $mine) {
+      ${RECEIVE_DRAFT_FIELDS}
+    }
   }
 `;
 

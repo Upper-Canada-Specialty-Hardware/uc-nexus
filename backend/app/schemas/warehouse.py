@@ -432,12 +432,14 @@ class WarehouseQueries:
         status: ReceiveDraftStatus | None = None,
         po_id: strawberry.ID | None = None,
         mine: bool = False,
+        statuses: list[ReceiveDraftStatus] | None = None,
     ) -> list[ReceiveDraft]:
         """Counted receives waiting on (or returned from) approval, newest first.
 
         `mine` scopes to the caller's own drafts - what a warehouse user needs to see is the state of
         their own counts, and what a manager needs is everybody's. Signed-in rather than
         manager-gated for the same reason: a rejected draft is only actionable by its author.
+        `statuses` filters to any of a set, so my drafts reads only the two it shows (#1889).
         """
         from app.models.enums import ReceiveDraftStatus as ReceiveDraftStatusDB
 
@@ -449,6 +451,7 @@ class WarehouseQueries:
                 po_id=uuid.UUID(str(po_id)) if po_id else None,
                 created_by_user_id=user["user_id"] if mine else None,
                 company=tenant_scope(info),
+                statuses=[ReceiveDraftStatusDB(s.value) for s in statuses] if statuses else None,
             )
             labels = project_labels(session, (po.project_id for _, po in rows if po is not None))
             return [receive_draft_to_type(draft, po, labels) for draft, po in rows]

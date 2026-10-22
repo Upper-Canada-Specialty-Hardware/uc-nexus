@@ -138,6 +138,28 @@ def test_the_po_search_treats_wildcards_as_characters(db_session):
     assert {r["po_id"] for r in rows} == {exact.id}
 
 
+# --- my drafts (#1889) --------------------------------------------------------------------------
+
+
+def test_my_drafts_reads_only_the_states_it_shows(db_session):
+    """The view shows rejected and waiting drafts; an author's approved ones are left in the database
+    rather than read and dropped in the browser."""
+    project = _project(db_session)
+    po = _po(db_session, project)
+    rejected = _draft(db_session, po, ReceiveDraftStatus.REJECTED, minutes=0)
+    _draft(db_session, po, ReceiveDraftStatus.APPROVED, minutes=1)
+    waiting = _draft(db_session, po, ReceiveDraftStatus.PENDING_APPROVAL, minutes=2)
+
+    rows = warehouse_repository.get_receive_drafts(
+        db_session,
+        po_id=po.id,
+        created_by_user_id="u_1",
+        statuses=[ReceiveDraftStatus.REJECTED, ReceiveDraftStatus.PENDING_APPROVAL],
+    )
+
+    assert [draft.id for draft, _ in rows] == [waiting.id, rejected.id]
+
+
 # --- pull history (#1268) -----------------------------------------------------------------------
 
 

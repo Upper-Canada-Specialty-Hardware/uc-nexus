@@ -39,7 +39,8 @@ function draft(overrides: Record<string, unknown> = {}) {
 
 function draftsMock(drafts: Record<string, unknown>[]): MockedResponse {
   return {
-    request: { query: GET_RECEIVE_DRAFTS, variables: { mine: true } },
+    // #1889: only the two states the view shows are asked for, so every test here proves the request.
+    request: { query: GET_RECEIVE_DRAFTS, variables: { mine: true, statuses: ['REJECTED', 'PENDING_APPROVAL'] } },
     result: { data: { receiveDrafts: drafts } },
     maxUsageCount: Number.POSITIVE_INFINITY,
   };

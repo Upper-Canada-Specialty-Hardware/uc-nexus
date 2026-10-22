@@ -354,12 +354,16 @@ def get_receive_drafts(
     created_by_user_id: str | None = None,
     *,
     company: str | None = None,
+    statuses: list[ReceiveDraftStatus] | None = None,
 ) -> list[tuple]:
     """Drafts with the PO they are against, newest first.
 
     Returns pairs rather than drafts alone because every consumer renders the PO number and project
     beside the draft, and letting the converter walk a lazy `draft.purchase_order` would be one
     SELECT per row - the N+1 this codebase keeps paying for elsewhere.
+
+    `statuses` filters to any of a set (#1889): my drafts shows only the rejected and the waiting, and
+    an author's approved drafts only accumulate, so they are never read for it. Additive with `status`.
     """
     stmt = (
         select(ReceiveDraftModel, POModel)
@@ -369,6 +373,8 @@ def get_receive_drafts(
     )
     if status is not None:
         stmt = stmt.where(ReceiveDraftModel.status == status)
+    if statuses:
+        stmt = stmt.where(ReceiveDraftModel.status.in_(statuses))
     if po_id is not None:
         stmt = stmt.where(ReceiveDraftModel.po_id == po_id)
     if created_by_user_id is not None:
