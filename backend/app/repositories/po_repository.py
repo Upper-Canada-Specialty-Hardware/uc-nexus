@@ -1529,6 +1529,9 @@ def registration_digest(session: Session, po_id: uuid.UUID) -> str | None:
 
 
 QUEUED_REGISTRATION_EDIT_REFUSAL = "This PO's registration is queued for GP, so it can't be changed until it posts."
+LIVE_REGISTRATION_EDIT_REFUSAL = (
+    "This PO is being registered in GP right now, so it can't be changed until that finishes. Reopen it in a moment."
+)
 
 
 def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> None:
@@ -1539,6 +1542,13 @@ def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> No
 
     if po.status == POStatus.DRAFT and gp_outbox_repository.queued_po_registration(session, po.id) is not None:
         raise ConflictError(QUEUED_REGISTRATION_EDIT_REFUSAL)
+    # #1903: a registration waiting on GP right now is the same - its save writes back the project and
+    # lines it sent, and a project chosen meanwhile on a draft with none won over the one GP was given.
+    # So is one GP answered that was never recorded here. A refused or failed attempt lets its claim go.
+    if po.status == POStatus.DRAFT and (
+        _registration_claim_is_live(po, datetime.utcnow()) or _unrecorded_gp_po_number(session, po) is not None
+    ):
+        raise ConflictError(LIVE_REGISTRATION_EDIT_REFUSAL)
 
 
 def _update_po_after_receiving_started(
