@@ -121,7 +121,9 @@ class ProjectQueries:
             if detail is None:
                 return None
             return AdminProjectDetail(
-                project=project_to_type(detail["project"], include_openings=False),
+                project=project_to_type(
+                    detail["project"], include_openings=False, opening_count=detail["opening_count"]
+                ),
                 po_counts_by_status=[
                     POStatusCount(status=status, count=count) for status, count in detail["po_counts_by_status"]
                 ],
@@ -370,7 +372,12 @@ class ProjectMutations:
             project = project_repository.set_project_archived(session, uuid.UUID(str(id)), archived)
             session.commit()
             session.refresh(project)
-            return project_to_type(project, include_openings=False)
+            # #1874: the real count, not the converter's 0, so no client that asks for it caches a 0.
+            return project_to_type(
+                project,
+                include_openings=False,
+                opening_count=project_repository.count_project_openings(session, project.id),
+            )
 
 
 # The GP-held text fields a job edit may change (#730): the input attribute, which is also the project
@@ -492,4 +499,9 @@ def _save_project_edit(pid: uuid.UUID, input: UpdateProjectInput, record: dict |
         )
         session.commit()
         session.refresh(project)
-        return project_to_type(project)
+        # #1874: the edit dialog reads the count, never the openings, so a save builds none of them.
+        return project_to_type(
+            project,
+            include_openings=False,
+            opening_count=project_repository.count_project_openings(session, project.id),
+        )

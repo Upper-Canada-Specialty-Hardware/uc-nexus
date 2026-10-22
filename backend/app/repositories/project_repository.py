@@ -51,6 +51,15 @@ def list_projects_with_opening_counts(
     return [(p, counts.get(p.id, 0)) for p in projects]
 
 
+def count_project_openings(session: Session, project_id: uuid.UUID) -> int:
+    """One project's opening count from a single COUNT, for a resolver that builds the project
+    without its openings (#1874) - `project_to_type(include_openings=False)` reads 0 when no count is
+    passed, and that 0 lands in the client's normalized Project cache over the real figure."""
+    return int(
+        session.scalar(select(func.count()).select_from(OpeningModel).where(OpeningModel.project_id == project_id)) or 0
+    )
+
+
 def get_project(session: Session, project_uuid: uuid.UUID, *, company: str | None = None) -> ProjectModel | None:
     project = session.get(ProjectModel, project_uuid)
     if project is not None and company is not None and project.company != company:
@@ -516,8 +525,9 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     """The project plus the three rollups the admin Projects page shows when a row is opened (#637).
 
     One grouped aggregate per stat and no relationship walk (CLAUDE.md perf rules): a project with
-    9,000 openings and 400 POs costs the same four queries as an empty one. Returns None when the
-    project does not exist, which the resolver turns into a null.
+    9,000 openings and 400 POs costs the same five queries as an empty one. The opening count is one
+    of them (#1874): the page's Openings tile reads it, and the project is built without its openings.
+    Returns None when the project does not exist, which the resolver turns into a null.
     """
     from app.models.inventory import InventoryLocation
     from app.models.pull_request import PullRequest
@@ -552,6 +562,7 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
 
     return {
         "project": project,
+        "opening_count": count_project_openings(session, project_id),
         "po_counts_by_status": [(status, count) for status, count in po_counts],
         "inventory_on_hand": int(on_hand or 0),
         "open_shipping_request_count": int(open_requests or 0),
