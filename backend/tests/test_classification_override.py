@@ -438,6 +438,54 @@ def test_an_opening_keeping_other_hardware_stays_waiting(db_session):
     assert req.status == ShopAssemblyRequestStatus.PENDING
 
 
+def test_a_save_reads_the_pending_shop_requests_once_for_every_product_leaving_the_shop(db_session, monkeypatch):
+    """#1892: two products leaving the shop off two requests read the pending requests once, not once per
+    product, and each product's pass still sees what the one before it did: the first leaves each opening
+    the second product, and the second leaves it nothing, so it is dismissed and the request closes out."""
+    from app.models.notification import Notification
+
+    project = _project(db_session)
+    a01 = _opening(db_session, project)
+    _item(db_session, project, a01, "HG-1", cls=Classification.SHOP_HARDWARE)
+    _item(db_session, project, a01, "HG-2", cls=Classification.SHOP_HARDWARE)
+    requests = [_shop_request(db_session, project, "HG-1") for _ in range(2)]
+    for req in requests:
+        db_session.add(
+            ShopAssemblyRequestItem(
+                id=uuid.uuid4(),
+                shop_assembly_request_id=req.id,
+                opening_number="A01",
+                hardware_category=CAT,
+                product_code="HG-2",
+                requested_quantity=1,
+            )
+        )
+    db_session.flush()
+    reads: list[uuid.UUID] = []
+    real_read = repo._pending_shop_requests
+
+    def read_spy(session, project_id):
+        reads.append(project_id)
+        return real_read(session, project_id)
+
+    monkeypatch.setattr(repo, "_pending_shop_requests", read_spy)
+
+    repo.set_product_classifications(
+        db_session, project.id, [(CAT, "HG-1", C.UCH_SITE), (CAT, "HG-2", C.UCH_SITE)], changed_by="Greg"
+    )
+
+    assert reads == [project.id]
+    for req in requests:
+        db_session.refresh(req)
+        assert req.items == []
+        # Dismissed by whichever product's pass came second, the one that left the opening empty.
+        assert [o.status for o in req.openings] == [ShopAssemblyOpeningStatus.DISMISSED]
+        assert req.openings[0].dismissal_reason.startswith("Nothing left for the shop: HG-")
+        assert req.status == ShopAssemblyRequestStatus.APPROVED
+    notices = db_session.scalars(select(Notification).where(Notification.project_id == project.id)).all()
+    assert len(notices) == 4
+
+
 def test_shop_to_site_is_refused_while_an_active_batch_pull_is_unfinished(db_session):
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
