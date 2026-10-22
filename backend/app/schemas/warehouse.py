@@ -826,10 +826,8 @@ class WarehouseQueries:
         across the selected projects. All nine grouped queries run in one session here rather than
         per-row (CLAUDE.md perf rules)."""
         with SessionLocal() as session:
-            scope = tenant_scope(info)
             ids = [uuid.UUID(str(pid)) for pid in project_ids]
-            for pid in ids:
-                tenancy.require_project_in_scope(session, pid, scope)
+            tenancy.require_projects_in_scope(session, ids, tenant_scope(info))
             rows = warehouse_repository.get_hardware_status_by_product(session, ids)
             return [
                 HardwareStatusByProduct(

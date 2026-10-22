@@ -160,9 +160,7 @@ class SharepointMigrationQueries:
         per-row work."""
         ids = [uuid.UUID(str(pid)) for pid in project_ids]
         with SessionLocal() as session:
-            scope = tenant_scope(info)
-            for pid in ids:
-                tenancy.require_project_in_scope(session, pid, scope)
+            tenancy.require_projects_in_scope(session, ids, tenant_scope(info))
             rows = warehouse_repository.get_project_schedule_products(session, ids)
         return [
             ProjectScheduleProduct(

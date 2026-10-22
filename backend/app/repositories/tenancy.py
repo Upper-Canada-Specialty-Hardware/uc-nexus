@@ -103,6 +103,18 @@ def require_project_in_scope(session: Session, project_id: uuid.UUID | None, sco
     )
 
 
+def require_projects_in_scope(session: Session, project_ids: list[uuid.UUID], scope: str | None) -> None:
+    """`require_project_in_scope` for every id of a multi-project read, in one statement (#1893) rather
+    than one per id. Refuses exactly as the single check would, for the first id in the order given that
+    is missing or another company's, and is a no-op for an admin."""
+    if scope is None or not project_ids:
+        return
+    owners = dict(session.execute(select(Project.id, Project.company).where(Project.id.in_(project_ids))).all())
+    for project_id in project_ids:
+        if owners.get(project_id) != scope:
+            raise NotFoundError(f"Project {project_id} not found")
+
+
 def require_warehouse_in_scope(session: Session, warehouse_id: uuid.UUID | None, scope: str | None) -> None:
     if warehouse_id is None:
         return

@@ -916,6 +916,32 @@ def test_a_null_project_is_not_a_scope_failure(db_session):
     tenancy.require_project_in_scope(db_session, None, "TUBC")
 
 
+def test_many_project_ids_are_checked_in_one_read_and_refused_like_one(db_session, two_companies):
+    """#1893: a multi-project read checks every id in one statement, and names the first id in the
+    order given that is another company's or missing, as the single check would have."""
+    from sqlalchemy import event
+
+    mine, theirs, missing = two_companies["mine"].id, two_companies["theirs"].id, uuid.uuid4()
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        tenancy.require_projects_in_scope(db_session, [mine, mine], "TUBC")
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+    assert len(statements) == 1
+
+    with pytest.raises(NotFoundError, match=f"Project {missing} not found"):
+        tenancy.require_projects_in_scope(db_session, [mine, missing, theirs], "TUBC")
+    with pytest.raises(NotFoundError, match=f"Project {theirs} not found"):
+        tenancy.require_projects_in_scope(db_session, [theirs, missing], "TUBC")
+    tenancy.require_projects_in_scope(db_session, [mine, theirs, missing], None)
+    tenancy.require_projects_in_scope(db_session, [], "TUBC")
+
+
 def test_a_stock_po_takes_the_callers_company(db_session):
     po = po_repository.create_po(
         db_session,
