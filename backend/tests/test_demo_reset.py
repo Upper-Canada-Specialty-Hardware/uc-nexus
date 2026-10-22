@@ -111,6 +111,19 @@ def test_they_are_told_once(stored):
     assert _run(_STATUS, _as("u_other")).data["demoResetStatus"]["notice"] is None
 
 
+def test_a_reset_still_running_is_not_marked_seen(stored):
+    """#1814: a "Got it" on the last reset while the next one runs must not count for the next one."""
+    stored(_finished(started_at="2026-10-17T09:00:00", finished_at=None, running=True), {"u_other": "x"})
+
+    _run("mutation { acknowledgeDemoReset { notice { resetBy } } }", _as("u_other"))
+
+    from app.database import SessionLocal
+    from app.repositories import demo_mirror_state_repository as state
+
+    with SessionLocal() as session:
+        assert state.get(session, state.RESET_SEEN) == {"u_other": "x"}
+
+
 def test_a_later_reset_is_told_again(stored):
     stored(
         _finished(started_at="2026-10-17T09:00:00", finished_at="2026-10-17T09:02:00"),

@@ -25,6 +25,7 @@ in it changes. The nightly sync reads both. A read that fails is recorded and th
 import asyncio
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -45,6 +46,8 @@ _TORONTO = ZoneInfo("America/Toronto")
 _tasks: set[asyncio.Task] = set()
 # The GP masters read that follows a build, kept apart: it is not a build, and does not hold one up.
 _reads: set[asyncio.Task] = set()
+# Whether the nightly sync holds the build's lock in this process.
+_nightly_running = False
 
 
 def _now() -> str:
@@ -117,8 +120,9 @@ def _read_masters_after() -> None:
 
 
 def building() -> bool:
-    """Whether a build is under way in this process."""
-    return demo_reset_running() or any(not t.done() for t in _tasks)
+    """Whether a build is under way in this process, or the nightly sync holds the build's lock: a reset
+    accepted then would announce itself to every demo tab and fail on the lock (#1814)."""
+    return demo_reset_running() or _nightly_running or any(not t.done() for t in _tasks)
 
 
 def start_rebuild(started_by: str, *, started_by_id: str | None = None, kind: str = ADMIN_REBUILD) -> None:
@@ -155,7 +159,9 @@ def acknowledge_reset(user_id: str) -> None:
     """`user_id` has been told of the last build (#1697); `reset_notice` stays quiet for them until the next."""
     with SessionLocal() as session:
         build = state.get(session, state.BUILD) or {}
-        if build.get("started_at"):
+        # A build under way is not the one they were told of (#1814): marking it seen now would keep them
+        # from ever hearing of it once it finishes.
+        if build.get("started_at") and not build.get("running"):
             state.merge_locked(session, state.RESET_SEEN, {user_id: build["started_at"]})
             session.commit()
 
@@ -185,6 +191,18 @@ async def ensure_built(started_by: str) -> None:
 # --- the nightly sync ---------------------------------------------------------------------------------
 
 
+@contextmanager
+def _nightly_holds_the_lock():
+    """The build's lock for the nightly sync, said in this process too, so `building()` refuses a reset."""
+    global _nightly_running
+    with demo_reset.no_reset_running():
+        _nightly_running = True
+        try:
+            yield
+        finally:
+            _nightly_running = False
+
+
 async def nightly() -> dict:
     """One nightly sync: read UBC again, then add what is new. Returns what it added."""
     from app.services import demo_seed
@@ -193,7 +211,7 @@ async def nightly() -> dict:
         return {"skipped": "There is no demo to sync yet."}
     reads = await demo_mirror.refresh_sources()
     # Under the build's own lock: a rebuild started meanwhile would wipe what this adds half way.
-    with demo_reset.no_reset_running():
+    with _nightly_holds_the_lock():
         with SessionLocal() as session:
             source = demo_mirror.load_source(session)
             demo_gp.update_masters(session, source.masters)
