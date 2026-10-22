@@ -168,6 +168,19 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
     return requested
 
 
+def _company_in_scope(info: strawberry.Info, company: str) -> str:
+    """`resolve_gp_company`'s tenant gate without its relay one, for a read Nexus answers itself (#1870)."""
+    requested = relay_gateway_module.normalize_company(company)
+    if not requested:
+        raise ValidationError("A GP company is required.", field="company")
+    scope = tenant_scope(info)
+    if is_demo_company(requested) and scope != DEMO_COMPANY:
+        raise ValidationError("Turn on demo mode to read the demo company's GP.", field="company")
+    if scope is not None and requested != scope:
+        raise ValidationError(f"Your account can only read GP company {scope}.", field="company")
+    return requested
+
+
 def _gp_po_address(a: dict | None) -> GpPoAddress | None:
     if not a:
         return None
@@ -448,9 +461,10 @@ class RelayQueries:
         # rank_vendors returns []); return empty without the wasted list_vendors relay round-trip.
         if not key:
             return VendorSuggestion(manufacturer=manufacturer, saved_mapping=False, candidates=[])
-        # #1870: resolved before the saved mapping is read, not only before the relay call - a mapping is
-        # another company's vendor choice, and the raw argument let a scoped caller read any company's.
-        company = resolve_gp_company(info, gp_company)
+        # #1870: the caller's scope is checked before the saved mapping is read, not only before the relay
+        # call - a mapping is another company's vendor choice, and the raw argument let a scoped caller read
+        # any company's. Scope alone, so a saved mapping still answers while the relay is down.
+        company = _company_in_scope(info, gp_company)
         with SessionLocal() as session:
             mapping = manufacturer_vendor_map_repository.lookup(session, company, key)
             if mapping is not None:
@@ -466,7 +480,7 @@ class RelayQueries:
                     ],
                 )
 
-        result = await relay_gateway.relay_call(company, "list_vendors")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, gp_company), "list_vendors")
         ranked = manufacturer_match.rank_vendors(manufacturer, result["vendors"])
         return VendorSuggestion(
             manufacturer=manufacturer,
