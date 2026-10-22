@@ -496,7 +496,7 @@ def create_po(
             custom_inventory_item_id=catalog_item_id,
             job_cost=line_job_cost,
             cost_code=line_cost_code,
-            uofm=gp_po.line_uofm(li_data),
+            uofm=gp_po.checked_line_uofm(li_data),
             # A NEXUS REGISTERED LINE from birth: the category and code above came off the schedule,
             # so the OPEN-POS SYNC must never overwrite them with GP's item number and description.
             nexus_registered=True,
@@ -690,7 +690,7 @@ def register_po_in_gp(
         # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
         # a line that books to no job carries none at all.
         line_cost_code = _line_cost_code(li_data, cleaned_cost_code) if line_job_cost else None
-        line_uofm = gp_po.line_uofm(li_data)
+        line_uofm = gp_po.checked_line_uofm(li_data)
         if line_job_cost:
             job_cost_line_codes.append(line_cost_code)
 

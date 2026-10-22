@@ -45,6 +45,15 @@ def line_uofm(li: dict) -> str:
     return (li.get("uofm") or "").strip() or _UOFM
 
 
+def checked_line_uofm(li: dict) -> str:
+    """`line_uofm`, refused past GP's width - which is the column's too, so a draft saved with a longer one
+    failed in the database as a server error (#1901)."""
+    uofm = line_uofm(li)
+    if len(uofm) > _MAX_UOFM:
+        raise ValidationError(f"Unit of measure must be at most {_MAX_UOFM} characters", field="uofm")
+    return uofm
+
+
 def validate_create_po_inputs(
     *,
     job_number: str | None,

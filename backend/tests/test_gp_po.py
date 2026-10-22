@@ -581,3 +581,16 @@ def test_validate_create_po_inputs_rejects_an_overlong_unit_of_measure():
             job_number=None, cost_code=None, po_number=None, line_items=[_line_item(uofm="Kilogrammes")]
         )
     assert exc.value.field == "uofm"
+
+
+def test_a_drafts_unit_past_gps_width_is_refused_in_words():
+    """#1901: the column is GP's width; past it the database refused the draft as a server error."""
+    import pytest
+
+    from app.errors import ValidationError
+    from app.services import gp_po
+
+    assert gp_po.checked_line_uofm({"uofm": " Box "}) == "Box"
+    assert gp_po.checked_line_uofm({"uofm": None}) == "Each"
+    with pytest.raises(ValidationError, match="at most 9"):
+        gp_po.checked_line_uofm({"uofm": "Kilogrammes"})
