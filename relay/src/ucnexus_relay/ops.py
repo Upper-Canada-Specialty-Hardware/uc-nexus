@@ -6,6 +6,7 @@ Each function takes an already-open connection and raises RelayOpError for a val
 failure (the caller commits/rolls back and maps errors to its own shape) or lets econnect.EConnectError
 propagate for a raw eConnect failure."""
 
+import hashlib
 import socket
 from datetime import date
 from decimal import Decimal
@@ -679,12 +680,10 @@ def _mint_site_address(
             "job_has_no_customer",
             f"Job '{request.job_number}' has no customer, so a site address cannot be created for it",
         )
-    # char(15), and it has to be stable so a re-push finds its own code rather than making another.
-    own_code = f"SITE-{request.job_number}"[:15].strip().upper()
-    code = (address_code or f"SITE-{request.job_number}")[:15].strip().upper()
+    own_codes = _own_site_codes(request.job_number)
+    named = address_code[:15].strip().upper() if address_code else None
     fields = {
         "customer_number": customer_number,
-        "address_code": code,
         "address1": request.address1,
         "address2": request.address2 or "",
         "city": request.city,
@@ -693,16 +692,52 @@ def _mint_site_address(
         "country": request.country or "",
     }
 
-    if not econnect.customer_address_exists(conn, customer_number, code):
-        econnect.create_customer_address(conn, fields)
-        return code, True
-    if code != own_code:
+    if named and named not in own_codes:
+        if not econnect.customer_address_exists(conn, customer_number, named):
+            econnect.create_customer_address(conn, {**fields, "address_code": named})
+            return named, True
+        return named, False
+
+    # #1859: the job's own code is rewritten in place only when no other job points at it - a code some
+    # other job shares is that job's address too. The fallback code is the one only this job derives.
+    for code in own_codes:
+        code_fields = {**fields, "address_code": code}
+        if not econnect.customer_address_exists(conn, customer_number, code):
+            econnect.create_customer_address(conn, code_fields)
+            return code, True
+        if econnect.jobs_using_customer_address(conn, customer_number, code, excluding_job=request.job_number):
+            continue
+        stored = econnect.get_customer_address_lines(conn, customer_number, code)
+        wanted = {name: fields[name] for name in ("address1", "address2", "city", "state", "zip_code", "country")}
+        if stored != wanted:
+            econnect.update_job_site_customer_address(conn, code_fields)
         return code, False
-    stored = econnect.get_customer_address_lines(conn, customer_number, code)
-    wanted = {name: fields[name] for name in ("address1", "address2", "city", "state", "zip_code", "country")}
-    if stored != wanted:
-        econnect.update_job_site_customer_address(conn, fields)
-    return code, False
+    last = own_codes[-1]
+    others = econnect.jobs_using_customer_address(conn, customer_number, last, excluding_job=request.job_number)
+    raise RelayOpError(
+        "site_address_code_shared",
+        f"address code '{last}' under customer '{customer_number}' is also the site of job(s) "
+        f"{', '.join(others)}, so the site of job '{request.job_number}' cannot be written into it. "
+        f"Point one of the jobs at another address code in GP first.",
+        job_number=request.job_number,
+        address_code=last,
+    )
+
+
+def _own_site_codes(job_number: str) -> list[str]:
+    """The address codes a job's own site lives under, in the order _mint_site_address tries them.
+
+    RM00102.ADRSCODE is char(15), and the code has to be stable so a re-push finds its own record rather
+    than making another. `SITE-<job>` is the code while it fits, exactly what it has always been, so the
+    codes already in GP keep meaning their job. A longer job number used to be cut to 15 characters, and
+    two numbers sharing their first ten characters (NEXUS-380-T1, NEXUS-380-T9) then shared one record,
+    so one job's site edit rewrote the other's address (#1859). Such a job - and a short one whose code
+    another job has been pointed at - takes a code ending in a hash of its whole number instead: the
+    same every time for one job, and different from the next job's except by a 1-in-65536 chance, which
+    the shared-code guard in _mint_site_address catches rather than writes through."""
+    plain = f"SITE-{job_number.strip()}".upper()
+    hashed = f"{plain[:10]}-{hashlib.sha1(plain.encode()).hexdigest()[:4].upper()}"
+    return [plain, hashed] if len(plain) <= 15 else [hashed]
 
 
 # UpdateJobRequest field -> the econnect.update_job field it is sent as. Identical except the use-tax

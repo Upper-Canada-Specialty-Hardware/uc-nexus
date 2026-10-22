@@ -2389,6 +2389,29 @@ def customer_address_exists(conn, customer_number: str, address_code: str) -> bo
     return row.n > 0
 
 
+def jobs_using_customer_address(conn, customer_number: str, address_code: str, *, excluding_job: str) -> list[str]:
+    """Read-only: the jobs other than `excluding_job` whose site (JC00102.Job_Address_Code) is this
+    customer's address code, in job-number order.
+
+    What keeps a job's own site rewrite its own (#1859): the code is rewritten in place with
+    UpdateIfExists=1, which would move every other job pointed at the same record - two long job numbers
+    that once truncated to the same code, or a job accounting pointed at another's site. Matched the
+    way customer_address_exists matches: RTRIM'd columns, stripped arguments, comparison left to SQL."""
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(WS_Job_Number) AS job_number FROM dbo.JC00102 "
+            "WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(Job_Address_Code) = ? AND RTRIM(WS_Job_Number) <> ? "
+            "ORDER BY WS_Job_Number",
+            customer_number.strip(),
+            address_code.strip(),
+            excluding_job.strip(),
+        )
+        .fetchall()
+    )
+    return [row.job_number for row in rows]
+
+
 def get_customer_address(conn, customer_number: str, address_code: str) -> dict | None:
     """Read-only: one stored address row from RM00102, or None. Used as the read-back after a create
     (#444), so the response reports what GP ACTUALLY STORED rather than the request echoed back - the

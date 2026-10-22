@@ -632,6 +632,7 @@ def existing_site(monkeypatch, job_writes):
     """The address code already exists and holds _STORED; in-place rewrites are recorded with the rest."""
     monkeypatch.setattr(econnect, "customer_address_exists", lambda conn, customer, code: True)
     monkeypatch.setattr(econnect, "get_customer_address_lines", lambda conn, customer, code: dict(_STORED))
+    monkeypatch.setattr(econnect, "jobs_using_customer_address", lambda conn, customer, code, *, excluding_job: [])
     monkeypatch.setattr(
         econnect,
         "update_job_site_customer_address",
@@ -680,6 +681,103 @@ def test_any_other_existing_code_is_never_rewritten(existing_site, monkeypatch):
     ops.update_job_site_op(_NoSqlConn(), company="TUBC", request=request)
     assert [w[0] for w in existing_site] == ["job", "job"]
     assert existing_site[0][2] == {"job_number": "22004", "job_address_code": "MAIN"}
+
+
+# --- #1859: a job's own code is its own -------------------------------------------------------------------
+
+
+def test_a_short_job_number_keeps_the_code_it_always_had():
+    # existing GP data: every SITE-<job> that fits in 15 is still that job's first choice.
+    assert ops._own_site_codes("22004")[0] == "SITE-22004"
+    assert ops._own_site_codes("nexus-2309")[0] == "SITE-NEXUS-2309", "exactly 15 still fits"
+
+
+def test_long_job_numbers_that_used_to_truncate_alike_get_codes_of_their_own():
+    t1, t9 = ops._own_site_codes("NEXUS-380-T1"), ops._own_site_codes("NEXUS-380-T9")
+    assert len(t1) == len(t9) == 1, "SITE-<job> does not fit, so there is no plain code to try"
+    assert t1 != t9
+    assert all(len(code) <= 15 and code.startswith("SITE-NEXUS-") for code in t1 + t9)
+    assert ops._own_site_codes("NEXUS-380-T1") == t1, "stable, so a re-push finds its own record"
+    assert ops._own_site_codes(" nexus-380-t1 ") == t1
+
+
+def test_a_long_job_mints_its_own_code_instead_of_the_truncated_one(job_writes):
+    request = models.UpdateJobSiteRequest(company="TUBC", job_number="NEXUS-380-T9", address1="9 New Rd", city="X")
+    ops.update_job_site_op(_NoSqlConn(), company="TUBC", request=request)
+    (code,) = ops._own_site_codes("NEXUS-380-T9")
+    assert job_writes[0][1]["address_code"] == code != "SITE-NEXUS-380-"
+    assert job_writes[1][2] == {"job_number": "NEXUS-380-T9", "job_address_code": code}
+
+
+def test_the_old_truncated_code_is_another_jobs_and_never_rewritten(existing_site, monkeypatch):
+    # a caller still naming the truncated code two long jobs once shared gets it pointed at, not rewritten
+    monkeypatch.setattr(
+        econnect,
+        "get_customer_address_lines",
+        lambda conn, customer, code: pytest.fail("a shared code's contents must not even be compared"),
+    )
+    request = models.UpdateJobSiteRequest(
+        company="TUBC", job_number="NEXUS-380-T9", address_code="SITE-NEXUS-380-", address1="9 New Rd", city="X"
+    )
+    ops.update_job_site_op(_NoSqlConn(), company="TUBC", request=request)
+    assert [w[0] for w in existing_site] == ["job", "job"]
+
+
+def test_an_own_code_another_job_points_at_is_left_alone_for_the_jobs_hashed_code(existing_site, monkeypatch):
+    plain, hashed = ops._own_site_codes("22004")
+    exists = {plain}
+    monkeypatch.setattr(econnect, "customer_address_exists", lambda conn, customer, code: code in exists)
+    monkeypatch.setattr(
+        econnect,
+        "jobs_using_customer_address",
+        lambda conn, customer, code, *, excluding_job: ["22005"] if code == plain else [],
+    )
+    request = models.UpdateJobSiteRequest(company="TUBC", job_number="22004", address1="9 New Rd", city="Duncan")
+
+    response = ops.update_job_site_op(_NoSqlConn(), company="TUBC", request=request)
+
+    assert existing_site[0] == (
+        "address",
+        {**_STORED, "address1": "9 New Rd", "customer_number": "ELL100", "address_code": hashed},
+    )
+    assert existing_site[1] == ("job", True, {"job_number": "22004", "job_address_code": hashed})
+    assert "address_update" not in [w[0] for w in existing_site]
+    assert response.address_created is True
+
+
+def test_every_own_code_shared_is_refused_before_writing(existing_site, monkeypatch):
+    monkeypatch.setattr(
+        econnect, "jobs_using_customer_address", lambda conn, customer, code, *, excluding_job: ["22005"]
+    )
+    request = models.UpdateJobSiteRequest(company="TUBC", job_number="22004", address1="9 New Rd", city="Duncan")
+
+    with pytest.raises(RelayOpError) as excinfo:
+        ops.update_job_site_op(_NoSqlConn(), company="TUBC", request=request)
+
+    assert excinfo.value.code == "site_address_code_shared"
+    assert "22005" in excinfo.value.message
+    assert existing_site == []
+
+
+def test_jobs_using_customer_address_excludes_the_job_itself():
+    class _Cursor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, *params):
+            self.calls.append((sql, params))
+            return self
+
+        def fetchall(self):
+            return [namedtuple("_Row", "job_number")("22005")]
+
+    cursor = _Cursor()
+    conn = type("_Conn", (), {"cursor": lambda self: cursor})()
+
+    assert econnect.jobs_using_customer_address(conn, "ELL100 ", "SITE-22004 ", excluding_job="22004") == ["22005"]
+    sql, params = cursor.calls[0]
+    assert "dbo.JC00102" in sql and "Job_Address_Code" in sql and "WS_Job_Number) <> ?" in sql
+    assert params == ("ELL100", "SITE-22004", "22004")
 
 
 class _ProcCursor:
