@@ -6,7 +6,7 @@ import random
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError
@@ -129,6 +129,44 @@ def registrations_holding_drafts(session: Session, rows: list[GpWriteOutbox]) ->
         else {}
     )
     return {r.id for r in registrations if _registration_holds_draft(r, ledgers.get(r.idempotency_key))}
+
+
+def list_registrations_holding_drafts(
+    session: Session, *, company: str | None = None, limit: int = 500
+) -> list[GpWriteOutbox]:
+    """Every registration that still holds its draft, newest first: what the PO list holds drafts by (#1948).
+
+    The list read the newest rows of every registration status and kept the holding ones, so held rows
+    fell off it as FAILED ones nothing holds piled up above them. Narrowed in SQL first - waiting, or FAILED
+    with no record and either a ledger row or maybe_in_gp short of a refusal - then settled exactly by
+    `_registration_holds_draft`, so the limit only ever counts rows that may hold."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    may_hold = or_(
+        GpWriteIdempotency.key.is_not(None),
+        and_(
+            GpWriteOutbox.maybe_in_gp.is_(True),
+            or_(GpWriteOutbox.failure_kind.is_(None), GpWriteOutbox.failure_kind != "gp_rejected"),
+        ),
+    )
+    stmt = (
+        select(GpWriteOutbox)
+        .outerjoin(GpWriteIdempotency, GpWriteIdempotency.key == GpWriteOutbox.idempotency_key)
+        .where(
+            GpWriteOutbox.op == "register_po_in_gp",
+            or_(
+                GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+                and_(GpWriteOutbox.status == "FAILED", GpWriteIdempotency.result_id.is_(None), may_hold),
+            ),
+        )
+        .order_by(GpWriteOutbox.created_at.desc())
+        .limit(limit)
+    )
+    if company is not None:
+        stmt = stmt.where(GpWriteOutbox.company == company)
+    rows = list(session.scalars(stmt).all())
+    holding = registrations_holding_drafts(session, rows)
+    return [r for r in rows if r.id in holding]
 
 
 def queued_po_registration(

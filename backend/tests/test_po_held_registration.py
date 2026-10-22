@@ -106,6 +106,26 @@ def test_the_list_says_which_registrations_hold_their_draft_in_one_read(db_sessi
     assert holding == {held.id, waiting.id}
 
 
+def test_the_po_list_reads_the_holding_registrations_however_many_failed_ones_pile_up(db_session):
+    """#1948: the list read the newest rows of every registration status and kept the holding ones, so
+    the FAILED rows nothing holds pushed a held one past the limit. The server picks them now."""
+    po = _po(db_session)
+    company = f"T{uuid.uuid4().hex[:6].upper()}"
+    held = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED)
+    maybe = _failed_registration(db_session, po.id, kind="exhausted", maybe_in_gp=True)
+    waiting = _queue_registration(db_session, po.id)
+    finished = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED, result_id="done")
+    refused = _failed_registration(db_session, po.id, kind="gp_rejected", maybe_in_gp=True)
+    freed = [_failed_registration(db_session, po.id, kind="gp_rejected") for _ in range(4)]  # the newest
+    for row in [held, maybe, waiting, finished, refused, *freed]:
+        row.company = company
+    db_session.flush()
+
+    rows = gp_outbox_repository.list_registrations_holding_drafts(db_session, company=company, limit=3)
+
+    assert {r.id for r in rows} == {held.id, maybe.id, waiting.id}
+
+
 def test_retry_is_refused_while_a_window_is_registering_the_po(db_session):
     po = _po(db_session)
     row = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED)

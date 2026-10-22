@@ -566,11 +566,13 @@ function POListPage() {
   // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
   // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
   // #1948: a FAILED registration GP took, or may have, holds its draft as well (holdsDraft says which), so
-  // it is asked for too and lights the same hold - otherwise the draft was free to cancel or register again.
+  // it lights the same hold - otherwise the draft was free to cancel or register again. The server picks
+  // the holding rows (holdingDrafts) rather than this reading the newest 200 of every status, where the
+  // FAILED rows nothing holds could pile up and push a held one off the list.
   const { data: outboxData } = useQuery<{
     gpOutbox: { id: string; entityKey: string; status: string; holdsDraft?: boolean | null }[];
   }>(GET_GP_OUTBOX, {
-    variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'], limit: 200 },
+    variables: { holdingDrafts: true, limit: 500 },
     fetchPolicy: 'cache-and-network',
     pollInterval: 15_000,
   });

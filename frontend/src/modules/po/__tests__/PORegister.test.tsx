@@ -159,7 +159,8 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
         query: GET_GP_OUTBOX,
         variables: (v: Record<string, unknown>) => {
           outboxAsked.push(v);
-          return Array.isArray(v.ops) && (v.ops as string[]).includes('create_po');
+          // #1948: the table's own read asks for the holding registrations; the held panel by op.
+          return v.holdingDrafts === true || (Array.isArray(v.ops) && (v.ops as string[]).includes('create_po'));
         },
       },
       result: { data: { gpOutbox: heldRegistrations } },
@@ -416,9 +417,10 @@ it('shows the held PO registrations on the PO table', async () => {
   );
 });
 
-// #1223: the queued chip (and the detail's Register/Cancel hold) reads only waiting registrations,
-// asked for by name, so 200 newer writes of other kinds can never push one off the list.
-it('marks a PO whose registration is waiting, asking only for waiting registrations', async () => {
+// #1223: the queued chip (and the detail's Register/Cancel hold) reads only registrations, so 200 newer
+// writes of other kinds can never push one off the list. #1948: only the ones holding their draft, picked
+// by the server, so a pile of failed ones nothing holds can't either.
+it('marks a PO whose registration is waiting, asking only for the registrations holding drafts', async () => {
   renderRegister([
     {
       __typename: 'GpOutboxEntry',
@@ -438,11 +440,7 @@ it('marks a PO whose registration is waiting, asking only for waiting registrati
 
   expect(await screen.findByText('GP registration queued')).toBeInTheDocument();
   await waitFor(() =>
-    expect(outboxAsked).toContainEqual({
-      ops: ['create_po'],
-      statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'],
-      limit: 200,
-    }),
+    expect(outboxAsked).toContainEqual({ holdingDrafts: true, limit: 500 }),
   );
 });
 

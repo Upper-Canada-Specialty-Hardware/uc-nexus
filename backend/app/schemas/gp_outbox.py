@@ -97,6 +97,7 @@ class GpOutboxQueries:
         limit: int = 100,
         ops: list[str] | None = None,
         statuses: list[GpOutboxStatus] | None = None,
+        holding_drafts: bool | None = None,
     ) -> list[GpOutboxEntry]:
         """The queue itself. Readable by any signed-in user because the PO and receiving lists join
         pending entries onto their rows client-side; retry and cancel are decided per entry.
@@ -107,8 +108,17 @@ class GpOutboxQueries:
 
         Company-scoped (#729). The row carries the GP company its write is for, so this stays on
         the caller's side of the GP COMPANY NEXUS TENANT line however the field is called; only an
-        unscoped UC NEXUS ADMIN sees every company's queue."""
+        unscoped UC NEXUS ADMIN sees every company's queue.
+
+        `holdingDrafts` (#1948) answers with the PO registrations that still hold their draft instead -
+        waiting ones, and FAILED ones GP took or may have - in place of the status and op filters, so a
+        pile of finished failures can't push a held one past the limit."""
         with SessionLocal() as session:
+            if holding_drafts:
+                rows = gp_outbox_repository.list_registrations_holding_drafts(
+                    session, company=tenant_scope(info), limit=max(1, min(limit, 500))
+                )
+                return [gp_outbox_entry_to_type(r, holds_draft=True) for r in rows]
             rows = gp_outbox_repository.list_entries(
                 session,
                 status=status.value if status else None,

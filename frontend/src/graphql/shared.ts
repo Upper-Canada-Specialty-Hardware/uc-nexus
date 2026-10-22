@@ -128,8 +128,14 @@ export const GET_GP_OUTBOX_SUMMARY = gql`
 // it is responsible for - `create_po` on the PO table, `create_receipt` on Receiving - while the
 // admin queue asks for all of them.
 export const GET_GP_OUTBOX = gql`
-  query GetGpOutbox($status: GpOutboxStatus, $limit: Int, $ops: [String!], $statuses: [GpOutboxStatus!]) {
-    gpOutbox(status: $status, limit: $limit, ops: $ops, statuses: $statuses) {
+  query GetGpOutbox(
+    $status: GpOutboxStatus
+    $limit: Int
+    $ops: [String!]
+    $statuses: [GpOutboxStatus!]
+    $holdingDrafts: Boolean
+  ) {
+    gpOutbox(status: $status, limit: $limit, ops: $ops, statuses: $statuses, holdingDrafts: $holdingDrafts) {
       id
       label
       op
