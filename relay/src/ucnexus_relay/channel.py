@@ -1177,9 +1177,12 @@ async def _run_once(url: str, secret: str, cfg) -> None:
             # Re-discover on a timer and re-announce only when THIS channel's answer actually changed
             # (a company added in GP, or discovery recovering from a failed read). Per connection like
             # the writer above, and cancelled with it, so a dropped socket takes its refresher with it.
+            # A reading that failed, or held a company it could not confirm, is tried again soon
+            # rather than a full interval later (#1863).
             nonlocal sent_companies
             while True:
-                await asyncio.sleep(COMPANY_REFRESH_SECONDS)
+                retry = companies.current().retry_soon
+                await asyncio.sleep(companies.RETRY_SECONDS if retry else COMPANY_REFRESH_SECONDS)
                 await asyncio.to_thread(companies.refresh)
                 served = _served_companies(allowed_companies)
                 if served != sent_companies:

@@ -124,6 +124,9 @@ def create_app() -> FastAPI:
             # error and not a served company: without it a company missing from the list above looks
             # like a company that does not exist, and nobody goes looking for the missing grant.
             "companies_inaccessible": dict(discovered.inaccessible),
+            # code -> why, for the served companies the last reading could not confirm and an earlier
+            # one did (#1863): served, but worth a look if it lasts.
+            "companies_held": dict(discovered.held),
             # What this relay has cost the GP server since it started, per company and per op, taken
             # from the server's own per-session accounting - see db.py. A copy of a handful of
             # integers; nothing is read from GP to answer this.

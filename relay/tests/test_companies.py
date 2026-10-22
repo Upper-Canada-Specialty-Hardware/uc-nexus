@@ -360,6 +360,111 @@ def test_serves_answers_from_the_discovered_set(monkeypatch):
     assert not companies.serves("UBC")
 
 
+# --- one bad reading does not empty the served set (#1863) ------------------------------------------
+
+
+_TWO = companies.Discovery(["TUBC", "UBC"], {"TUBC": "Test Upper Canada", "UBC": "Upper Canada"})
+
+
+def _readings(monkeypatch, *found):
+    """Hand refresh() these discoveries in order, one per call."""
+    seq = list(found)
+    monkeypatch.setattr(companies, "discover", lambda: seq.pop(0))
+
+
+def test_a_failed_read_keeps_the_last_good_companies_and_asks_for_a_retry(monkeypatch):
+    _readings(monkeypatch, _TWO, companies.Discovery([], {}, "SQL server is unreachable", read_failed=True))
+    companies.refresh(max_age=0)
+    assert companies.current().retry_soon is False
+
+    held = companies.refresh(max_age=0)
+
+    assert held.companies == ["TUBC", "UBC"]
+    assert held.names == _TWO.names
+    assert held.error is None
+    assert held.held == {"TUBC": "SQL server is unreachable", "UBC": "SQL server is unreachable"}
+    assert held.retry_soon is True
+    assert companies.serves("UBC")
+
+
+def test_a_failed_first_read_serves_nothing_and_still_asks_for_a_retry(monkeypatch):
+    _readings(monkeypatch, companies.Discovery([], {}, "SQL server is unreachable", read_failed=True))
+    found = companies.refresh(max_age=0)
+    assert found.companies == [] and found.error == "SQL server is unreachable"
+    assert found.held == {}
+    assert found.retry_soon is True
+
+
+def test_a_probe_that_timed_out_holds_its_company_and_a_refusal_drops_one_at_once(monkeypatch):
+    _readings(
+        monkeypatch,
+        _TWO,
+        companies.Discovery(
+            [],
+            {},
+            "this relay's login cannot read any GP company it discovered: ...",
+            {"TUBC": "unreadable (HYT00)", "UBC": "login denied (28000)"},
+            unconfirmed=frozenset({"TUBC"}),
+        ),
+    )
+    companies.refresh(max_age=0)
+
+    found = companies.refresh(max_age=0)
+
+    assert found.companies == ["TUBC"]
+    assert found.names == {"TUBC": "Test Upper Canada"}
+    assert found.held == {"TUBC": "unreadable (HYT00)"}
+    assert found.inaccessible == {"UBC": "login denied (28000)"}
+    assert found.error is None
+    assert found.retry_soon is True
+
+
+def test_a_company_gp_no_longer_lists_is_dropped_at_once(monkeypatch):
+    # a reading that worked and does not list UBC is the news, not a failure to wait out.
+    only_tubc = companies.Discovery(["TUBC"], {"TUBC": "Test Upper Canada"})
+    _readings(monkeypatch, _TWO, only_tubc, companies.Discovery([], {}, "unreachable", read_failed=True))
+    companies.refresh(max_age=0)
+    assert companies.refresh(max_age=0).companies == ["TUBC"]
+    assert companies.refresh(max_age=0).companies == ["TUBC"], "nor does a later failed read bring it back"
+
+
+def test_a_company_is_held_for_a_bounded_time_only(monkeypatch):
+    failed = companies.Discovery([], {}, "SQL server is unreachable", read_failed=True)
+    _readings(monkeypatch, _TWO, failed, failed)
+    companies.refresh(max_age=0)
+    assert companies.refresh(max_age=0).companies == ["TUBC", "UBC"]
+
+    monkeypatch.setattr(companies, "HOLD_SECONDS", -1.0)  # the last confirmation is now past the hold
+    expired = companies.refresh(max_age=0)
+    assert expired.companies == [] and expired.error == "SQL server is unreachable"
+    assert expired.held == {}
+
+
+def test_a_probe_timeout_is_unconfirmed_and_a_refusal_is_not(monkeypatch):
+    rows = [_Row("TUBC", "TUBC"), _Row("UBC", "UBC"), _Row("UCSH", "UCSH")]
+
+    class _Pyodbc:
+        Error = _ProbeError
+
+        @staticmethod
+        def connect(conn_str, **kw):
+            if "DATABASE=UBC;" in conn_str:
+                raise _ProbeError("HYT00", "[HYT00] Login timeout expired")
+            if "DATABASE=UCSH;" in conn_str:
+                raise _ProbeError("28000", "[28000] Login failed")
+            return _Conn(rows)
+
+    monkeypatch.setattr(companies, "pyodbc", _Pyodbc)
+    found = companies.discover()
+    assert found.unconfirmed == frozenset({"UBC"})
+    assert found.read_failed is False
+
+
+def test_the_master_read_failing_is_marked_as_such(monkeypatch):
+    _pyodbc(monkeypatch, raises=RuntimeError("SQL server is unreachable"))
+    assert companies.discover().read_failed is True
+
+
 # --- what an undiscovered company does to an op -----------------------------------------------------
 
 
@@ -488,3 +593,46 @@ def test_the_refresh_loop_resends_the_hello_only_when_something_changed(monkeypa
     assert sent[0]["companies"] == ["TUBC"]
     assert sent[1]["companies"] == ["TUBC", "UBC"]
     assert sent[1]["company_names"]["UBC"] == "Upper Canada"
+
+
+def test_the_refresh_loop_tries_a_failed_reading_again_soon(monkeypatch, clean_channel_states):
+    """#1863: a reading that failed is read again in RETRY_SECONDS, not a full refresh interval later -
+    here the regular interval is an hour, so only the short retry can produce the second hello."""
+    failed = companies.Discovery([], {}, "SQL server is unreachable", read_failed=True)
+    good = companies.Discovery(["TUBC"], {"TUBC": "Test Upper Canada"})
+    state = {"now": failed}
+
+    def _refresh(*a, **k):
+        if state["now"] is failed and refreshes:
+            state["now"] = good
+        refreshes.append(1)
+        return state["now"]
+
+    refreshes: list[int] = []
+    monkeypatch.setattr(companies, "current", lambda: state["now"])
+    monkeypatch.setattr(companies, "refresh", _refresh)
+    monkeypatch.setattr(channel, "COMPANY_REFRESH_SECONDS", 3600)
+    monkeypatch.setattr(companies, "RETRY_SECONDS", 0)
+
+    async def run():
+        done = asyncio.Event()
+        ws = _FakeWs(done)
+
+        class _Cm:
+            async def __aenter__(self):
+                return ws
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(channel.websockets, "connect", lambda url, **kw: _Cm())
+        task = asyncio.create_task(channel._run_once(PRODUCTION_BACKEND_URL, "secret", get_settings().channel))
+        deadline = time.monotonic() + 5
+        while len(ws.sent) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        done.set()
+        await task
+        return ws.sent
+
+    sent = asyncio.run(run())
+    assert [f["companies"] for f in sent] == [[], ["TUBC"]]
