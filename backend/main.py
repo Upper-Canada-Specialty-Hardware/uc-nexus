@@ -19,7 +19,7 @@ from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
 from app.auth_policy import enforce_root_field
-from app.config import cors_allow_origins
+from app.config import cors_allow_origins, is_production_environment
 from app.database import SessionLocal
 from app.errors import AppError
 from app.models.enums import RelayEventKind
@@ -205,7 +205,23 @@ schema = strawberry.Schema(
     ],
 )
 
-graphql_app = GraphQLRouter(schema, context_getter=get_context)
+
+def _graphql_ide() -> str | None:
+    """GraphiQL off production (#1924): an in-browser console with the full schema in it is a tool for
+    developing against a test environment, not something production should hand to anyone who finds the
+    URL. Introspection itself stays open on purpose (see ResolverGuardExtension._is_root_field)."""
+    return None if is_production_environment() else "graphiql"
+
+
+def _api_docs_urls() -> dict[str, None]:
+    """FastAPI's /docs, /redoc and /openapi.json off production (#1924), for the same reason as the IDE:
+    they map every plain route to anyone who asks. Off production FastAPI keeps its defaults."""
+    if is_production_environment():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
+graphql_app = GraphQLRouter(schema, context_getter=get_context, graphql_ide=_graphql_ide())
 
 # #1921: the most a /graphql request body may carry. Strawberry reads the whole body before anything
 # looks at it, so without a cap one request could hold as much memory as it cared to send. The largest
@@ -327,7 +343,7 @@ async def lifespan(_app: FastAPI):
                 await task
 
 
-app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan)
+app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan, **_api_docs_urls())
 
 # Added before CORS so CORS wraps it: a refused upload must still reach the browser as a 413 it can
 # read, not as a CORS failure.
