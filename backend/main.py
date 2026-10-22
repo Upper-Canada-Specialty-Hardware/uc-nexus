@@ -207,6 +207,70 @@ schema = strawberry.Schema(
 
 graphql_app = GraphQLRouter(schema, context_getter=get_context)
 
+# #1921: the most a /graphql request body may carry. Strawberry reads the whole body before anything
+# looks at it, so without a cap one request could hold as much memory as it cared to send. The largest
+# legitimate request is a single file upload: a PO document at its 20 MB cap
+# (po_repository.MAX_PO_DOCUMENT_BYTES) is ~27 MB as base64, and a shipment photo is less. Every upload
+# mutation takes one file and the frontend sends each upload as its own request, so the cap sits just
+# above one maximum upload.
+MAX_GRAPHQL_BODY_BYTES = 32 * 1024 * 1024
+
+
+class GraphQLBodyCapMiddleware:
+    """Refuse a /graphql request whose body is past MAX_GRAPHQL_BODY_BYTES with a 413 (#1921).
+
+    A declared Content-Length past the cap is refused before a byte is read. Otherwise the body is read
+    here, counting as it streams, and refused the moment it passes the cap, so a missing or lying
+    Content-Length cannot make it buffer more - the same rule /webhooks/clerk/email keeps. A body within
+    the cap is handed on whole, which costs nothing: Strawberry buffers it anyway.
+
+    Pure ASGI rather than a BaseHTTPMiddleware, which would leave the body to the route; the WebSocket
+    side of /graphql is not a request body and is passed through."""
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _is_graphql(path: str) -> bool:
+        return path == "/graphql" or path.startswith("/graphql/")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not self._is_graphql(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        # Read at call time so a test can lower it.
+        cap = MAX_GRAPHQL_BODY_BYTES
+        too_large = JSONResponse(
+            status_code=413,
+            content={"error": f"The request is larger than {cap // (1024 * 1024)} MB", "code": "PAYLOAD_TOO_LARGE"},
+        )
+        declared = dict(scope.get("headers") or []).get(b"content-length", b"").strip()
+        if declared.isdigit() and int(declared) > cap:
+            await too_large(scope, receive, send)
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the client went away before the body was done; there is nobody to answer
+            body.extend(message.get("body", b""))
+            if len(body) > cap:
+                await too_large(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
 
 async def drain_before_shutdown() -> None:
     """Let a GP write already on the wire finish before the relay socket goes (#1292).
@@ -265,6 +329,9 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan)
 
+# Added before CORS so CORS wraps it: a refused upload must still reach the browser as a 413 it can
+# read, not as a CORS failure.
+app.add_middleware(GraphQLBodyCapMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allow_origins(),
