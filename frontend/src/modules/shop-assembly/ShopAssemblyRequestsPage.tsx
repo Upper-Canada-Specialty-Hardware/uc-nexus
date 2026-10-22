@@ -48,6 +48,7 @@ import LoadError from '../../components/LoadError';
 import { dismissalLines } from './dismissals';
 import {
   HISTORY_PAGE_SIZE,
+  appendById,
   PULL_STATUS_COLOR,
   PULL_STATUS_LABEL,
   STAGE_COLOR,
@@ -181,8 +182,7 @@ export default function ShopAssemblyRequestsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const hasMore =
     paged &&
-    requests.length > 0 &&
-    requests.length % HISTORY_PAGE_SIZE === 0 &&
+    requests.length >= HISTORY_PAGE_SIZE &&
     !(endAt?.view === view && endAt.count === requests.length);
   const handleLoadMore = async () => {
     setLoadingMore(true);
@@ -190,14 +190,12 @@ export default function ShopAssemblyRequestsPage() {
       const res = await fetchMore({
         variables: { offset: requests.length },
         updateQuery: (prev, { fetchMoreResult }) => ({
-          shopAssemblyRequests: [
-            ...(prev.shopAssemblyRequests ?? []),
-            ...(fetchMoreResult?.shopAssemblyRequests ?? []),
-          ],
+          shopAssemblyRequests: appendById(prev.shopAssemblyRequests ?? [], fetchMoreResult?.shopAssemblyRequests ?? []),
         }),
       });
-      const got = res.data?.shopAssemblyRequests?.length ?? 0;
-      if (got < HISTORY_PAGE_SIZE) setEndAt({ view, count: requests.length + got });
+      const page = res.data?.shopAssemblyRequests ?? [];
+      const added = appendById(requests, page).length;
+      if (page.length < HISTORY_PAGE_SIZE) setEndAt({ view, count: added });
     } finally {
       setLoadingMore(false);
     }

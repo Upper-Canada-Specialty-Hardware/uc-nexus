@@ -38,6 +38,7 @@ import { rackLabel, racksCaption, useProjectRacks } from './racks';
 // same module rather than a second copy that can drift (#613).
 import {
   HISTORY_PAGE_SIZE,
+  appendById,
   STAGE_COLOR,
   STAGE_LABEL,
   STAGE_ORDER,
@@ -199,8 +200,7 @@ export default function ShippingRequestsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const hasMore =
     paged &&
-    requests.length > 0 &&
-    requests.length % HISTORY_PAGE_SIZE === 0 &&
+    requests.length >= HISTORY_PAGE_SIZE &&
     !(endAt?.key === listKey && endAt.count === requests.length);
   const handleLoadMore = async () => {
     setLoadingMore(true);
@@ -208,11 +208,12 @@ export default function ShippingRequestsPage() {
       const res = await fetchMore({
         variables: { offset: requests.length },
         updateQuery: (prev, { fetchMoreResult }) => ({
-          shippingOutRequests: [...(prev.shippingOutRequests ?? []), ...(fetchMoreResult?.shippingOutRequests ?? [])],
+          shippingOutRequests: appendById(prev.shippingOutRequests ?? [], fetchMoreResult?.shippingOutRequests ?? []),
         }),
       });
-      const got = res.data?.shippingOutRequests?.length ?? 0;
-      if (got < HISTORY_PAGE_SIZE) setEndAt({ key: listKey, count: requests.length + got });
+      const page = res.data?.shippingOutRequests ?? [];
+      const added = appendById(requests, page).length;
+      if (page.length < HISTORY_PAGE_SIZE) setEndAt({ key: listKey, count: added });
     } finally {
       setLoadingMore(false);
     }
