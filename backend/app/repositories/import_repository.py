@@ -972,10 +972,18 @@ def finalize_import_session(
                 "The schedule changed since you opened this. Reload it and start again.",
                 field="expected_schedule_revision",
             )
-    # Bumped only by a finalize that writes a new schedule - a replace, a freshly parsed file (the only
-    # kind that carries its file name) or the first import. A request or PO raised off the schedule as it
-    # stands changes nothing a second open tab works from, and bumping on it refused that tab for nothing.
-    if replace_schedule or schedule_filename or project.schedule_revision == 0:
+    # Bumped by every finalize that writes what a second open tab works from: a replace, a freshly parsed
+    # file (the only kind that carries its file name), the first import, and a PO import - which sends the
+    # exclusions it loaded (deleting any not listed) and rewrites unordered rows at its costs, so a stale
+    # tab's would undo another's By Others marks and cost corrections. Only a request raised off the
+    # schedule as it stands writes none of that, and bumping on it refused the other tab for nothing.
+    if (
+        replace_schedule
+        or schedule_filename
+        or project.schedule_revision == 0
+        or po_drafts
+        or excluded_items_input is not None
+    ):
         project.schedule_revision += 1
 
     # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
