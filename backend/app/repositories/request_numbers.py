@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.demo import is_demo_company
 from app.models.project import Project as ProjectModel
 from app.models.project_request_counter import ProjectRequestCounter
 
@@ -51,4 +52,8 @@ def mint_request_number(session: Session, project_id: uuid.UUID) -> str:
     seq = counter.next_value
     counter.next_value = seq + 1
     session.flush()
-    return f"{project.project_id}-{seq:03d}"
+    # The demo's projects carry UBC's own job numbers (#1657) and the numbers are unique across every
+    # company, so a demo request would take its UBC twin's number, or UBC's the demo's (#1814). `D-`, as
+    # its loads, packing slips and PO requests have their own.
+    prefix = "D-" if is_demo_company(project.company) else ""
+    return f"{prefix}{project.project_id}-{seq:03d}"

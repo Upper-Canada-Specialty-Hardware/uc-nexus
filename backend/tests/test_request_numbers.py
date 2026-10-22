@@ -13,8 +13,8 @@ from app.models.project import Project
 from app.repositories.request_numbers import mint_request_number
 
 
-def _project(session, project_id: str) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=project_id, description="Test", company="TUBC")
+def _project(session, project_id: str, company: str = "TUBC") -> Project:
+    p = Project(id=uuid.uuid4(), project_id=project_id, description="Test", company=company)
     session.add(p)
     session.flush()
     return p
@@ -48,6 +48,16 @@ def test_pads_to_three_digits_then_grows(db_session):
 
     assert mint_request_number(db_session, project.id) == "23093-999"
     assert mint_request_number(db_session, project.id) == "23093-1000"
+
+
+def test_a_demo_project_never_takes_its_twins_number(db_session):
+    """#1814: the demo copies UBC's jobs under their own numbers, and request numbers are unique across
+    every company, so the demo's sequence is its own."""
+    real = _project(db_session, "22713", company="UBC")
+    demo = _project(db_session, "22713", company="DEMO")
+
+    assert mint_request_number(db_session, real.id) == "22713-001"
+    assert mint_request_number(db_session, demo.id) == "D-22713-001"
 
 
 def test_refuses_an_unknown_project(db_session):
