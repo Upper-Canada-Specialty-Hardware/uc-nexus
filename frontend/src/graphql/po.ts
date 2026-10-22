@@ -275,6 +275,18 @@ export const GET_GP_BUYERS = gql`
   }
 `;
 
+// #1885: the PO's own currency, as the mirror holds it - what the document falls back to when GP's
+// header cannot be read, before CAD. Its own read rather than a detail field, so it costs the detail
+// query and its many mocks nothing.
+export const GET_PO_CURRENCY = gql`
+  query GetPoCurrency($id: ID!) {
+    purchaseOrder(id: $id) {
+      id
+      currency
+    }
+  }
+`;
+
 export const GET_GP_PO_TOTALS = gql`
   query GetGpPoTotals($company: String!, $poNumber: String!) {
     gpPoTotals(company: $company, poNumber: $poNumber) {

@@ -643,13 +643,14 @@ class PODocumentData:
     po_id: strawberry.ID
     vendor_address: str | None
     buyer_name: str | None
-    currency: str
+    # #1885: null until the buyer types one, so the dialog keeps prefilling GP's figure for it.
+    currency: str | None
     ship_to: str | None
     shipping_method: str | None
     quotation_number: str | None
-    freight: float
-    miscellaneous: float
-    tax_amount: float
+    freight: float | None
+    miscellaneous: float | None
+    tax_amount: float | None
     tax_label: str
     tariff_amount: float
     # #1236: null until a document saves one; the dialog then prefills GP's discount.
@@ -784,6 +785,9 @@ class PurchaseOrder:
     vendor_quote_number: str | None
     shipping_cost: float | None
     tariff_amount: float | None
+    # GP's currency for the PO (CURNCYID), null on a draft or before the mirror read it (#1557). The
+    # document dialog falls back to it when GP's header cannot be read (#1885).
+    currency: str | None
     notes: str | None
     preferred_delivery_date: date | None
     expected_delivery_date: date | None

@@ -130,13 +130,14 @@ export interface PODocumentData {
   poId: string;
   vendorAddress: string | null;
   buyerName: string | null;
-  currency: string;
+  // #1885: null until the buyer picks or types one, so the dialog keeps prefilling GP's.
+  currency: string | null;
   shipTo: string | null;
   shippingMethod: string | null;
   quotationNumber: string | null;
-  freight: number;
-  miscellaneous: number;
-  taxAmount: number;
+  freight: number | null;
+  miscellaneous: number | null;
+  taxAmount: number | null;
   taxLabel: string;
   tariffAmount: number;
   /** #1236: GP's trade discount, taken off the order total. Null until a document saves one. */

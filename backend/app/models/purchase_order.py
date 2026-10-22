@@ -268,8 +268,9 @@ class PODocumentData(Base):
     vendor_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Buyer display name for the document (defaults from PurchaseOrder.buyer_id, editable here).
     buyer_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Document currency: 'CAD' or 'USD'. Drives the "$" vs "$US" money prefix.
-    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="CAD")
+    # Document currency: 'CAD' or 'USD'. Drives the "$" vs "$US" money prefix. #1885: null until the
+    # buyer picks one, as for freight/misc/tax below, so the dialog prefills GP's until then.
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # The resolved Ship-To block that prints on the document (from a warehouse, the project job site,
     # or custom text - resolved in the frontend and stored verbatim).
     ship_to: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -278,9 +279,9 @@ class PODocumentData(Base):
     # The vendor's quotation this PO is placed against. Renders as "Quote #" on the document (#507).
     quotation_number: Mapped[str | None] = mapped_column(String, nullable=True)
     # GP-computed totals lines Nexus can't derive without a relay read - captured from the user.
-    freight: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
-    miscellaneous: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
-    tax_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    freight: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    miscellaneous: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     # Label for the tax line (e.g. 'HST' or 'Taxes').
     tax_label: Mapped[str] = mapped_column(String, nullable=False, default="Taxes")
     # Tariff line for the document totals (issue #156). Prefills from PurchaseOrder.tariff_amount.

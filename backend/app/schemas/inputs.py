@@ -602,17 +602,20 @@ class UpdatePODocumentSettingsInput:
 
 @strawberry.input
 class SavePODocumentDataInput:
-    """The generate-dialog capture for a PO (issue #230). Sent whole on each save; upsert overwrites."""
+    """The generate-dialog capture for a PO (issue #230). Sent whole on each save; upsert overwrites.
+
+    #1885: a field GP fills is sent null when the buyer did not type it, and stored null, so the next
+    open prefills GP's figure again instead of the one this save happened to show."""
 
     vendor_address: str | None = None
     buyer_name: str | None = None
-    currency: str = "CAD"
+    currency: str | None = None
     ship_to: str | None = None
     shipping_method: str | None = None
     quotation_number: str | None = None
-    freight: float = 0
-    miscellaneous: float = 0
-    tax_amount: float = 0
+    freight: float | None = None
+    miscellaneous: float | None = None
+    tax_amount: float | None = None
     tax_label: str = "Taxes"
     tariff_amount: float = 0
     # #1236: GP's trade discount, taken off the document's order total. Omitted leaves the saved one.

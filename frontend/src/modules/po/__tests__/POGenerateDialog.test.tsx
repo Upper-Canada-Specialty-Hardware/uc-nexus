@@ -6,6 +6,7 @@ import POGenerateDialog from '../POGenerateDialog';
 import type { PurchaseOrder } from '../index';
 import {
   GET_COMPANY_LETTERHEAD,
+  GET_PO_CURRENCY,
   GET_PO_DOCUMENT_SETTINGS,
   GET_GP_BUYERS,
   GET_GP_PO_TOTALS,
@@ -196,16 +197,32 @@ const letterheadMock: MockedResponse = {
   },
 };
 
-function renderDialog(mocks: MockedResponse[], override: Partial<PurchaseOrder> = {}) {
+// #1885: the PO's own currency, the document's fallback before CAD when GP's header is not there.
+function currencyMock(currency: string | null): MockedResponse {
+  return {
+    request: { query: GET_PO_CURRENCY, variables: { id: 'po-1' } },
+    maxUsageCount: INFINITE,
+    result: { data: { purchaseOrder: { __typename: 'PurchaseOrder', id: 'po-1', currency } } },
+  };
+}
+
+function renderDialog(mocks: MockedResponse[], override: Partial<PurchaseOrder> = {}, poCurrency: string | null = null) {
   const onRefetch = vi.fn();
   render(
-    <MockedProvider mocks={[...mocks, letterheadMock]}>
+    <MockedProvider mocks={[...mocks, letterheadMock, currencyMock(poCurrency)]}>
       <ToastProvider>
         <POGenerateDialog open po={{ ...po, ...override }} onClose={vi.fn()} onRefetch={onRefetch} />
       </ToastProvider>
     </MockedProvider>,
   );
   return { onRefetch };
+}
+
+/** #1885: the document waits for GP's figures, so a click waits for the button to come on first. */
+async function clickWhenReady(name: string) {
+  const button = screen.getByRole('button', { name });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
 }
 
 describe('POGenerateDialog shipping method', () => {
@@ -234,7 +251,7 @@ describe('POGenerateDialog shipping method', () => {
 
     const field = await screen.findByRole('textbox', { name: 'Shipping method' });
     fireEvent.change(field, { target: { value: 'Vendor truck - tailgate delivery' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
@@ -252,7 +269,7 @@ describe('POGenerateDialog shipping method', () => {
     const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)]);
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
     // Opened before the save and the render resolve, while the click still counts.
     expect(open).toHaveBeenCalledWith('', '_blank');
     expect(onRefetch).not.toHaveBeenCalled();
@@ -268,7 +285,7 @@ describe('POGenerateDialog shipping method', () => {
     const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)]);
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { shippingMethod: null } });
@@ -299,7 +316,7 @@ describe('POGenerateDialog order date', () => {
     });
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     expect(printed.props?.date).toBe(new Date().toLocaleDateString());
@@ -312,7 +329,7 @@ describe('POGenerateDialog order date', () => {
     });
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     expect(printed.props?.date).toBe(new Date(2026, 0, 5).toLocaleDateString());
@@ -391,7 +408,7 @@ describe('POGenerateDialog lines (#1523)', () => {
     });
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
-    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    await clickWhenReady('Generate & preview');
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     const lines = printed.props?.lineItems as { itemNumber: string; reference: string | null; uom: string }[];
@@ -522,5 +539,111 @@ describe('POGenerateDialog settings read failure (#1279)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText(/settings read failed/)).not.toBeInTheDocument());
+  });
+});
+
+const savedNothing = {
+  id: 'doc-1',
+  poId: 'po-1',
+  vendorAddress: null,
+  buyerName: null,
+  currency: null,
+  shipTo: null,
+  shippingMethod: null,
+  quotationNumber: null,
+  freight: null,
+  miscellaneous: null,
+  taxAmount: null,
+  taxLabel: 'Taxes',
+  tariffAmount: 0,
+  tradeDiscount: null,
+  requiredByOverride: null,
+  includeFsc: false,
+  includeUsaTariff: false,
+  includeCustoms: false,
+};
+
+describe("POGenerateDialog waits for GP's figures and saves only what the buyer typed (#1885)", () => {
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:generated-po');
+    window.open = vi.fn();
+  });
+
+  it('keeps Generate & preview and Save off while GP is still being read', async () => {
+    renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader(1500)]);
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeDisabled();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeEnabled();
+  });
+
+  it("sends GP's figures as unset and only the typed field as typed", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader(), saveMock(calls)], {
+      expectedDeliveryDate: '2026-08-01',
+      shippingCost: 40,
+    });
+
+    await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Freight' })).toHaveValue(7.5));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Miscellaneous' }), { target: { value: '3' } });
+    await clickWhenReady('Generate & preview');
+
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({
+      input: {
+        vendorAddress: null,
+        buyerName: null,
+        currency: null,
+        shipTo: null,
+        shippingMethod: null,
+        freight: null,
+        miscellaneous: 3,
+        taxAmount: null,
+        tradeDiscount: null,
+        requiredByOverride: null,
+      },
+    });
+    // The document itself still prints GP's figures and the expected date.
+    expect(printed.props?.freight).toBe(7.5);
+    expect(printed.props?.taxAmount).toBe(4.23);
+  });
+
+  it("fills a field saved as unset from GP's figure, not a saved 0", async () => {
+    renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader()], { documentData: savedNothing });
+
+    await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Freight' })).toHaveValue(7.5));
+    expect(screen.getByRole('spinbutton', { name: 'Tax amount' })).toHaveValue(4.23);
+    expect(screen.getByRole('textbox', { name: 'Shipping method' })).toHaveValue('UPS GROUND');
+  });
+
+  it("says what the document uses when GP cannot be read, falls back to the PO's currency, and still generates", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog(
+      [
+        settingsMock(),
+        buyersMock(),
+        {
+          request: { query: GET_GP_PO_TOTALS, variables: { company: 'TUBC', poNumber: 'PO001234' } },
+          error: new Error('relay did not answer in time'),
+          maxUsageCount: INFINITE,
+        },
+        saveMock(calls),
+      ],
+      { shippingCost: 40 },
+      'Z-US$',
+    );
+
+    const alert = await screen.findByText(/could not be read from GP/);
+    await waitFor(() => expect(alert).toHaveTextContent("currency USD (the PO's)"));
+    expect(alert).toHaveTextContent("freight 40 (the PO's shipping cost), miscellaneous 0, tax 0, trade discount 0");
+    expect(screen.getByRole('combobox', { name: /^Currency/ })).toHaveTextContent('USD');
+
+    await clickWhenReady('Generate & preview');
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { currency: null, freight: null } });
+    expect(printed.props?.currency).toBe('USD');
   });
 });

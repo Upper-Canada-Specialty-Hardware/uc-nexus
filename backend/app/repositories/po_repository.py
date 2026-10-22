@@ -2228,6 +2228,9 @@ _DOC_DATA_TEXT_FIELDS = (
     "tax_label",
 )
 _DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount", "tariff_amount")
+# #1885: the totals GP fills. Null is stored as null - the buyer did not type it - so the next open
+# prefills GP's figure; tariff is Nexus's own and still reads null as 0.
+_DOC_DATA_GP_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount")
 _DOC_DATA_BOOL_FIELDS = ("include_fsc", "include_usa_tariff", "include_customs")
 
 
@@ -2268,7 +2271,9 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
             # Bounded like the order-time costs (#1207): a negative or a column-overflowing amount is a
             # field error, not a numeric overflow masked as a server error at flush.
             amount = _coerce_order_cost(value, key)
-            setattr(data, key, amount if amount is not None else Decimal("0"))
+            if amount is None and key not in _DOC_DATA_GP_MONEY_FIELDS:
+                amount = Decimal("0")
+            setattr(data, key, amount)
 
     # #1236: the trade discount stays null until a value is sent, so a document saved before it existed
     # still prefills GP's discount; a sent value is stored as given (0 included).
@@ -2285,8 +2290,9 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
             setattr(data, key, bool(fields[key]))
 
     if "currency" in fields:
-        currency = (fields["currency"] or "CAD").strip().upper()
-        data.currency = currency if currency in ("CAD", "USD") else "CAD"
+        # #1885: null stays null (the buyer did not pick one); anything else is CAD or USD.
+        currency = (fields["currency"] or "").strip().upper()
+        data.currency = (currency if currency in ("CAD", "USD") else "CAD") if currency else None
 
     if "required_by_override" in fields:
         data.required_by_override = fields["required_by_override"]
