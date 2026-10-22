@@ -408,3 +408,59 @@ def test_a_cancelled_slips_return_to_stock_is_owed_again(db_session):
     results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 5)])
 
     assert _by_status(results, "A01", "HG-100") == {"NOT_COVERED": 5}
+
+
+def _shipping_pull(session, project, quantity) -> None:
+    """A completed SHIPPING_OUT pull of `quantity` of A01's HG-100."""
+    pr = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"SOR-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        requested_by="tester",
+    )
+    session.add(pr)
+    session.flush()
+    session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            opening_number="A01",
+            hardware_category=CATEGORY,
+            product_code="HG-100",
+            requested_quantity=quantity,
+        )
+    )
+    session.flush()
+
+
+def _ten_shipped_four_back(db_session):
+    project = _make_project(db_session)
+    a01 = _make_opening(db_session, project, "A01")
+    closed = _po_line(db_session, project, status=POStatus.CLOSED, ordered=10, received=10)
+    _schedule_item(db_session, project, a01, "HG-100", 10, line=closed)
+    _shipping_pull(db_session, project, 10)
+    line = _slip(db_session, project, quantity=10)
+    _return(db_session, line, 4, ReturnDisposition.RETURN_TO_PROJECT)
+    return project
+
+
+def test_a_return_shipped_again_counts_as_shipped(db_session):
+    """#1941: 10 received and shipped, 4 back to the project and shipped again - all 10 are out. The
+    pull was capped at what was received before the return was netted, so 4 read as on the shelf."""
+    project = _ten_shipped_four_back(db_session)
+    _shipping_pull(db_session, project, 4)
+    _slip(db_session, project, quantity=4)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 10)])
+
+    assert _by_status(results, "A01", "HG-100") == {"SHIPPED_OUT": 10}
+
+
+def test_a_return_not_yet_shipped_again_is_back_on_the_shelf(db_session):
+    project = _ten_shipped_four_back(db_session)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 10)])
+
+    assert _by_status(results, "A01", "HG-100") == {"SHIPPED_OUT": 6, "RECEIVED": 4}

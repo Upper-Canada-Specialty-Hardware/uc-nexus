@@ -374,9 +374,14 @@ def reconcile_schedule(
 
         # Step 3: PR deductions
         received_qty = buckets.get("RECEIVED", 0)
+        pulled_shipped = 0
         if received_qty > 0:
             for pr_row in pr_by_pair.get(pair_key, []):
                 pulled_qty = pr_row.total_pulled or 0
+                if pr_row.source == PullRequestSource.SHIPPING_OUT and pr_row.status == PullRequestStatus.COMPLETED:
+                    # Step 4 nets a completed shipping pull with its slips and returns, uncapped (#1941).
+                    pulled_shipped += pulled_qty
+                    continue
                 deduct = min(pulled_qty, received_qty)
                 if deduct <= 0:
                     continue
@@ -392,29 +397,20 @@ def reconcile_schedule(
                     if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
                         buckets["SHIPPING_OUT"] += deduct
                         received_qty -= deduct
-                    elif pr_row.status == PullRequestStatus.COMPLETED:
-                        buckets["SHIPPED_OUT"] += deduct
-                        received_qty -= deduct
 
             buckets["RECEIVED"] = max(0, received_qty)
 
-        # Step 4: Shipped cross-check against the slips
-        slip_shipped = shipped_by_pair.get(pair_key, 0)
-        existing_shipped = buckets.get("SHIPPED_OUT", 0)
-        if slip_shipped > existing_shipped:
-            extra = slip_shipped - existing_shipped
-            from_received = min(extra, buckets.get("RECEIVED", 0))
-            buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
-            buckets["SHIPPED_OUT"] = existing_shipped + from_received
-
-        # Step 4b (#1941): what came back is not shipped out - the way the shipping workspace nets it
-        # (max of pull and slip, less what came back). Returned to the project, it is on the shelf
-        # again; returned to stock off a cancelled slip, it left the project and is owed again.
-        to_shelf = min(back_on_shelf.get(pair_key, 0), buckets.get("SHIPPED_OUT", 0))
-        buckets["SHIPPED_OUT"] = buckets.get("SHIPPED_OUT", 0) - to_shelf
-        buckets["RECEIVED"] = buckets.get("RECEIVED", 0) + to_shelf
-        gone = min(back_elsewhere.get(pair_key, 0), buckets["SHIPPED_OUT"])
-        buckets["SHIPPED_OUT"] -= gone
+        # Step 4 (#1941): shipped out the way the shipping workspace counts it - the completed pull and
+        # its slips folded with max, less what came back - and only then capped by what the project
+        # holds. Capped at received first and netted after, a return shipped again read as on the shelf.
+        # Returned to the project, a unit is on the shelf again; returned to stock off a cancelled slip,
+        # it left the project, so it is in no bucket and the opening is owed it again.
+        came_back = back_on_shelf.get(pair_key, 0) + back_elsewhere.get(pair_key, 0)
+        shipped = max(0, max(pulled_shipped, shipped_by_pair.get(pair_key, 0)) - came_back)
+        on_project = max(0, buckets.get("RECEIVED", 0) - back_elsewhere.get(pair_key, 0))
+        shipped = min(shipped, on_project)
+        buckets["SHIPPED_OUT"] = shipped
+        buckets["RECEIVED"] = on_project - shipped
 
         # Step 5: Calculate NOT_COVERED gap
         total_committed = sum(buckets.values())
