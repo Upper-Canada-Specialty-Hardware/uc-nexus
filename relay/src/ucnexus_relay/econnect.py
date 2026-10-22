@@ -1532,6 +1532,33 @@ def read_po_totals(conn, po_number: str) -> dict | None:
     return None
 
 
+def read_registered_po(conn, po_number: str) -> dict | None:
+    """Read-only: what GP stored on a PO's header when it was registered - SUBTOTAL, TAXAMNT, the
+    currency, the document date and the vendor - work table first, then history, like read_po_totals.
+
+    What a create_po retry answers with once find_po_by_registration_note has found the PO an earlier
+    attempt made (#1858). The retry no longer runs the pre-checks and the tax plan before that lookup,
+    so its figures are GP's own rather than recomputed from masters that may have changed since.
+    Decimals, not floats: the backend snapshots these exactly as a create's. None if the PO isn't in GP."""
+    cur = conn.cursor()
+    for table in ("POP10100", "POP30100"):
+        row = cur.execute(
+            f"SELECT SUBTOTAL AS subtotal, TAXAMNT AS tax, RTRIM(CURNCYID) AS currency, DOCDATE AS doc_date, "
+            f"RTRIM(VENDORID) AS vendor_id FROM dbo.{table} WHERE PONUMBER = ?",
+            po_number,
+        ).fetchone()
+        if row is not None:
+            doc_date = row.doc_date.date() if isinstance(row.doc_date, datetime) else row.doc_date
+            return {
+                "subtotal": Decimal(str(row.subtotal or 0)),
+                "tax_amount": Decimal(str(row.tax or 0)),
+                "currency": (row.currency or "").strip() or None,
+                "doc_date": doc_date,
+                "vendor_id": (row.vendor_id or "").strip() or None,
+            }
+    return None
+
+
 # #858: the header fields the generated PO document prints, as GP holds them on the PO itself - the
 # vendor's purchase address GP copied onto the PO (PURCH*), the ship-to (PRSTADCD and its address),
 # the shipping method, the buyer and the currency. Read off the PO rather than the vendor card, so a

@@ -24,6 +24,7 @@ from ucnexus_relay import channel, econnect, models, ops
 
 _ExecRow = namedtuple("_ExecRow", "error_state err_string")
 _FoundRow = namedtuple("_FoundRow", "PONUMBER")
+_StoredRow = namedtuple("_StoredRow", "subtotal tax currency doc_date vendor_id")
 
 # One attempt's key and the note it becomes. The note text is spelled out here rather than built from
 # the same f-string the op uses, so a change to what a GP user reads on the PO fails a test.
@@ -49,6 +50,12 @@ class _FakeCursor:
                 if f"dbo.{table} h" in self._sql:
                     return _FoundRow(po_number)
             return None
+        if "TAXAMNT AS tax" in self._sql:
+            # read_registered_po: what GP stored on the header the note lookup found
+            for table, stored in self._conn.stored.items():
+                if f"dbo.{table} " in self._sql:
+                    return stored
+            return None
         return _ExecRow(0, "")
 
 
@@ -59,9 +66,18 @@ class _FakeConn:
     is "the first attempt's PO is still an active PO". An empty one is a company that has never seen
     this key, which is what a first attempt meets."""
 
-    def __init__(self, registered: dict[str, str] | None = None):
+    def __init__(self, registered: dict[str, str] | None = None, stored: dict[str, _StoredRow] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.registered: dict[str, str] = dict(registered or {})
+        # the header GP holds for each registered PO, as read_registered_po reads it back (#1858)
+        self.stored: dict[str, _StoredRow] = (
+            dict(stored)
+            if stored is not None
+            else {
+                table: _StoredRow(Decimal("25.00000"), Decimal("0"), "CAD    ", date(2026, 9, 16), "ING100  ")
+                for table in self.registered
+            }
+        )
 
     def cursor(self):
         return _FakeCursor(self)
@@ -245,23 +261,100 @@ def test_a_key_found_only_in_history_is_still_a_retry(stubbed):
     assert conn.tapohdr_calls() == []
 
 
-def test_a_found_po_answers_with_the_figures_the_create_would_have(stubbed, monkeypatch):
-    """The backend snapshots the subtotal, the currency and the tax off this response, so a retry has
-    to answer with what the create it stands in for would have answered - and still write nothing."""
-    monkeypatch.setattr(econnect, "get_tax_detail_percent", lambda conn, tax_detail_id: Decimal("5"))
+def test_a_found_po_answers_with_the_figures_gp_stored(stubbed, monkeypatch):
+    """The backend snapshots the currency off this response, so a retry answers with what GP holds on
+    the PO the earlier attempt made (#1858) - the stored SUBTOTAL and TAXAMNT, not a plan recomputed
+    from tax rates that may have changed since - and still writes nothing."""
+    monkeypatch.setattr(econnect, "get_tax_detail_percent", lambda conn, tax_detail_id: Decimal("7"))
     header = {"tax_detail_id": "BC HST P"}
+    stored = _StoredRow(Decimal("25.00000"), Decimal("1.25000"), "CAD            ", date(2026, 9, 15), "ING100   ")
+    found_conn = _FakeConn(registered={"POP10100": "PO0012300"}, stored={"POP10100": stored})
 
-    created = ops.create_po_op(_FakeConn(), company="TUBC", request=_request(header=header, idempotency_key=_KEY))
-    found_conn = _FakeConn(registered={"POP10100": "PO0012300"})
     found = ops.create_po_op(found_conn, company="TUBC", request=_request(header=header, idempotency_key=_KEY))
 
-    assert found.subtotal == created.subtotal == Decimal("25.00")
-    assert found.currency == created.currency == "CAD"
-    assert found.tax_amount == created.tax_amount == Decimal("1.25")
-    assert found.lines_created == created.lines_created == 1
-    assert (found.existing, created.existing) == (True, False)
+    assert found.subtotal == Decimal("25.00")
+    assert found.tax_amount == Decimal("1.25"), "GP's stored tax, not 7 percent of the subtotal"
+    assert found.currency == "CAD"
+    assert found.doc_date == date(2026, 9, 15)
+    assert found.vendor_id == "ING100"
+    assert found.lines_created == 1
+    assert found.existing is True
     # the tax detail is a WRITE; the retry made none.
     assert found_conn.sql_matching("taPopIvcTaxInsert") == []
+
+
+def test_a_found_po_in_history_answers_from_history(stubbed):
+    stored = _StoredRow(Decimal("40.00000"), Decimal("2.00000"), "USD", date(2026, 9, 14), "ING100")
+    conn = _FakeConn(registered={"POP30100": "PO0012300"}, stored={"POP30100": stored})
+
+    found = ops.create_po_op(conn, company="TUBC", request=_request(idempotency_key=_KEY))
+
+    assert (found.subtotal, found.tax_amount, found.currency) == (Decimal("40"), Decimal("2"), "USD")
+
+
+def _job_line(**overrides) -> models.POLine:
+    fields = dict(
+        item_number="ML2010",
+        item_description="ML2010 LOCK",
+        quantity=Decimal("2"),
+        unit_cost=Decimal("12.50"),
+        product_indicator=2,
+        job_number="NEXUS-380",
+        cost_code="210-200-2",
+    )
+    fields.update(overrides)
+    return models.POLine(**fields)
+
+
+def _refusing_masters(monkeypatch) -> list[str]:
+    """Every master a pre-check reads, set to refuse - a job closed and a cost code gone since the first
+    attempt registered the PO, and a shipping method, site and vendor address since removed. Returns the
+    pre-checks that ran, which a found retry must leave at none."""
+    ran: list[str] = []
+
+    def _refuse(name, answer):
+        def _check(*args, **kwargs):
+            ran.append(name)
+            return answer
+
+        return _check
+
+    monkeypatch.setattr(econnect, "list_buyers", _refuse("buyer", []))
+    monkeypatch.setattr(econnect, "shipping_method_exists", _refuse("shipping_method", False))
+    monkeypatch.setattr(econnect, "site_exists", _refuse("site", False))
+    monkeypatch.setattr(econnect, "vendor_address_exists", _refuse("vendor_address", False))
+    monkeypatch.setattr(econnect, "get_vendor_currency", _refuse("currency", "CAD"))
+    monkeypatch.setattr(econnect, "job_state", _refuse("job", "closed"))
+    monkeypatch.setattr(econnect, "cost_code_on_job", _refuse("cost_code", False))
+    return ran
+
+
+def test_a_late_retry_is_found_before_any_pre_check_could_refuse_it(stubbed, monkeypatch):
+    # #1858: the lookup used to run after every pre-check, so a retry of a PO GP already held was
+    # refused as job_closed (or cost_code_not_on_job) once the job had moved on - and the backend
+    # never learned the number GP had given it.
+    ran = _refusing_masters(monkeypatch)
+    conn = _FakeConn(registered={"POP10100": "PO0012300"})
+
+    found = ops.create_po_op(conn, company="TUBC", request=_request(lines=[_job_line()], idempotency_key=_KEY))
+
+    assert found.po_number == "PO0012300"
+    assert found.existing is True
+    assert ran == []
+    assert conn.tapohdr_calls() == []
+
+
+def test_a_key_gp_has_not_seen_still_meets_every_pre_check(stubbed, monkeypatch):
+    # the lookup moving first must not let a first attempt skip a check: no PO found, the checks run.
+    monkeypatch.setattr(econnect, "job_state", lambda conn, job: "closed")
+    monkeypatch.setattr(econnect, "cost_code_on_job", lambda conn, job, code: True)
+    conn = _FakeConn()
+
+    with pytest.raises(ops.RelayOpError) as caught:
+        ops.create_po_op(conn, company="TUBC", request=_request(lines=[_job_line()], idempotency_key=_KEY))
+
+    assert caught.value.code == "job_closed"
+    assert stubbed["reserved"] == []
 
 
 # --- what the relay says about it ---

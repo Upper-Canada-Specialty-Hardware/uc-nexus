@@ -94,6 +94,42 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 "no buyer_id sent and none resolved from [gp.buyers]; pick a buyer from list_buyers",
             )
 
+    # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
+    #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
+    #     would reserve a second number for the same registration. The key the backend sent rides on
+    #     the PO's record note, so reading it back here recognises the PO the earlier attempt made and
+    #     hands it straight back. Nothing is written on this path - not the number, not the header,
+    #     not a line.
+    #     This runs as soon as the buyer is known (the lookup is pinned to it) and ahead of every
+    #     pre-check below, the order create_receipt_op takes for the same reason (#1858): a late retry
+    #     of a PO GP already holds must not be refused because its job closed or its cost code was
+    #     deactivated since. So the answer is GP's own stored figures, not a plan worked out from
+    #     masters that may have moved on since the PO was written.
+    if request.idempotency_key:
+        already_registered = econnect.find_po_by_registration_note(
+            conn, key=request.idempotency_key, buyer_id=buyer_id, doc_date=h.doc_date
+        )
+        if already_registered:
+            stored = econnect.read_registered_po(conn, already_registered)
+            if stored is None:
+                # the lookup above has just read this header, so only a PO deleted in between lands here
+                raise RelayOpError(
+                    "po_not_found",
+                    f"PO {already_registered} carries this registration's key but could not be read back",
+                    po_number=already_registered,
+                )
+            return models.CreatePoResponse(
+                po_number=already_registered,
+                company=company,
+                lines_created=len(request.lines),
+                subtotal=stored["subtotal"],
+                doc_date=stored["doc_date"] or h.doc_date,
+                vendor_id=stored["vendor_id"] or h.vendor_id,
+                currency=stored["currency"] or "CAD",
+                tax_amount=stored["tax_amount"],
+                existing=True,
+            )
+
     # validate against GP's buyer master: eConnect taPoHdr rejects an unregistered BUYERID with
     # error 269, so give a clear error here instead.
     registered = econnect.list_buyers(conn)
@@ -200,10 +236,9 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     #     details' rates (issue #762 - eConnect never computes PO tax, so the relay does, the way GP
     #     works it out on an office PO: per line per detail on the line's discounted base, plus the
     #     freight and the misc at each detail's rate; see po_tax.plan_po_tax). Worked out here, ahead
-    #     of anything that writes, so the retry branch below can answer with the same figures a
-    #     create would return without registering anything. A tax detail GP does not hold is refused
-    #     here rather than at step 5, which only means an unregisterable PO is now refused before a
-    #     number is reserved. The percent is read off TX00201 here, never taken from the client.
+    #     of anything that writes. A tax detail GP does not hold is refused here rather than at step 5,
+    #     which only means an unregisterable PO is now refused before a number is reserved. The
+    #     percent is read off TX00201 here, never taken from the client.
     subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
     if h.trade_discount > subtotal:
         raise RelayOpError(
@@ -267,29 +302,6 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                     charge=charge,
                     vendor_id=h.vendor_id,
                 )
-
-    # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
-    #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
-    #     would reserve a second number for the same registration. The key the backend sent rides on
-    #     the PO's record note, so reading it back here recognises the PO the earlier attempt made and
-    #     hands it straight back. Nothing is written on this path - not the number, not the header,
-    #     not a line - and the response carries the same figures the create would have returned.
-    if request.idempotency_key:
-        already_registered = econnect.find_po_by_registration_note(
-            conn, key=request.idempotency_key, buyer_id=buyer_id, doc_date=h.doc_date
-        )
-        if already_registered:
-            return models.CreatePoResponse(
-                po_number=already_registered,
-                company=company,
-                lines_created=len(request.lines),
-                subtotal=subtotal,
-                doc_date=h.doc_date,
-                vendor_id=h.vendor_id,
-                currency=currency,
-                tax_amount=tax_amount,
-                existing=True,
-            )
 
     # 1. PO number: use UC Nexus's own number if supplied, else reserve GP's next 'PO' number. A
     #    client-supplied number is rejected if it's already used anywhere in GP - active OR history.

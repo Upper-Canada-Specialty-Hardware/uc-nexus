@@ -1,6 +1,9 @@
 """econnect.read_po_totals: coercion of the POP10100 amounts and the work -> history (POP30100)
 fallback, driven by a fake pyodbc cursor so no test touches GP."""
 
+from datetime import date, datetime
+from decimal import Decimal
+
 from ucnexus_relay import econnect
 
 
@@ -135,3 +138,34 @@ def test_read_po_header_falls_back_to_history_and_none_when_missing():
     conn = _Conn(_Cursor({"POP10100": None, "POP30100": _HeaderRow(buyer_id="SAM")}))
     assert econnect.read_po_header(conn, "PO-HIST")["buyer_id"] == "SAM"
     assert econnect.read_po_header(_Conn(_Cursor({})), "PO-NOPE") is None
+
+
+# --- #1858: what a create_po retry that found its PO answers with ---------------------------------
+
+
+class _StoredRow:
+    def __init__(self, subtotal, tax, currency, doc_date, vendor_id):
+        self.subtotal = subtotal
+        self.tax = tax
+        self.currency = currency
+        self.doc_date = doc_date
+        self.vendor_id = vendor_id
+
+
+def test_read_registered_po_reads_gp_stored_figures_as_decimals():
+    row = _StoredRow(Decimal("25.00000"), Decimal("1.25000"), "CAD    ", datetime(2026, 9, 16), "ING100  ")
+    out = econnect.read_registered_po(_Conn(_Cursor({"POP10100": row})), "PO0012300")
+    assert out == {
+        "subtotal": Decimal("25"),
+        "tax_amount": Decimal("1.25"),
+        "currency": "CAD",
+        "doc_date": date(2026, 9, 16),
+        "vendor_id": "ING100",
+    }
+
+
+def test_read_registered_po_falls_back_to_history_and_none_when_missing():
+    row = _StoredRow(None, None, "", date(2026, 9, 1), "V")
+    out = econnect.read_registered_po(_Conn(_Cursor({"POP30100": row})), "PO1")
+    assert out["subtotal"] == 0 and out["tax_amount"] == 0 and out["currency"] is None
+    assert econnect.read_registered_po(_Conn(_Cursor({})), "PO1") is None
