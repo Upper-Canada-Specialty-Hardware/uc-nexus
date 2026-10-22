@@ -186,10 +186,10 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
         raises=RelayCallError("job 'NEXUS-380-T1' already exists in GP", detail={"error": "job_already_exists"}),
     )
 
-    synced: list[bool] = []
+    synced: list[str | None] = []
 
-    async def _fake_sync():
-        synced.append(True)
+    async def _fake_sync(*, only_company=None):
+        synced.append(only_company)
         return (1, 1)
 
     monkeypatch.setattr(project_module.gp_job_sync, "run_once", _fake_sync)
@@ -202,7 +202,9 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
     # and nothing was provisioned: the job GP already has keeps its own cost codes, so the dialog has
     # to tell the user the selection was not applied rather than let it look like it was (#448)
     assert result.cost_codes_provisioned == 0
-    assert synced == [True]  # the sync pass is what gives the project GP's own job name
+    # the sync pass is what gives the project GP's own job name, and it reads the caller's company
+    # only (#1876) rather than every company the relay serves
+    assert synced == ["TUBC"]
     # every relay call raises in this test, the cost-code read included: no count rather than a 0
     assert result.cost_codes_in_gp is None
 
@@ -237,7 +239,7 @@ def test_the_adopt_path_reports_the_cost_codes_gp_holds(monkeypatch):
         },
     )
 
-    async def _fake_sync():
+    async def _fake_sync(*, only_company=None):
         return (1, 1)
 
     monkeypatch.setattr(project_module.gp_job_sync, "run_once", _fake_sync)

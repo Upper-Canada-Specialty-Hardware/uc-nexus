@@ -64,8 +64,11 @@ async def _adopt_existing(job_number: str, company: str) -> Project:
 
     Runs a full sync pass rather than adopting the one job: the pass reads GP's own job master, so the
     project gets GP's name rather than whatever the caller typed, and it is the same code path that
-    would have created this project a few minutes later anyway."""
-    await gp_job_sync.run_once()
+    would have created this project a few minutes later anyway.
+
+    Narrowed to the caller's company (#1876): a pass over every company the relay serves spent GP
+    reads on the others and waited on them, all to adopt one job in this one."""
+    await gp_job_sync.run_once(only_company=company)
     return await asyncio.to_thread(_load_project, job_number.strip(), company)
 
 
