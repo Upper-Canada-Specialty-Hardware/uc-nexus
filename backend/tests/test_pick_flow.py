@@ -871,6 +871,32 @@ def test_cancelling_a_shop_assembly_pull_drops_its_claim_and_reopens_its_opening
     assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, again.id) == 4
 
 
+def test_the_returned_to_pending_note_goes_once_its_openings_are_batched_again(db_session):
+    """#1854: the note explains openings that came back to the board. Once the cancelled batch's
+    openings are on a live batch again it has nothing left to explain, even while the request stays
+    pending on another opening - it used to stay until the request closed."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _two_opening_request(db_session, project, qty=2)["shop_assembly_request"]
+    db_session.flush()
+    first = batch_request(db_session, sar.id, openings=["A01"])
+    db_session.flush()
+    warehouse_repository.start_pull_request_pick(db_session, first.pull_request_id, "picker")
+    db_session.flush()
+    warehouse_repository.cancel_pull_request(db_session, first.pull_request_id, "manager", "wrong pull")
+    db_session.flush()
+
+    request = shop_assembly_repository.get_shop_assembly_request(db_session, sar.id)
+    assert first.batch_number in shop_assembly_repository.get_return_notes(db_session, [request])[sar.id]
+
+    batch_request(db_session, sar.id, openings=["A01"])
+    db_session.flush()
+
+    request = shop_assembly_repository.get_shop_assembly_request(db_session, sar.id)
+    assert request.status == ShopAssemblyRequestStatus.PENDING  # A02 is still waiting
+    assert shop_assembly_repository.get_return_notes(db_session, [request])[sar.id] is None
+
+
 def test_cancelling_one_batchs_pull_leaves_its_siblings_claim_standing(db_session):
     """Release is whole-holder, which is exactly why the holder is the batch and not the request."""
     project = _make_project(db_session)

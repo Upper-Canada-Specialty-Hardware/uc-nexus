@@ -472,16 +472,29 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
     `pull_request_id`; a shop-assembly request has none, so the same question is answered off its
     CANCELLED batches instead. Purely derived, so a fresh batch over the same openings clears it for
     free. Only PENDING requests carry it - the note explains a reappearance on the manager's board.
+
+    #1854: a cancelled batch explains the board only while one of ITS openings (its items say which)
+    is still pending on the request. Once they are all batched again, or dismissed, the note goes -
+    it used to stay for as long as the request did, naming a cancellation nothing on the board came
+    back from. Read off the items and openings the callers already load, so no query is added.
     """
     notes: dict[uuid.UUID, str | None] = {r.id: None for r in requests}
-    pending = [r for r in requests if r.status == ShopAssemblyRequestStatus.PENDING]
-    cancelled_pull_ids = [
-        b.pull_request_id
-        for r in pending
-        for b in r.batches
-        if b.status == ShopAssemblyBatchStatus.CANCELLED and b.pull_request_id is not None
-    ]
-    if not cancelled_pull_ids:
+    returned: dict[uuid.UUID, ShopAssemblyBatch] = {}
+    for request in requests:
+        if request.status != ShopAssemblyRequestStatus.PENDING:
+            continue
+        waiting = {o.opening_number for o in request.openings if o.status == ShopAssemblyOpeningStatus.PENDING}
+        cancelled = [
+            b
+            for b in request.batches
+            if b.status == ShopAssemblyBatchStatus.CANCELLED
+            and b.pull_request_id is not None
+            and any(i.opening_number in waiting for i in b.items)
+        ]
+        if cancelled:
+            # The most recent cancellation is the one that explains why the request is on the board now.
+            returned[request.id] = max(cancelled, key=lambda b: b.sequence)
+    if not returned:
         return notes
 
     pulls = {
@@ -493,19 +506,13 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
                 PullRequestModel.cancelled_by,
                 PullRequestModel.cancelled_at,
                 PullRequestModel.cancellation_reason,
-            ).where(PullRequestModel.id.in_(cancelled_pull_ids))
+            ).where(PullRequestModel.id.in_([b.pull_request_id for b in returned.values()]))
         ).all()
     }
 
-    for request in pending:
-        cancelled = [
-            b for b in request.batches if b.status == ShopAssemblyBatchStatus.CANCELLED and b.pull_request_id in pulls
-        ]
-        if not cancelled:
-            continue
-        # The most recent cancellation is the one that explains why the request is on the board now.
-        latest = max(cancelled, key=lambda b: b.sequence)
-        notes[request.id] = _format_return_note(*pulls[latest.pull_request_id])
+    for request_id, batch in returned.items():
+        if batch.pull_request_id in pulls:
+            notes[request_id] = _format_return_note(*pulls[batch.pull_request_id])
     return notes
 
 
