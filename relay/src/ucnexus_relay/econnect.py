@@ -885,17 +885,28 @@ def get_vendor_contact(conn, vendor_id: str) -> dict | None:
     EmailToAddress is a `text` column on some GPs (UBC's), and RTRIM refuses text (SQL 8116) when the
     statement is prepared, which fails the read for every vendor, so it is cast to varchar(max) before
     the trim (#1685). INET1 is char and trims as it is.
+
+    SY01200 holds a row per vendor ADDRESS (ADRSCODE), so a vendor with several has several rows, and
+    an unordered TOP 1 took whichever SQL Server met first - the remit-to's accounts payable inbox as
+    readily as the ordering desk (#1864). The rows are ranked instead: one carrying an email before one
+    that does not, then the vendor's purchase address (PM00200.VADCDPAD, where GP sends a PO), then its
+    primary (VADDCDPR), then any other in code order, so the same vendor always reads the same email.
+    The blank test casts the text column too, and leans on SQL Server ignoring trailing spaces in `<>`.
     """
     row = (
         conn.cursor()
         .execute(
-            "SELECT RTRIM(ISNULL(CAST(i.EmailToAddress AS varchar(max)), '')) AS email_to, "
+            "SELECT TOP 1 RTRIM(ISNULL(CAST(i.EmailToAddress AS varchar(max)), '')) AS email_to, "
             "RTRIM(ISNULL(i.INET1, '')) AS inet1, "
             "RTRIM(ISNULL(v.VNDCNTCT, '')) AS contact_name, "
             "RTRIM(v.VENDNAME) AS vendor_name "
             "FROM dbo.PM00200 v "
             "LEFT JOIN dbo.SY01200 i ON i.Master_ID = v.VENDORID AND i.Master_Type = 'VEN' "
-            "WHERE v.VENDORID = ?",
+            "WHERE v.VENDORID = ? "
+            "ORDER BY CASE WHEN ISNULL(CAST(i.EmailToAddress AS varchar(max)), '') <> '' "
+            "OR ISNULL(i.INET1, '') <> '' THEN 0 ELSE 1 END, "
+            "CASE WHEN i.ADRSCODE = v.VADCDPAD THEN 0 WHEN i.ADRSCODE = v.VADDCDPR THEN 1 ELSE 2 END, "
+            "i.ADRSCODE",
             (vendor_id,),
         )
         .fetchone()
