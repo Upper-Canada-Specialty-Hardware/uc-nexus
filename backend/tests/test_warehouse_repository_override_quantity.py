@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import ValidationError
+from app.models.audit_log import InventoryAuditLog
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
@@ -213,3 +214,41 @@ def test_override_increase_on_the_rows_own_shelf_needs_no_definition(db_session)
         performed_by="tester",
     )
     assert il.quantity == 7
+
+
+def _audit(session, entity_id):
+    return session.scalars(select(InventoryAuditLog).where(InventoryAuditLog.entity_id == entity_id)).all()
+
+
+def test_an_override_records_what_each_row_holds(db_session):
+    """#1895: the source row's entry said it held the override's total though the units placed on
+    another shelf went to a new row, and the new row's entry carried no quantities the history reads."""
+    project = _make_project(db_session)
+    origin = _make_stock_item(db_session)
+    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
+
+    warehouse_repository.override_inventory_quantity(
+        db_session,
+        inv_id=il.id,
+        new_quantity=9,
+        reason="found extra",
+        destinations=[
+            {"aisle": "A", "row": "1", "bay": "1", "quantity": 1},
+            {"aisle": "B", "row": "2", "bay": "2", "quantity": 3},
+        ],
+        performed_by="tester",
+    )
+    db_session.flush()
+
+    (source,) = _audit(db_session, il.id)
+    assert source.detail["oldQuantity"] == 5
+    assert source.detail["newQuantity"] == il.quantity == 6
+    assert source.detail["adjustment"] == 1
+    assert source.detail["requestedQuantity"] == 9
+
+    new_row = next(r for r in _rows(db_session, project.id) if r.id != il.id)
+    (created,) = _audit(db_session, new_row.id)
+    assert created.detail["createdByOverrideOf"] == str(il.id)
+    assert (created.detail["oldQuantity"], created.detail["newQuantity"], created.detail["adjustment"]) == (0, 3, 3)
+    assert (created.detail["location"]["aisle"], created.detail["location"]["bay"]) == ("B", "2")

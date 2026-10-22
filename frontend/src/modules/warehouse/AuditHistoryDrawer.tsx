@@ -137,16 +137,35 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
     return code ? `${code} ${where}` : where;
   };
   const reason = text('reasonText');
+  // #1895: an override that placed units on another shelf made a new row there; its first entry is
+  // the row being created, not a count changing.
+  const createdByOverride = entry.action === 'ADJUSTMENT' && Boolean(detail.createdByOverrideOf);
 
   const renderDetail = () => {
     switch (entry.action) {
-      case 'ADJUSTMENT':
+      case 'ADJUSTMENT': {
+        if (createdByOverride) {
+          return (
+            <>
+              <DetailLine label="Qty" value={(detail.newQuantity ?? detail.quantity) as number} />
+              <DetailLine label="At" value={place(detail.location)} />
+              {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
+            </>
+          );
+        }
+        // An override written before #1895 stored `delta` where the drawer reads `adjustment`.
+        const adjustment = (detail.adjustment ?? detail.delta) as number;
+        const placed = (detail.destinations as { aisle: string; row: string; bay: string; quantity: number }[]) ?? [];
         return (
           <>
-            <DetailLine label="Qty" value={`${detail.oldQuantity} → ${detail.newQuantity} (${(detail.adjustment as number) > 0 ? '+' : ''}${detail.adjustment})`} />
+            <DetailLine label="Qty" value={`${detail.oldQuantity} → ${detail.newQuantity} (${adjustment > 0 ? '+' : ''}${adjustment})`} />
+            {placed.length > 0 && (
+              <DetailLine label="Placed" value={placed.map((d) => `${d.quantity} at ${formatLocation(d)}`).join(', ')} />
+            )}
             {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
           </>
         );
+      }
       case 'SPOT_CHECK': {
         // A spot check carries the counted-vs-system pair; fall back to the adjustment quantities on
         // an older row that predates those keys.
@@ -296,7 +315,7 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
     <Box sx={{ py: 1.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Chip
-          label={ACTION_LABELS[entry.action] ?? entry.action}
+          label={createdByOverride ? 'Created by Override' : (ACTION_LABELS[entry.action] ?? entry.action)}
           color={ACTION_COLORS[entry.action] ?? 'default'}
           size="small"
           variant="outlined"

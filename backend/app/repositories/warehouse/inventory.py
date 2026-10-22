@@ -433,9 +433,14 @@ def override_inventory_quantity(
         entity_id=il.id,
         action=AuditAction.ADJUSTMENT,
         performed_by=performed_by,
+        # #1895: what this row holds now. Units placed on another shelf are on the rows created
+        # below, so an increase can leave this one short of the total the override was set to, which
+        # is kept apart as requestedQuantity. `adjustment` is the key the history drawer reads.
         detail={
             "oldQuantity": old_quantity,
-            "newQuantity": new_quantity,
+            "newQuantity": il.quantity,
+            "adjustment": il.quantity - old_quantity,
+            "requestedQuantity": new_quantity,
             "delta": delta,
             "reason": reason,
             "override": True,
@@ -452,8 +457,13 @@ def override_inventory_quantity(
             entity_id=new_il.id,
             action=AuditAction.ADJUSTMENT,
             performed_by=performed_by,
+            # #1895: the row starts at nothing and holds what was placed on it, in the same keys as
+            # every other adjustment, so its first history entry reads as what it was created with.
             detail={
                 "createdByOverrideOf": str(il.id),
+                "oldQuantity": 0,
+                "newQuantity": new_il.quantity,
+                "adjustment": new_il.quantity,
                 "quantity": new_il.quantity,
                 "location": location_detail(new_il.aisle, new_il.row, new_il.bay, new_il.warehouse_id),
                 "reason": reason,

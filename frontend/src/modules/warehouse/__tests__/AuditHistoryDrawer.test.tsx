@@ -126,4 +126,54 @@ describe('AuditHistoryDrawer event detail (#974)', () => {
     // Every one of them carries its quantity.
     expect(screen.getAllByText(/^[1-4]$/)).toHaveLength(5);
   });
+
+  const renderEntries = (auditLog: unknown[]) =>
+    render(
+      <MockedProvider
+        mocks={[
+          { request: { query: GET_AUDIT_LOG, variables: baseVars(0) }, result: { data: { auditLog } } },
+          {
+            request: { query: GET_WAREHOUSES, variables: { includeInactive: true } },
+            result: { data: { warehouses: [{ id: 'w1', code: 'VAN', __typename: 'Warehouse' }] } },
+          },
+        ]}
+      >
+        <AuditHistoryDrawer open onClose={vi.fn()} entityId="inv-1" entityType="INVENTORY_LOCATION" />
+      </MockedProvider>,
+    );
+
+  it('shows what an override left on the row, where it placed the rest, and the rows it created (#1895)', async () => {
+    renderEntries([
+      entry('1', 'ADJUSTMENT', {
+        oldQuantity: 5,
+        newQuantity: 6,
+        adjustment: 1,
+        requestedQuantity: 9,
+        reason: 'found extra',
+        override: true,
+        destinations: [
+          { aisle: 'A', row: '1', bay: '1', quantity: 1 },
+          { aisle: 'B', row: '2', bay: '2', quantity: 3 },
+        ],
+      }),
+      entry('2', 'ADJUSTMENT', {
+        createdByOverrideOf: 'inv-0',
+        oldQuantity: 0,
+        newQuantity: 3,
+        adjustment: 3,
+        quantity: 3,
+        location: { aisle: 'B', row: '2', bay: '2', warehouseId: 'w1' },
+        reason: 'found extra',
+      }),
+      // Written before #1895: `delta` where the drawer reads `adjustment`.
+      entry('3', 'ADJUSTMENT', { oldQuantity: 2, newQuantity: 4, delta: 2, reason: 'old', override: true }),
+    ]);
+
+    expect(await screen.findByText('5 → 6 (+1)')).toBeInTheDocument();
+    expect(screen.getByText('1 at A-1-1, 3 at B-2-2')).toBeInTheDocument();
+    expect(screen.getByText('Created by Override')).toBeInTheDocument();
+    expect(await screen.findByText('VAN B-2-2')).toBeInTheDocument();
+    expect(screen.getByText('2 → 4 (+2)')).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+  });
 });
