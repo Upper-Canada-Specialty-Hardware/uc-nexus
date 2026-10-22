@@ -1340,11 +1340,16 @@ def get_po_statistics(
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
     cancelled. `origin` narrows the counts the way the register's origin filter narrows its rows
-    (#1358), so the status strip counts what the table shows."""
+    (#1358), so the status strip counts what the table shows.
+
+    #1886: every way a PO becomes CANCELLED also soft-deletes it (cancel_po, the GP sync's stage), so
+    `cancelled` counts soft-deleted CANCELLED rows too - it was always 0. They stay out of `total`, as
+    they stay out of the unfiltered register; every other status still counts live rows only."""
+    live = PurchaseOrder.deleted_at.is_(None)
     stmt = (
-        select(PurchaseOrder.status, func.count())
-        .where(PurchaseOrder.deleted_at.is_(None))
-        .group_by(PurchaseOrder.status)
+        select(PurchaseOrder.status, live, func.count())
+        .where(or_(live, PurchaseOrder.status == POStatus.CANCELLED))
+        .group_by(PurchaseOrder.status, live)
     )
     if project_id is not None:
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
@@ -1371,11 +1376,12 @@ def get_po_statistics(
         POStatus.CLOSED: "closed",
         POStatus.CANCELLED: "cancelled",
     }
-    for status_val, count in rows:
+    for status_val, is_live, count in rows:
         key = status_key_map.get(status_val)
         if key:
-            counts[key] = count
-            counts["total"] += count
+            counts[key] += count
+            if is_live:
+                counts["total"] += count
 
     return counts
 
@@ -1412,7 +1418,13 @@ def get_purchase_orders_page(
     (page rows without line_items, {po_id: line_item_count}, total_count). The count comes from one
     grouped query over the page's ids, honoring the N+1 rules - list rows carry a scalar, not a
     collection. Detail/expand loads lines through the existing purchaseOrder(id) query."""
-    filters = [PurchaseOrder.deleted_at.is_(None)]
+    # #1886: a cancelled PO is always soft-deleted too (cancel_po, the GP sync), so asking for CANCELLED
+    # lets the soft-deleted CANCELLED rows through - the Cancelled segment listed nothing. Only those: a
+    # soft-deleted row of any other status, and every soft-deleted row on an unfiltered page, stays out.
+    if statuses and POStatus.CANCELLED in statuses:
+        filters = [or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED)]
+    else:
+        filters = [PurchaseOrder.deleted_at.is_(None)]
     if company is not None:
         filters.append(PurchaseOrder.company == company)
     if statuses:

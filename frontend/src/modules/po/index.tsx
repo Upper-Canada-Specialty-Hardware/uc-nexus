@@ -258,8 +258,9 @@ const STAT_CARD_GROUPS: { caption: string; cards: StatCard[] }[] = [
       { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
       { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
       { label: 'Closed', key: 'closed', status: 'CLOSED' },
-      // Mirror-CANCELLED rows (deleted_at NULL) still count into Total, so without a segment for them
-      // the strip would stop summing to Total and those rows would be unreachable by any status filter.
+      // #1886: every cancel also soft-deletes the PO, so a cancelled PO is out of Total and the
+      // unfiltered table, as a deleted one is. This segment is the one place it is counted and listed:
+      // the backend lets soft-deleted CANCELLED rows through for this status alone.
       { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
     ],
   },

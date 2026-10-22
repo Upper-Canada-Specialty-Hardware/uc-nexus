@@ -1,13 +1,14 @@
 """The status strip counts the same origin the register shows (#1358)."""
 
 import uuid
+from datetime import datetime
 
 from app.models.enums import POOrigin, POStatus
 from app.models.purchase_order import PurchaseOrder
 from app.repositories import po_repository
 
 
-def _po(session, origin, status=POStatus.GP_REGISTERED, company="ZORG"):
+def _po(session, origin, status=POStatus.GP_REGISTERED, company="ZORG", deleted=False):
     session.add(
         PurchaseOrder(
             id=uuid.uuid4(),
@@ -15,6 +16,7 @@ def _po(session, origin, status=POStatus.GP_REGISTERED, company="ZORG"):
             status=status,
             origin=origin,
             company=company,
+            deleted_at=datetime.utcnow() if deleted else None,
         )
     )
     session.flush()
@@ -33,3 +35,21 @@ def test_origin_narrows_the_counts(db_session):
     assert (every["total"], every["gp_registered"], every["draft"]) == (3, 2, 1)
     assert (from_gp["total"], from_gp["gp_registered"], from_gp["draft"]) == (2, 2, 0)
     assert (from_nexus["total"], from_nexus["gp_registered"], from_nexus["draft"]) == (1, 0, 1)
+
+
+def test_the_cancelled_count_takes_in_the_soft_deleted_cancelled_pos(db_session):
+    """#1886: every cancel also sets deleted_at, so the Cancelled card always read 0. A cancelled PO is
+    counted on its own card, still out of Total; a soft-deleted row of any other status stays uncounted,
+    and another company's cancelled PO is not this company's."""
+    company = f"Z{uuid.uuid4().hex[:6]}"
+    _po(db_session, POOrigin.GP, company=company)
+    _po(db_session, POOrigin.GP, status=POStatus.CANCELLED, company=company, deleted=True)
+    _po(db_session, POOrigin.NEXUS, status=POStatus.CANCELLED, company=company, deleted=True)
+    _po(db_session, POOrigin.NEXUS, status=POStatus.DRAFT, company=company, deleted=True)
+    _po(db_session, POOrigin.GP, status=POStatus.CANCELLED, company=f"{company}X", deleted=True)
+
+    every = po_repository.get_po_statistics(db_session, company=company)
+    from_gp = po_repository.get_po_statistics(db_session, company=company, origin=POOrigin.GP)
+
+    assert (every["total"], every["gp_registered"], every["draft"], every["cancelled"]) == (1, 1, 0, 2)
+    assert (from_gp["total"], from_gp["cancelled"]) == (1, 1)

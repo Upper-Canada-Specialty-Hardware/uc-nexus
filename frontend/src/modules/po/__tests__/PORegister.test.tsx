@@ -528,6 +528,18 @@ it('narrows to a pressed segment, which then reads as pressed', async () => {
   expect(screen.getByRole('button', { name: 'Filter by Nexus Draft' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+// #1886: a cancelled PO is soft-deleted as well, so the segment asks the page for CANCELLED alone -
+// the one status the backend lets soft-deleted rows through for.
+it('narrows to the cancelled POs on the Cancelled segment', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Filter by Cancelled' }));
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ statuses: ['CANCELLED'] }));
+  expect(screen.getByRole('button', { name: 'Filter by Cancelled' })).toHaveAttribute('aria-pressed', 'true');
+});
+
 it('searches every status while the search box has text, and narrows again once it is cleared', async () => {
   renderRegister();
   await screen.findByText('PO-2001');

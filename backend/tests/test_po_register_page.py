@@ -465,3 +465,30 @@ def test_newest_first_puts_ordered_pos_before_never_ordered_drafts(db_session):
             db_session, search=f"Sortco {tag}", sort_field="orderedAt", sort_dir=direction
         )
         assert [r.id for r in rows] == [p.id for p in expected], direction
+
+
+def test_asking_for_cancelled_lists_the_soft_deleted_cancelled_pos(db_session):
+    """#1886: a cancelled PO is always soft-deleted too, so the Cancelled filter listed nothing. Asked
+    for CANCELLED, they come through; no other status, and no unfiltered page, takes a deleted row."""
+    from datetime import datetime
+
+    tag = uuid.uuid4().hex[:8]
+    live = _make_po(db_session, po_number=f"C{tag}-LIVE", vendor=f"Cancelco {tag}")
+    cancelled = _make_po(db_session, po_number=f"C{tag}-CXL", vendor=f"Cancelco {tag}")
+    cancelled.status = POStatus.CANCELLED
+    cancelled.deleted_at = datetime.utcnow()
+    deleted_live = _make_po(db_session, po_number=f"C{tag}-DEL", vendor=f"Cancelco {tag}")
+    deleted_live.deleted_at = datetime.utcnow()
+    db_session.flush()
+
+    def numbers(statuses):
+        rows, _c, total = po_repository.get_purchase_orders_page(
+            db_session, search=f"Cancelco {tag}", statuses=statuses, company="TUBC"
+        )
+        assert total == len(rows)
+        return {r.po_number for r in rows}
+
+    assert numbers([POStatus.CANCELLED]) == {cancelled.po_number}
+    assert numbers([POStatus.GP_REGISTERED, POStatus.CANCELLED]) == {live.po_number, cancelled.po_number}
+    assert numbers([POStatus.GP_REGISTERED]) == {live.po_number}
+    assert numbers(None) == {live.po_number}
