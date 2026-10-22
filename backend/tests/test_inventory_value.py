@@ -30,7 +30,7 @@ import pytest
 from app import auth
 from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, SHOP_ASSEMBLY_MANAGERS
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import POStatus, PullRequestSource, PullRequestStatus
+from app.models.enums import POStatus, PullRequestSource, PullRequestStatus, ReturnDisposition
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
@@ -499,6 +499,69 @@ def test_staged_hardware_is_split_by_the_currency_of_the_rows_it_was_picked_from
     # Shelf: 2 x 7.25 = 14.50 CAD. Staged: 3 x 1.45 = 4.35 CAD and 3 x 10.00 = 30.00 USD.
     assert value["non_ossa"]["hardware_value"] == Decimal("18.85")
     assert value["non_ossa"]["usd_hardware_value"] == Decimal("30.00")
+
+
+# --- a shipped unit that comes back is priced off the same pick lines (#1952) -------------------------
+
+
+def _ship_and_return(session, project, warehouse, *, ship: int, back: int, disposition):
+    """Cut a slip for `ship` of what is staged, bring `back` of it home, and answer the returned row."""
+    slip = shipping_repository.confirm_shipment(
+        session,
+        project.id,
+        "shipper",
+        [{"opening_number": None, "hardware_category": CATEGORY, "product_code": CODE, "quantity": ship}],
+    )
+    session.flush()
+    shipment_return = shipping_repository.create_shipment_return(
+        session,
+        packing_slip_id=slip.id,
+        warehouse_id=warehouse.id,
+        returned_by="returner",
+        reference=None,
+        items=[{"packing_slip_item_id": slip.items[0].id, "quantity": back, "disposition": disposition}],
+    )
+    session.flush()
+    item = shipment_return.items[0]
+    if disposition == ReturnDisposition.RETURN_TO_PROJECT:
+        return session.get(InventoryLocation, item.resulting_inventory_location_id)
+    return session.get(StockItem, item.resulting_stock_item_id)
+
+
+def test_a_return_to_the_project_is_priced_at_what_was_picked_not_the_newest_row(db_session):
+    """#1952: the 4 units that shipped came off the 12.50 row. The project's newest row costs 7.25, but
+    that is not what came back."""
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("12.50"), quantity=4, age_days=3)
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("7.25"), quantity=3, age_days=1)
+    _stage_by_picking(db_session, project, quantity=4)
+
+    returned = _ship_and_return(
+        db_session, project, warehouse, ship=4, back=2, disposition=ReturnDisposition.RETURN_TO_PROJECT
+    )
+
+    assert returned.unit_cost == Decimal("12.50")
+    assert returned.cost_currency is None
+
+
+def test_a_return_to_stock_keeps_the_currency_it_was_picked_in(db_session):
+    """#1952: picked off a US-dollar row, so the pool row it lands on is a US-dollar row at that cost,
+    however the project's newest row is priced."""
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+
+    _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("20.00"), quantity=2, age_days=3, currency="USD")
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("7.25"), quantity=3, age_days=1)
+    _stage_by_picking(db_session, project, quantity=2)
+
+    returned = _ship_and_return(db_session, project, warehouse, ship=2, back=1, disposition=ReturnDisposition.NON_STOCK)
+
+    assert returned.unit_cost == Decimal("20.00")
+    assert returned.cost_currency == "USD"
 
 
 def test_the_project_average_fallback_is_split_by_currency_too(db_session):

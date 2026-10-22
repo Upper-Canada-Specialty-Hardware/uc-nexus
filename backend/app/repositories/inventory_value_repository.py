@@ -198,6 +198,60 @@ def _staged_quantities(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     return dict(staged)
 
 
+def _picked_cost_rows(
+    session: Session,
+    company: str | None,
+    *,
+    project_id: uuid.UUID | None = None,
+    hardware_category: str | None = None,
+    product_code: str | None = None,
+):
+    """The priced APPLIED pick lines per (project, category, code): the Canadian and US cost sums and
+    the quantity behind each. The read `_picked_unit_costs` documents, narrowable to one project's
+    product for a write path that prices a single combo (#1952)."""
+    effective_cost = func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost)
+    line_cost = PullPickLine.quantity * effective_cost
+    stmt = (
+        select(
+            PullRequestModel.project_id,
+            PullPickLine.hardware_category,
+            PullPickLine.product_code,
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=line_cost)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, line_cost), else_=None)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=PullPickLine.quantity)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, PullPickLine.quantity), else_=None)), 0),
+        )
+        .select_from(PullPickLine)
+        .join(PullRequestModel, PullPickLine.pull_request_id == PullRequestModel.id)
+        .join(InventoryLocationModel, PullPickLine.inventory_location_id == InventoryLocationModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
+        .join(Project, PullRequestModel.project_id == Project.id)
+        .where(
+            PullPickLine.state == PullPickLineState.APPLIED,
+            # #1939: a pull still in progress has its picked units on the cart, priced by the same lines.
+            or_(
+                and_(
+                    PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+                    PullRequestModel.status == PullRequestStatus.COMPLETED,
+                ),
+                PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
+            ),
+            effective_cost.is_not(None),
+        )
+        .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
+    )
+    if company is not None:
+        stmt = stmt.where(Project.company == company)
+    if project_id is not None:
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
+    if hardware_category is not None:
+        stmt = stmt.where(PullPickLine.hardware_category == hardware_category)
+    if product_code is not None:
+        stmt = stmt.where(PullPickLine.product_code == product_code)
+    return session.execute(stmt).all()
+
+
 def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, str, str], _Price]:
     """What the staged units actually cost, read off the rows they were picked from.
 
@@ -214,41 +268,9 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     Each pick line's cost is in the currency of the row it came off (#1557), so the quantity-weighted
     price is split into a Canadian and a US share over the same total quantity.
     """
-    effective_cost = func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost)
-    line_cost = PullPickLine.quantity * effective_cost
-    rows = session.execute(
-        select(
-            PullRequestModel.project_id,
-            PullPickLine.hardware_category,
-            PullPickLine.product_code,
-            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=line_cost)), 0),
-            func.coalesce(func.sum(case((_ROW_IS_USD, line_cost), else_=None)), 0),
-            func.sum(PullPickLine.quantity),
-        )
-        .select_from(PullPickLine)
-        .join(PullRequestModel, PullPickLine.pull_request_id == PullRequestModel.id)
-        .join(InventoryLocationModel, PullPickLine.inventory_location_id == InventoryLocationModel.id)
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .join(Project, PullRequestModel.project_id == Project.id)
-        .where(
-            Project.company == company,
-            PullPickLine.state == PullPickLineState.APPLIED,
-            # #1939: a pull still in progress has its picked units on the cart, priced by the same lines.
-            or_(
-                and_(
-                    PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
-                    PullRequestModel.status == PullRequestStatus.COMPLETED,
-                ),
-                PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
-            ),
-            effective_cost.is_not(None),
-        )
-        .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
-    ).all()
-
     costs: dict[tuple[uuid.UUID, str, str], _Price] = {}
-    for project_id, category, code, cad_sum, usd_sum, qty_sum in rows:
+    for project_id, category, code, cad_sum, usd_sum, cad_qty, usd_qty in _picked_cost_rows(session, company):
+        qty_sum = cad_qty + usd_qty
         if not qty_sum:
             continue
         costs[(project_id, category, code)] = (
@@ -256,6 +278,29 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
             Decimal(usd_sum) / Decimal(qty_sum),
         )
     return costs
+
+
+def picked_unit_price(
+    session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str
+) -> tuple[Decimal, str | None] | None:
+    """What one project's product cost as it was picked, as (cost, `cost_currency`), or None when no
+    priced pick line knows (#1952). The same lines that price staged hardware here, so a shipped unit
+    that comes back is worth what it was worth on the cart, not whatever the project's newest row cost.
+
+    A row holds one currency, so a product picked in both prices in the one most of its units were
+    picked in, at that currency's own quantity-weighted cost; a tie stays Canadian.
+    """
+    rows = _picked_cost_rows(
+        session, None, project_id=project_id, hardware_category=hardware_category, product_code=product_code
+    )
+    if not rows:
+        return None
+    _, _, _, cad_sum, usd_sum, cad_qty, usd_qty = rows[0]
+    if usd_qty > cad_qty:
+        return Decimal(usd_sum) / Decimal(usd_qty), USD
+    if cad_qty:
+        return Decimal(cad_sum) / Decimal(cad_qty), None
+    return None
 
 
 def _project_average_costs(

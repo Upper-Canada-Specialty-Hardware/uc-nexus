@@ -766,7 +766,7 @@ def create_shipment_return(
     # 2. Validate destination warehouse: it exists, is active, and is the slip's project's company's own
     # building (#1376) - compared directly, so an unscoped admin cannot book a return into another
     # tenant's warehouse either.
-    from app.repositories import warehouse_admin_repository
+    from app.repositories import inventory_value_repository, warehouse_admin_repository
 
     project_company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == ps.project_id))
     warehouse_admin_repository.assert_usable_destination(
@@ -854,12 +854,14 @@ def create_shipment_return(
         }
 
         # The slip item carries no link back to the rows the units shipped off, so the returned
-        # units' cost is re-resolved: the project's newest effective cost for the combo, else the
-        # schedule's. Without this every return valued at zero from then on - the shipped units'
-        # PO-line or off-PO cost was simply dropped on the floor here.
-        returned_cost, returned_currency = resolve_project_combo_price(
+        # units' cost is re-resolved. Without this every return valued at zero from then on - the
+        # shipped units' PO-line or off-PO cost was simply dropped on the floor here. #1952: the
+        # price the project's units of the combo were picked at - the same pick lines that priced
+        # them on the cart - and only with no priced pick line the project's newest effective cost,
+        # else the schedule's.
+        returned_cost, returned_currency = inventory_value_repository.picked_unit_price(
             session, ps.project_id, psi.hardware_category, psi.product_code
-        )
+        ) or resolve_project_combo_price(session, ps.project_id, psi.hardware_category, psi.product_code)
 
         if disposition == ReturnDisposition.RETURN_TO_PROJECT:
             # Fresh, unlocated inventory for the origin project — re-enters Put-Away.
