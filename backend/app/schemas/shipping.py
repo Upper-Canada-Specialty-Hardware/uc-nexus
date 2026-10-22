@@ -1,6 +1,7 @@
 """Shipping queries + mutations: ship-ready items, packing slips, returns."""
 
 import uuid
+from datetime import date
 
 import strawberry
 from sqlalchemy import func, select
@@ -894,19 +895,27 @@ class ShippingMutations:
 
     @strawberry.mutation
     def move_shipment_to_load(
-        self, info: strawberry.Info, id: strawberry.ID, load_id: strawberry.ID | None = None
+        self,
+        info: strawberry.Info,
+        id: strawberry.ID,
+        load_id: strawberry.ID | None = None,
+        pickup_date: date | None = None,
     ) -> PackingSlip:
         """Move a scheduled shipment onto another load, or onto a new one when `loadId` is null (#1723).
 
         For the truck that changed after the paper was written: two projects that turned out to share
-        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up."""
+        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up.
+        `pickupDate` is the date being saved with the move, which names a new load (#1940); left out,
+        the stored one does."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             _refuse_driver_only(info)
             ps = shipping_repository.lock_packing_slip(session, uuid.UUID(str(id)))
-            shipment_loads.move_slip_to_load(session, ps, uuid.UUID(str(load_id)) if load_id else None, actor)
+            shipment_loads.move_slip_to_load(
+                session, ps, uuid.UUID(str(load_id)) if load_id else None, actor, pickup_date=pickup_date
+            )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)

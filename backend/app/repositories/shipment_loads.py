@@ -83,6 +83,31 @@ def start_load(session: Session, project: Project, ship_date: date | None, creat
     return load
 
 
+def follow_lone_slip_date(session: Session, slip: PackingSlip) -> None:
+    """A slip's new pickup date becomes its load's ship date when it is the only slip riding it (#1940).
+
+    The caller holds the slip locked and has just changed its pickup date. A load of one slip is that
+    slip's truck, so its date is the slip's. The load number stays as it is: a number already given to
+    the dock and the driver must not change under them. A load another live slip rides keeps its date -
+    one slip's correction is not the whole truck's. A cancelled slip rides nothing (#1820).
+    """
+    if slip.load_id is None or slip.pickup_date is None:
+        return
+    # Locked so a slip joining the load cannot land between the count and the new date.
+    locked = lock_rows(session, ShipmentLoad, [slip.load_id])
+    if not locked:
+        return
+    others = session.scalar(
+        select(func.count(PackingSlip.id)).where(
+            PackingSlip.load_id == slip.load_id,
+            PackingSlip.id != slip.id,
+            PackingSlip.status != ShipmentStatus.CANCELLED,
+        )
+    )
+    if not others:
+        locked[0].ship_date = slip.pickup_date
+
+
 def _joinable_clause():
     """A load still on the dock: a scheduled slip on it, and no slip on it that has left."""
     return exists().where(
@@ -128,13 +153,23 @@ def join_load(session: Session, load_id: uuid.UUID, project: Project) -> Shipmen
     return load
 
 
-def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | None, moved_by: str) -> ShipmentLoad:
+def move_slip_to_load(
+    session: Session,
+    slip: PackingSlip,
+    load_id: uuid.UUID | None,
+    moved_by: str,
+    pickup_date: date | None = None,
+) -> ShipmentLoad:
     """Put a scheduled slip on another load, or on a new one of its own when `load_id` is None (#1723).
 
     The caller holds the slip locked. Only a scheduled slip moves: once it is picked up it went out on
     the truck it was on. A load the move leaves with no slips at all is deleted - it was only ever that
     slip's name, and a load nobody rides is not a truck. One that still carries a cancelled slip stays,
     as the record of it.
+
+    `pickup_date` is the date the edit dialog is about to save with the move (#1940): the dialog moves
+    the slip before it saves the header, so a new load named off the stored date was named for the day
+    the shipment no longer goes. None keeps the stored date.
     """
     if slip.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
@@ -158,7 +193,7 @@ def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | 
     project = session.get(Project, slip.project_id)
     old_load_id = slip.load_id
     if load_id is None:
-        load = start_load(session, project, slip.pickup_date, moved_by)
+        load = start_load(session, project, pickup_date or slip.pickup_date, moved_by)
     else:
         load = join_load(session, load_id, project)
     slip.load_id = load.id

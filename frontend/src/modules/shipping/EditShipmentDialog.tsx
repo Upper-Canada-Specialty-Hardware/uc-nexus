@@ -80,7 +80,16 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
     let moved = false;
     try {
       if (loadChanged) {
-        await moveShipment({ variables: { id: slip.id, loadId: loadId === NEW_LOAD ? null : loadId } });
+        // #1940: the move lands before the header, so a new load is named for the pickup date being
+        // saved, not the stored one it is replacing.
+        const pickupDate = details.pickupDate.trim();
+        await moveShipment({
+          variables: {
+            id: slip.id,
+            loadId: loadId === NEW_LOAD ? null : loadId,
+            ...(pickupDate && pickupDate !== stored.pickupDate ? { pickupDate } : {}),
+          },
+        });
         setStoredLoadId(loadId);
         moved = true;
       }

@@ -224,6 +224,64 @@ def test_moving_onto_its_own_load_is_refused(db_session):
         shipment_loads.move_slip_to_load(db_session, first, first.load_id, "tester")
 
 
+def test_a_new_load_takes_the_pickup_date_being_saved(db_session):
+    # #1940: the edit dialog moves the slip before it saves the header, so the new load is named for
+    # the date the header is about to carry, not the stored one.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    second = _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+
+    load = shipment_loads.move_slip_to_load(db_session, second, None, "tester", pickup_date=date(2026, 10, 20))
+    assert load.load_number == f"{other.project_id}-10202026"
+    assert load.ship_date == date(2026, 10, 20)
+
+
+def _edit_pickup(session, slip, day):
+    details = {field: getattr(slip, field) for field in shipping_repository.SITE_FORM_FIELDS}
+    details["pickup_date"] = day
+    details["delivery_date"] = None
+    return shipping_repository.update_shipment_details(session, slip.id, details)
+
+
+def test_a_lone_slips_load_follows_its_pickup_date_and_keeps_its_number(db_session):
+    # #1940: a load of one slip is that slip's truck. The number stays: the dock and the driver have it.
+    project = _project(db_session)
+    first = _ship(db_session, project, pickup=date(2026, 10, 15))
+    number = first.load.load_number
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    load = db_session.get(ShipmentLoad, first.load_id)
+    assert load.ship_date == date(2026, 10, 22)
+    assert load.load_number == number
+
+
+def test_a_shared_loads_date_is_not_one_slips_to_change(db_session):
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    assert db_session.get(ShipmentLoad, first.load_id).ship_date == date(2026, 10, 15)
+
+
+def test_a_cancelled_slip_does_not_hold_the_loads_date(db_session):
+    # #1820: a cancelled slip stays on the load as its record but rides nothing.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    cancelled = _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+    cancelled.status = ShipmentStatus.CANCELLED
+    db_session.flush()
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    assert db_session.get(ShipmentLoad, first.load_id).ship_date == date(2026, 10, 22)
+
+
 # --- the shipments list (#1724) -----------------------------------------------------------------
 
 

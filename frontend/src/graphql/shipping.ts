@@ -390,9 +390,11 @@ export const GET_SHIPMENT_DRIVERS = gql`
 `;
 
 // Put a scheduled shipment on another load, or on a new one when loadId is null (#1723).
+// #1940: pickupDate is the date the dialog is about to save, which names a new load; left out, the
+// stored one does.
 export const MOVE_SHIPMENT_TO_LOAD = gql`
-  mutation MoveShipmentToLoad($id: ID!, $loadId: ID) {
-    moveShipmentToLoad(id: $id, loadId: $loadId) {
+  mutation MoveShipmentToLoad($id: ID!, $loadId: ID, $pickupDate: Date) {
+    moveShipmentToLoad(id: $id, loadId: $loadId, pickupDate: $pickupDate) {
       ${PACKING_SLIP_FIELDS}
     }
   }

@@ -716,4 +716,51 @@ describe('EditShipmentDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
+
+  // #1940: the move lands before the header, so a new load was named for the stored pickup date - the
+  // day the shipment no longer goes. The date being saved goes with the move.
+  it('names a new load for the pickup date being saved', async () => {
+    const shared = {
+      ...HEADER.load,
+      slips: [
+        ...HEADER.load.slips,
+        { ...HEADER.load.slips[0], id: 'ps-2', packingSlipNumber: 'PS-0020' },
+      ],
+    };
+    const loadsMock: MockedResponse = {
+      request: { query: GET_JOINABLE_LOADS, variables: { projectId: 'proj-1' } },
+      result: { data: { joinableLoads: [] } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+    };
+    const moved = slip({ pickupDate: '2026-07-21', load: { ...HEADER.load, id: 'load-3' } });
+    // Only a move carrying the new date answers; one without it would find no mock and fail the save.
+    const moveMock: MockedResponse = {
+      request: {
+        query: MOVE_SHIPMENT_TO_LOAD,
+        variables: { id: 'ps-1', loadId: null, pickupDate: '2026-07-21' },
+      },
+      result: { data: { moveShipmentToLoad: moved } },
+    };
+    const saved: MockedResponse = {
+      request: { query: UPDATE_SHIPMENT_DETAILS, variables: () => true },
+      result: { data: { updateShipmentDetails: moved } },
+    };
+    const onClose = vi.fn();
+    render(
+      <MockedProvider mocks={[loadsMock, moveMock, saved]}>
+        <ToastProvider>
+          <EditShipmentDialog slip={slip({ load: shared }) as unknown as PackingSlipHeader} onClose={onClose} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    const select = await screen.findByRole('combobox', { name: 'Load' });
+    await waitFor(() => expect(select).not.toHaveAttribute('aria-disabled', 'true'));
+    fireEvent.mouseDown(select);
+    fireEvent.click(within(await screen.findByRole('listbox')).getByText('New load'));
+    fireEvent.change(screen.getByLabelText('Pick-up date'), { target: { value: '2026-07-21' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
 });

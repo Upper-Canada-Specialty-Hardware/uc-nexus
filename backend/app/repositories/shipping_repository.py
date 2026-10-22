@@ -453,8 +453,14 @@ def update_shipment_details(
             f"Shipment {ps.packing_slip_number} can only be edited while scheduled; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
+    stored_pickup = ps.pickup_date
     _apply_site_form(ps, details)
     _apply_driver(ps, driver)
+    if ps.pickup_date != stored_pickup:
+        # #1940: a lone slip's load is its truck, so the load's date follows the slip's.
+        from app.repositories import shipment_loads
+
+        shipment_loads.follow_lone_slip_date(session, ps)
     return ps
 
 
