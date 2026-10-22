@@ -492,3 +492,17 @@ def test_asking_for_cancelled_lists_the_soft_deleted_cancelled_pos(db_session):
     assert numbers([POStatus.GP_REGISTERED, POStatus.CANCELLED]) == {live.po_number, cancelled.po_number}
     assert numbers([POStatus.GP_REGISTERED]) == {live.po_number}
     assert numbers(None) == {live.po_number}
+
+
+def test_a_cancelled_po_the_register_lists_opens_but_no_write_finds_it(db_session):
+    """#1886: the Cancelled filter lists soft-deleted cancelled POs, so the read that opens one has to
+    find it - while every write path keeps leaving it out."""
+    from datetime import datetime
+
+    po = _make_po(db_session, po_number=f"C{uuid.uuid4().hex[:6]}-OPEN")
+    po.status = POStatus.CANCELLED
+    po.deleted_at = datetime.utcnow()
+    db_session.flush()
+
+    assert po_repository.get_purchase_order(db_session, po.id, company="TUBC", include_cancelled=True) is po
+    assert po_repository.get_purchase_order(db_session, po.id, company="TUBC") is None

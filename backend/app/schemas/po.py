@@ -668,7 +668,9 @@ class POQueries:
     @strawberry.field
     def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
         with SessionLocal() as session:
-            po = po_repository.get_purchase_order(session, uuid.UUID(str(id)), company=tenant_scope(info))
+            po = po_repository.get_purchase_order(
+                session, uuid.UUID(str(id)), company=tenant_scope(info), include_cancelled=True
+            )
             if po is None:
                 return None
             receive_records = po_repository.get_receive_records_for_po(session, po.id)

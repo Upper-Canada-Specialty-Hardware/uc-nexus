@@ -819,7 +819,9 @@ def get_purchase_orders(
     return list(session.scalars(stmt).unique().all())
 
 
-def get_purchase_order(session: Session, po_id: uuid.UUID, *, company: str | None = None) -> PurchaseOrder | None:
+def get_purchase_order(
+    session: Session, po_id: uuid.UUID, *, company: str | None = None, include_cancelled: bool = False
+) -> PurchaseOrder | None:
     """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents."""
     stmt = (
         select(PurchaseOrder)
@@ -832,7 +834,11 @@ def get_purchase_order(session: Session, po_id: uuid.UUID, *, company: str | Non
         )
         .where(
             PurchaseOrder.id == po_id,
-            PurchaseOrder.deleted_at.is_(None),
+            # A cancelled PO is soft-deleted on the way (#1886), and the register lists them; the read that
+            # opens one asks for it. Every write path leaves it out.
+            or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED)
+            if include_cancelled
+            else PurchaseOrder.deleted_at.is_(None),
         )
     )
     if company is not None:
