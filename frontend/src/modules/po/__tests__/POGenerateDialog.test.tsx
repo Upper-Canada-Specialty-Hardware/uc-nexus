@@ -647,3 +647,30 @@ describe("POGenerateDialog waits for GP's figures and saves only what the buyer 
     expect(printed.props?.currency).toBe('USD');
   });
 });
+
+describe('POGenerateDialog on a closed PO (#1887)', () => {
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:generated-po');
+    window.open = vi.fn();
+  });
+
+  it('offers no Save to PO documents, says why, and still previews', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)], {
+      status: 'CLOSED',
+    });
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    expect(screen.queryByRole('button', { name: 'Save to PO documents' })).toBeNull();
+    expect(screen.getByText(/closed PO takes no new documents/)).toBeInTheDocument();
+
+    await clickWhenReady('Generate & preview');
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+  });
+
+  it('offers it on a PO still open', async () => {
+    renderDialog([settingsMock(), buyersMock(), totalsMock()]);
+    expect(await screen.findByRole('button', { name: 'Save to PO documents' })).toBeInTheDocument();
+    expect(screen.queryByText(/closed PO takes no new documents/)).toBeNull();
+  });
+});

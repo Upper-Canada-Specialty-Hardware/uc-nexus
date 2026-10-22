@@ -19,6 +19,7 @@ import { monoSx, microLabelSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
 import { documentCurrencyFromGp, formatGpAddress, type GpPoHeader } from './gpPoHeader';
+import { canUploadPoDocuments } from './poDocumentGate';
 
 /** Section separator for this form: a 2px ink rule under a micro-label. */
 function SectionHeading({ children }: { children: ReactNode }) {
@@ -441,6 +442,7 @@ function GenerateForm({
   // #1885: a document generated while GP's figures are still coming would print, and save, the
   // fallbacks in their place. Once the read has failed the buyer may go ahead; the alert says so.
   const waitingOnGp = gpLoading;
+  const canSaveToPo = canUploadPoDocuments(po);
 
   return (
     <>
@@ -582,10 +584,19 @@ function GenerateForm({
         </Stack>
       </DialogContent>
       <DialogActions>
+        {/* #1887: a closed PO takes no new documents - the upload is refused after the data saved - so
+            it is only previewed, as the detail offers no Upload on it either. */}
+        {!canSaveToPo && (
+          <Typography variant="caption" color="text.secondary" sx={{ mr: 'auto', pl: 1 }}>
+            A closed PO takes no new documents, so this one can only be previewed.
+          </Typography>
+        )}
         <Button onClick={onClose} disabled={working}>Cancel</Button>
-        <Button variant="outlined" onClick={handleSaveToPO} disabled={working || waitingOnGp}>
-          {working ? 'Working...' : 'Save to PO documents'}
-        </Button>
+        {canSaveToPo && (
+          <Button variant="outlined" onClick={handleSaveToPO} disabled={working || waitingOnGp}>
+            {working ? 'Working...' : 'Save to PO documents'}
+          </Button>
+        )}
         <Button
           variant="contained" onClick={handlePreview} disabled={working || waitingOnGp}
           startIcon={working ? <CircularProgress size={16} /> : undefined}

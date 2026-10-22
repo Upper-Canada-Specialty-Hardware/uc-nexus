@@ -14,6 +14,12 @@ export type PoDocumentGate = 'hidden' | 'registering' | 'relayDown' | 'ready';
 
 type GatePo = Pick<PurchaseOrder, 'status' | 'origin' | 'gpCompany' | 'poNumber' | 'gpSyncedAt'>;
 
+/** Whether a document can be added to the PO. The backend refuses an upload to a closed or cancelled
+ *  one, so the detail's Upload and the generate dialog's Save to PO documents (#1887) are not offered. */
+export function canUploadPoDocuments(po: Pick<PurchaseOrder, 'status'>): boolean {
+  return po.status !== 'CANCELLED' && po.status !== 'CLOSED';
+}
+
 export function isAwaitingGpReadBack(po: GatePo): boolean {
   if (po.status === 'DRAFT' || po.status === 'CANCELLED') return false;
   // A GP-origin PO arrived through the read itself. A Nexus PO past Draft is only complete once

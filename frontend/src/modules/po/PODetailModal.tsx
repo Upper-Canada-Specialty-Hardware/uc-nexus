@@ -37,7 +37,7 @@ import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
-import { poDocumentGate } from './poDocumentGate';
+import { canUploadPoDocuments, poDocumentGate } from './poDocumentGate';
 import { pastTheCent } from './unitCost';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
@@ -687,7 +687,7 @@ export default function PODetailModal({
   // Adjusted during render (guarded), the way React recommends for state derived from props.
   if (editing && !canEdit) setEditing(false);
 
-  const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
+  const canUploadDocs = canUploadPoDocuments(po);
   // #500: the PO can be sent once it exists in GP and there is a generated document to attach.
   // Both refusals are also enforced server-side; this only keeps the button from being offered when
   // pressing it could only produce a message saying no.
