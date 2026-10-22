@@ -4,6 +4,7 @@ import uuid
 
 import strawberry
 from sqlalchemy import select
+from strawberry.types.nodes import FragmentSpread, InlineFragment, SelectedField
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
@@ -17,16 +18,63 @@ from .enums import ShopAssemblyRequestStatus
 from .inputs import CreateShopAssemblyBatchInput
 from .types import ShopAssemblyAllocationReview, ShopAssemblyRequest
 
+# The request's own columns plus its stage: what a read may ask for and still take the light path
+# (#1856). Everything else on the type hangs off a relationship or a further query.
+_LIGHT_FIELDS = frozenset(
+    {
+        "__typename",
+        "id",
+        "requestNumber",
+        "projectId",
+        "status",
+        "createdBy",
+        "approvedBy",
+        "rejectedBy",
+        "rejectionReason",
+        "createdAt",
+        "approvedAt",
+        "rejectedAt",
+        "integrityNote",
+        "stage",
+    }
+)
 
-def _requests_to_types(session, reqs) -> list[ShopAssemblyRequest]:
-    """Requests with their derived stage, return note, per-batch pull status and GP job, in FOUR
+
+def _selected_names(selections) -> set[str]:
+    names: set[str] = set()
+    for selection in selections:
+        if isinstance(selection, SelectedField):
+            names.add(selection.name)
+        elif isinstance(selection, (FragmentSpread, InlineFragment)):
+            names |= _selected_names(selection.selections)
+    return names
+
+
+def _asks_only_for_light_fields(info: strawberry.Info) -> bool:
+    """Whether this read selected nothing past the request's own columns and its stage (#1856).
+
+    The landing gauge asks for `{ id stage }` and nothing else, and was paying for every request's
+    lines, openings, batches and batch items to be loaded and converted, and its return note worked
+    out, to render a count. The GraphQL contract is unchanged: a read that asks for more gets it all.
+    """
+    return all(_selected_names(field.selections) <= _LIGHT_FIELDS for field in info.selected_fields)
+
+
+def _requests_to_types(session, reqs, *, include_lines: bool = True) -> list[ShopAssemblyRequest]:
+    """Requests with their derived stage, return note, per-batch pull status and GP job, in THREE
     extra queries for the whole list however long it is.
 
     All three are resolved here rather than as field resolvers: a per-row lookup over Railway's
     network hop is the N+1 this codebase keeps paying for (CLAUDE.md perf rules).
+
+    include_lines=False is the light path (#1856), for requests read without their lines: the stage
+    alone, in one extra query, and no return note or GP job, which the light fields do not include.
     """
     pull_statuses = shop_assembly_repository.get_pull_statuses(session, reqs)
-    stages = shop_assembly_repository.get_request_stages(session, reqs)
+    # Passed in, so the stage reads the statuses just read rather than reading them again (#1856).
+    stages = shop_assembly_repository.get_request_stages(session, reqs, pull_statuses)
+    if not include_lines:
+        return [shop_assembly_request_to_type(r, stage=stages.get(r.id), include_lines=False) for r in reqs]
     notes = shop_assembly_repository.get_return_notes(session, reqs)
     projects = {p.id: p for p in session.scalars(select(Project).where(Project.id.in_({r.project_id for r in reqs})))}
     return [
@@ -61,10 +109,11 @@ class ShopAssemblyQueries:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
+            light = _asks_only_for_light_fields(info)
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, pid, status, reopenable_only, company=scope
+                session, pid, status, reopenable_only, company=scope, include_lines=not light
             )
-            return _requests_to_types(session, reqs)
+            return _requests_to_types(session, reqs, include_lines=not light)
 
     @strawberry.field
     def shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:

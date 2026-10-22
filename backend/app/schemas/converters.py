@@ -785,6 +785,7 @@ def shop_assembly_request_to_type(
     return_note: str | None = None,
     pull_status_by_id: dict | None = None,
     project=None,
+    include_lines: bool = True,
 ) -> ShopAssemblyRequest:
     """Model -> type. `stage`, `return_note` and the batches' pull statuses are resolved by the
     *caller* in one query for the whole list.
@@ -792,6 +793,9 @@ def shop_assembly_request_to_type(
     Passed in rather than derived here for the same reason `pull_request_to_type` takes its
     staging counts: a converter that queries is an N+1 waiting to happen on a list page
     (CLAUDE.md perf rules).
+
+    include_lines=False leaves items, openings and batches empty, for a read that selected none of
+    them and so never loaded them (#1856) - walking them would lazy-load every request's.
     """
     statuses = pull_status_by_id or {}
     return ShopAssemblyRequest(
@@ -807,14 +811,18 @@ def shop_assembly_request_to_type(
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         integrity_note=sar.integrity_note,
-        items=[shop_assembly_request_item_to_type(i) for i in sar.items],
+        items=[shop_assembly_request_item_to_type(i) for i in sar.items] if include_lines else [],
         openings=[
             shop_assembly_request_opening_to_type(o) for o in sorted(sar.openings, key=lambda o: o.opening_number)
-        ],
+        ]
+        if include_lines
+        else [],
         batches=[
             shop_assembly_batch_to_type(b, pull_status=statuses.get(b.pull_request_id))
             for b in sorted(sar.batches, key=lambda b: b.sequence)
-        ],
+        ]
+        if include_lines
+        else [],
         stage=RequestStage(stage or _fallback_stage(sar)),
         return_note=return_note,
         project_number=project.project_id if project is not None else None,

@@ -334,21 +334,30 @@ def get_shop_assembly_requests(
     reopenable_only: bool = False,
     *,
     company: str | None = None,
+    include_lines: bool = True,
 ) -> list[ShopAssemblyRequest]:
     """List shop-assembly requests for the requests page. Defaults to PENDING.
 
     reopenable_only: keep only requests carrying at least one ACTIVE batch whose pull is still
     PENDING - the ones a discard can still act on. It is the Accepted view's filter, unchanged in
     meaning from #325 and only moved to batch granularity.
+
+    include_lines=False loads the batches alone - all a stage needs (`_stage_for`) - and leaves the
+    items, openings and batch items unloaded (#1856). Only for a caller that reads none of them.
     """
     effective_status = status if status is not None else ShopAssemblyRequestStatus.PENDING
-    stmt = (
-        select(ShopAssemblyRequest)
-        .options(
+    options = (
+        [
             selectinload(ShopAssemblyRequest.items),
             selectinload(ShopAssemblyRequest.openings),
             selectinload(ShopAssemblyRequest.batches).selectinload(ShopAssemblyBatch.items),
-        )
+        ]
+        if include_lines
+        else [selectinload(ShopAssemblyRequest.batches)]
+    )
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(*options)
         .where(ShopAssemblyRequest.status == effective_status)
         .order_by(ShopAssemblyRequest.created_at.asc())
         .execution_options(populate_existing=True)
@@ -429,16 +438,24 @@ def get_pull_statuses(session: Session, requests: list[ShopAssemblyRequest]) -> 
     }
 
 
-def get_request_stages(session: Session, requests: list[ShopAssemblyRequest]) -> dict[uuid.UUID, str]:
+def get_request_stages(
+    session: Session,
+    requests: list[ShopAssemblyRequest],
+    pull_status_by_id: dict[uuid.UUID, PullRequestStatus] | None = None,
+) -> dict[uuid.UUID, str]:
     """Where each request sits on the ladder, in ONE query for the whole list.
 
     A PENDING request reads REQUESTED however many batches it already has out. That is the honest
     reading of the amber "somebody has to act on this" rung: openings on it are still waiting for
     the manager, and what the warehouse is doing with an earlier batch does not change that.
+
+    A caller that already read the pull statuses (`get_pull_statuses`) passes them, and no query is
+    made (#1856): the list read used to read them twice.
     """
     if not requests:
         return {}
-    pull_status_by_id = get_pull_statuses(session, requests)
+    if pull_status_by_id is None:
+        pull_status_by_id = get_pull_statuses(session, requests)
     return {request.id: _stage_for(request, pull_status_by_id) for request in requests}
 
 
