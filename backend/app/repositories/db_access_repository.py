@@ -21,6 +21,7 @@ as a SCRAM hash in Postgres, never in a stored column and never in a SQL stateme
 import base64
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import datetime
@@ -33,6 +34,8 @@ from app.auth import NEXUS_ADMIN_ROLE
 from app.database import SessionLocal
 from app.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.models.pg_direct_access import PgDirectAccess, PgDirectAccessAudit
+
+logger = logging.getLogger(__name__)
 
 # The group every minted login joins. NOLOGIN itself; it only carries the DML grants.
 _GROUP_ROLE = "nexus_rw"
@@ -214,6 +217,13 @@ def _group_member_roles(conn) -> list[tuple[str, bool]]:
     return [(row[0], bool(row[1])) for row in rows]
 
 
+def _app_database_count(conn) -> int:
+    """How many databases besides `postgres` this cluster holds."""
+    return conn.execute(
+        text("SELECT count(*) FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'")
+    ).scalar_one()
+
+
 def _sweep_unlisted_members(*, actor_clerk_id: str) -> list[str]:
     """Sweep every nexus_rw member the registry has no live row for, and audit each as a REVOKE with no
     target (#1865).
@@ -225,6 +235,12 @@ def _sweep_unlisted_members(*, actor_clerk_id: str) -> list[str]:
     could never have minted are left alone: this only ever drops what looks like one of our logins."""
     with SessionLocal() as session:
         conn = session.connection()
+        if _app_database_count(conn) > 1:
+            # Roles are the cluster's, the registry is this database's: on a cluster another Nexus database
+            # shares, a login this registry doesn't list may be that one's, live. Swept only where this
+            # registry is the only one that can list a member.
+            logger.warning("db access: the cluster holds more than one database, so no unlisted login is swept")
+            return []
         listed = set(session.scalars(select(PgDirectAccess.db_role).where(PgDirectAccess.revoked_at.is_(None))).all())
         swept = []
         for role, is_super in _group_member_roles(conn):

@@ -226,6 +226,7 @@ def test_a_mint_sweeps_every_group_member_the_registry_does_not_list(monkeypatch
             ("HandMade", False),
         ],
     )
+    monkeypatch.setattr(repo, "_app_database_count", lambda conn: 1)
     swept = []
     monkeypatch.setattr(repo, "_sweep_role", lambda conn, role: swept.append(role))
 
@@ -240,6 +241,20 @@ def test_a_mint_sweeps_every_group_member_the_registry_does_not_list(monkeypatch
         None,
         "user_actor",
     )
+
+
+def test_nothing_is_swept_on_a_cluster_another_database_shares(monkeypatch):
+    """The registry is this database's and the roles the cluster's: an unlisted login may be another
+    database's, live."""
+    session = _FakeSession(listed=[])
+    monkeypatch.setattr(repo, "SessionLocal", lambda: session)
+    monkeypatch.setattr(repo, "_app_database_count", lambda conn: 2)
+    monkeypatch.setattr(repo, "_group_member_roles", lambda conn: [("user_orphan", False)])
+    swept = []
+    monkeypatch.setattr(repo, "_sweep_role", lambda conn, role: swept.append(role))
+
+    assert repo._sweep_unlisted_members(actor_clerk_id="user_actor") == []
+    assert swept == []
 
 
 def test_a_mint_sweeps_before_the_group_is_granted(monkeypatch):
