@@ -154,6 +154,13 @@ def queued_po_registration(
     return next((row for row in rows if registration_holds_draft(session, row)), None)
 
 
+def registration_for_key(session: Session, key: str) -> GpWriteOutbox | None:
+    """The registration queued under one attempt's key, whatever its status (#1950)."""
+    return session.scalars(
+        select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key, GpWriteOutbox.op == "register_po_in_gp")
+    ).first()
+
+
 def queued_registration_refusal(row: GpWriteOutbox, waiting_message: str) -> str:
     """The words a guard refuses a held draft with: its own for a waiting registration, Retry for a failed one."""
     return HELD_REGISTRATION_REFUSAL if row.status == "FAILED" else waiting_message

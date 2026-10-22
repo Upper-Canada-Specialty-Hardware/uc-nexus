@@ -36,6 +36,7 @@ from app.services import (
     gp_idempotency,
     gp_job_sync,
     gp_outbox_enqueue,
+    gp_outbox_worker,
     gp_po,
     gp_po_sync,
     gp_processing,
@@ -517,6 +518,65 @@ def _release_registration(po_id, key) -> None:
             session.commit()
     except Exception:  # noqa: BLE001 - a claim not released goes stale on its own
         logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
+
+
+def _held_registration(key: str, po_id: uuid.UUID, gp_result: dict) -> dict:
+    """What a resume saves (#1950): the held write GP's answer belongs to, with the context GP was sent.
+
+    The resume used to save this call's lines, vendor, costs and project over GP's answer - a form the
+    person could have edited since the push. A key with no held write has nothing to save it from, so it
+    is refused; GP's PO is finished from the held write, or reconciled, never from the form."""
+    with SessionLocal() as session:
+        row = gp_outbox_repository.registration_for_key(session, key)
+        if row is None:
+            number = str((gp_result or {}).get("po_number") or "") or "(number not recorded)"
+            raise InvalidStateTransitionError(
+                f"GP already created PO {number} for this draft, but it was not recorded here. Finish it with "
+                "Retry on the held GP writes panel, or have it reconciled; registering it again from this form "
+                "could record lines GP was never sent."
+            )
+        if (row.persist_context or {}).get("po_id") != str(po_id):
+            raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
+        return {"id": row.id, "status": row.status, "persist_context": row.persist_context}
+
+
+def _hold_unsaved_registration(*, key, po_id, company, payload, persist_context, requested_by) -> bool:
+    """GP took the registration and Nexus failed to save it (#1950): queue it, under the same key, with
+    the context GP was sent. The worker finds GP's answer in the ledger and goes straight to the save, so
+    the held writes panel's Retry finishes it from any window, and the row holds the draft meanwhile
+    (#1948). The key lived only in the dialog that pushed it, so before this nothing else could.
+    Returns whether it was queued; when not, the attempt's claim keeps holding the draft instead."""
+    try:
+        project_id, label = _po_outbox_identity(po_id)
+        gp_outbox_enqueue.enqueue(
+            idempotency_key=key,
+            op="register_po_in_gp",
+            relay_op="create_po",
+            company=company,
+            payload=payload,
+            persist_context=persist_context,
+            entity_key=f"po:{po_id}",
+            label=label,
+            project_id=project_id,
+            requested_by=requested_by,
+            maybe_in_gp=True,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - the original failure is the one the caller raises
+        logger.exception("po registration gp took was not queued after its save failed", extra={"po_id": str(po_id)})
+        return False
+
+
+def _settle_held_registration(entry_id) -> None:
+    """The held write a resume just finished (#1950) is done: left FAILED it would offer a Retry."""
+    try:
+        with SessionLocal() as session:
+            row = gp_outbox_repository.get_entry_locked(session, entry_id)
+            if row is not None and row.status in ("FAILED", "CANCELLED"):
+                gp_outbox_repository.mark_succeeded(session, row)
+            session.commit()
+    except Exception:  # noqa: BLE001 - a Retry finds the ledger finished and settles the row then
+        logger.warning("held po registration not settled", extra={"entry_id": str(entry_id)}, exc_info=True)
 
 
 def _persist_register_po(
@@ -1168,10 +1228,22 @@ class POMutations:
                 "registration_digest": digest.get("registration_digest"),
             }
 
+            held = None
             if state is not None and state.relay_result is not None:
                 # GP already holds this attempt's PO; only the persist below may let the claim go.
                 release = False
                 gp_result = state.relay_result
+                # #1950: saved from what GP was sent, kept on the held write, never from this call's form -
+                # the dialog keeps its key after a failure, and its lines could have been edited since.
+                held = await asyncio.to_thread(_held_registration, key, pid, gp_result)
+                if held["status"] in ("PENDING", "IN_FLIGHT"):
+                    # The queue is finishing it right now; the queued row holds the draft from here.
+                    release = True
+                    po = await asyncio.to_thread(_load_po_type, pid)
+                    return RegisterPOResult(
+                        queued=True, outbox_entry_id=strawberry.ID(str(held["id"])), purchase_order=po
+                    )
+                persist_context = held["persist_context"]
             else:
                 # Refused before anything is sent: a relay that does not recognise the key cannot tell a
                 # retry of this registration from a second order, and the queueing below assumes it can.
@@ -1235,23 +1307,31 @@ class POMutations:
                     raise
                 await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
 
-            po = await asyncio.to_thread(
-                _persist_register_po,
-                key=key,
-                po_id=pid,
-                gp_vendor_id=input.gp_vendor_id,
-                vendor_name_snapshot=input.gp_vendor_name,
-                gp_result=gp_result,
-                line_items_data=line_items_data,
-                cost_code=input.cost_code,
-                buyer_id=input.buyer_id,
-                shipping_cost=input.shipping_cost,
-                tariff_amount=input.tariff_amount,
-                # #691: a draft with no project, registered with one chosen in the dialog, must land ON
-                # that project. This was omitted, so the online path dropped the choice while the outbox
-                # replay - which reads the same value out of persist_context - kept it.
-                project_id=register_project_id,
-            )
+            try:
+                # The save the queue makes, from the same context (#1950): this call's on a fresh push, the
+                # held write's on a resume. #691's project chosen in the dialog rides in it.
+                po = await asyncio.to_thread(
+                    gp_outbox_worker._persist_register_po_from_context, persist_context, gp_result, key
+                )
+            except Exception:
+                # GP holds the PO and Nexus did not record it. A fresh push is queued from what GP was sent,
+                # and the queued row, like a held one that failed again, holds the draft in place of the
+                # claim. A held write somebody cancelled holds nothing, so the claim stays.
+                if held is None:
+                    release = await asyncio.to_thread(
+                        _hold_unsaved_registration,
+                        key=key,
+                        po_id=pid,
+                        company=input.gp_company,
+                        payload=payload,
+                        persist_context=persist_context,
+                        requested_by=auth["user_id"],
+                    )
+                else:
+                    release = held["status"] == "FAILED"
+                raise
+            if held is not None:
+                await asyncio.to_thread(_settle_held_registration, held["id"])
             release = True
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
         finally:

@@ -94,10 +94,11 @@ def _job_number_of(payload: dict) -> str | None:
     return None
 
 
-def _persist_register_po_from_context(context: dict, relay_result: dict, key: str) -> None:
+def _persist_register_po_from_context(context: dict, relay_result: dict, key: str):
+    """Also the online resolver's save (#1950), so a resume writes what GP was sent the way the queue does."""
     from app.schemas.po import _persist_register_po
 
-    _persist_register_po(
+    return _persist_register_po(
         key=key,
         po_id=uuid.UUID(context["po_id"]),
         gp_vendor_id=context["gp_vendor_id"],

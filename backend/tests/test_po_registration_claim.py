@@ -13,7 +13,13 @@ from app.errors import InvalidStateTransitionError, RelayCallError
 from app.models.enums import POStatus
 from app.repositories import po_repository
 from app.schemas import po as po_schema
-from tests.test_register_po_in_gp import _run_register, _stock_draft_po, _stub_the_register_resolvers_world
+from tests.test_register_po_in_gp import (
+    _delete_queued_write,
+    _queued_write,
+    _run_register,
+    _stock_draft_po,
+    _stub_the_register_resolvers_world,
+)
 
 
 def _register_input(draft, key):
@@ -80,7 +86,10 @@ def test_the_claim_is_released_when_gp_refuses(monkeypatch, db_session):
     assert po_repository.reload_po(db_session, draft.id).registering_key is None
 
 
-def test_the_claim_is_kept_when_gp_may_hold_the_po_but_nexus_did_not_record_it(monkeypatch, db_session):
+def test_a_registration_gp_took_that_failed_to_save_is_queued_from_what_gp_was_sent(monkeypatch, db_session):
+    """#1950: the attempt's key lived only in the dialog that pushed it, so once that closed nothing could
+    finish the PO GP had made. It is queued under the same key with what GP was sent; the held writes
+    panel's Retry saves it from there, and the queued row holds the draft in place of the claim."""
     draft = _stock_draft_po(db_session)
     key = str(uuid.uuid4())
 
@@ -92,7 +101,39 @@ def test_the_claim_is_kept_when_gp_may_hold_the_po_but_nexus_did_not_record_it(m
 
     _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
     monkeypatch.setattr(po_schema, "_persist_register_po", _persist_fails)
-    with pytest.raises(RuntimeError):
+    try:
+        with pytest.raises(RuntimeError):
+            _run_register(draft, key)
+
+        queued = _queued_write(key)
+        assert (queued["op"], queued["status"], queued["maybe_in_gp"]) == ("register_po_in_gp", "PENDING", True)
+        assert queued["persist_context"]["po_id"] == str(draft.id)
+        assert queued["persist_context"]["line_items_data"][0]["unit_cost"] == float(draft.line_items[0].unit_cost)
+        assert po_repository.reload_po(db_session, draft.id).registering_key is None
+        # Another window is refused by the queued row rather than pushing a second PO.
+        with pytest.raises(InvalidStateTransitionError, match="queued"):
+            po_repository.claim_po_registration(db_session, draft.id, str(uuid.uuid4()))
+    finally:
+        _delete_queued_write(key)
+
+
+def test_the_claim_is_kept_when_the_registration_gp_took_could_not_be_queued(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        return {"po_number": "0001275", "company": "TUBC"}
+
+    def _persist_fails(**kw):
+        raise RuntimeError("database went away")
+
+    def _queue_fails(**kw):
+        raise RuntimeError("still away")
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    monkeypatch.setattr(po_schema, "_persist_register_po", _persist_fails)
+    monkeypatch.setattr(po_schema.gp_outbox_enqueue, "enqueue", _queue_fails)
+    with pytest.raises(RuntimeError, match="database went away"):
         _run_register(draft, key)
     assert po_repository.reload_po(db_session, draft.id).registering_key == key
     # Another window waits until it goes stale rather than pushing a second PO.
@@ -168,11 +209,56 @@ def test_once_the_answer_is_recorded_the_stale_claim_no_longer_blocks(db_session
     assert draft.registering_key == "later"
 
 
-def test_the_original_attempt_resumes_from_the_ledger_without_pushing_again(monkeypatch, db_session):
+def _held_write(session, draft, key, *, status="FAILED", unit_cost=7.25):
+    """The registration held under `key`, carrying what GP was sent: the draft's line at `unit_cost`."""
+    from app.repositories import gp_outbox_repository
+
+    line = draft.line_items[0]
+    row = gp_outbox_repository.enqueue(
+        session,
+        idempotency_key=key,
+        op="register_po_in_gp",
+        relay_op="create_po",
+        company="TUBC",
+        payload={"header": {}},
+        persist_context={
+            "po_id": str(draft.id),
+            "gp_vendor_id": "GPV1",
+            "vendor_name_snapshot": "GP Vendor",
+            "line_items_data": [
+                {
+                    "id": str(line.id),
+                    "hardware_category": line.hardware_category,
+                    "product_code": line.product_code,
+                    "ordered_quantity": line.ordered_quantity,
+                    "unit_cost": unit_cost,
+                    "classification": None,
+                    "order_as": None,
+                    "custom_inventory_item_id": None,
+                    "cost_code": None,
+                    "uofm": None,
+                    "job_cost": None,
+                }
+            ],
+            "cost_code": None,
+            "buyer_id": "mira",
+            "shipping_cost": None,
+            "tariff_amount": None,
+            "project_id": None,
+        },
+        entity_key=f"po:{draft.id}",
+        label="Register PO in GP",
+        maybe_in_gp=True,
+    )
+    row.status = status
+    row.failure_kind = "persist_failed" if status == "FAILED" else None
+    session.flush()
+    return row
+
+
+def _resume_world(monkeypatch, db_session, key, po_number):
     from app.services.gp_idempotency import IdempotencyState
 
-    draft = _stock_draft_po(db_session)
-    key = str(uuid.uuid4())
     pushes: list[str] = []
 
     async def _relay_call(company, op, payload=None, timeout=None):
@@ -181,18 +267,65 @@ def test_the_original_attempt_resumes_from_the_ledger_without_pushing_again(monk
 
     _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
     answered = IdempotencyState(
-        op="register_po_in_gp", relay_result={"po_number": "0001291", "company": "TUBC"}, result_id=None
+        op="register_po_in_gp", relay_result={"po_number": po_number, "company": "TUBC"}, result_id=None
     )
     # GP answered this attempt earlier; its persist failed then.
     monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: answered if k == key else None)
+    return pushes
+
+
+def test_the_original_attempt_resumes_from_what_gp_was_sent_without_pushing_again(monkeypatch, db_session):
+    """#1950: the resume saved this call's form over GP's answer. The form is sent at the draft's 10.00;
+    GP was sent 7.25, and that is what is recorded."""
+    from app.models.gp_outbox import GpWriteOutbox
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001291")
     po_repository.claim_po_registration(db_session, draft.id, key)
     _ledger(db_session, key, po_number="0001291")
+    held = _held_write(db_session, draft, key)
 
     result = _run_register(draft, key)
     assert pushes == []  # nothing sent to GP again
     assert result.purchase_order.po_number == "0001291"
     po = po_repository.reload_po(db_session, draft.id)
     assert po.status == POStatus.GP_REGISTERED
+    assert po.registering_key is None
+    assert [float(li.unit_cost) for li in po.line_items] == [7.25]
+    # The held write is finished, not left asking to be retried.
+    assert db_session.get(GpWriteOutbox, held.id).status == "SUCCEEDED"
+
+
+def test_a_resume_with_nothing_kept_of_what_gp_was_sent_is_refused(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001292")
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    _ledger(db_session, key, po_number="0001292")
+
+    with pytest.raises(InvalidStateTransitionError, match="0001292") as e:
+        _run_register(draft, key)
+    assert "Retry on the held GP writes panel" in e.value.message
+    assert pushes == []
+    po = po_repository.reload_po(db_session, draft.id)
+    assert po.status == POStatus.DRAFT
+    assert po.registering_key == key  # GP holds a PO for it, so the claim keeps holding the draft
+
+
+def test_a_resume_while_the_queue_is_finishing_it_answers_queued(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001293")
+    _ledger(db_session, key, po_number="0001293")
+    held = _held_write(db_session, draft, key, status="PENDING")
+
+    result = _run_register(draft, key)
+    assert result.queued is True
+    assert result.outbox_entry_id == str(held.id)
+    assert pushes == []
+    po = po_repository.reload_po(db_session, draft.id)
+    assert po.status == POStatus.DRAFT
     assert po.registering_key is None
 
 
