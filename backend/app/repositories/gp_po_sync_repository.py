@@ -209,8 +209,8 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
     is a job-cost line are GP-owned on every line without exception. hardware_category / product_code
     are the one pair decided per line: a NEXUS REGISTERED LINE keeps the schedule's own, anything else
     takes GP's item number and description. A line the mirror creates here starts unregistered,
-    because nothing has given it a schedule identity yet. Existing lines absent from GP are left
-    untouched rather than deleted, so mirrored inventory is never orphaned.
+    because nothing has given it a schedule identity yet. Existing lines absent from GP are never
+    deleted, so mirrored inventory is never orphaned; a line GP deleted is cancelled instead (#1913).
 
     A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
     one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
@@ -280,6 +280,19 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             li.unit_cost = unit_cost
             _apply_gp_line_identity(li, ln)
             _apply_gp_line_entry_fields(li, ln)
+
+    # #1913: a line deleted in GP is cancelled to what it received, like a line GP cancels to nothing
+    # above. Left alone it kept its ordered_quantity as phantom pending units and its ties held the
+    # schedule's units off every other PO. The read is the whole PO - the relay returns every line of
+    # each PO it names, and a read with no lines never gets here - so an ord missing from it is gone
+    # from GP. Held while a receipt is in flight, as received is (#1300); a line with no ord is not in
+    # GP yet and is not this loop's.
+    if gp_lines and not receipt_in_flight:
+        gp_ords = {ln["ord"] for ln in gp_lines}
+        for ord_, li in existing.items():
+            if ord_ not in gp_ords:
+                li.ordered_quantity = li.received_quantity
+                _release_line_ties_beyond(session, li.id, keep=li.received_quantity)
     return receipt_in_flight
 
 

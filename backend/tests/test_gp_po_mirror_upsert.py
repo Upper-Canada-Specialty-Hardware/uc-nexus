@@ -392,6 +392,96 @@ def test_a_line_whose_quantity_gp_leaves_alone_keeps_its_ties(db_session, projec
     assert _tied_and_available(db_session, project, line.id) == (5, 0)
 
 
+def test_a_line_gp_deleted_is_cancelled_to_what_arrived(db_session, project):
+    """#1913: a line GP deleted is cancelled like one GP cancelled to nothing - no phantom pending, and
+    only the units that arrived keep their ties."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO318", [_line(16384, "IT1", 5), _line(32768, "IT2", 5, received=2)]), pm
+    )
+    db_session.flush()
+    deleted = next(li for li in _get(db_session, "PO318").line_items if li.gp_line_ord == 32768)
+    _tie_schedule_rows(db_session, project, deleted, [5])
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO318", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+
+    assert (deleted.ordered_quantity, deleted.received_quantity) == (2, 2)
+    assert _tied_and_available(db_session, project, deleted.id) == (2, 3)
+
+
+def test_a_po_whose_remaining_lines_arrived_closes_once_gp_deletes_the_rest(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO319", [_line(16384, "IT1", 3, received=3), _line(32768, "IT2", 4)]), pm
+    )
+    db_session.flush()
+    assert _get(db_session, "PO319").status == POStatus.PARTIALLY_RECEIVED
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO319", [_line(16384, "IT1", 3, received=3)]), pm)
+    db_session.flush()
+
+    row = _get(db_session, "PO319")
+    assert row.status == POStatus.CLOSED
+    assert {li.gp_line_ord: li.ordered_quantity for li in row.line_items} == {16384: 3, 32768: 0}
+
+
+def test_a_line_not_in_gp_yet_is_left_alone(db_session, project):
+    """A line with no gp_line_ord has never been in GP, so GP not reporting it says nothing about it."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO321", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    row = _get(db_session, "PO321")
+    local = POLineItem(
+        id=uuid.uuid4(),
+        po_id=row.id,
+        gp_line_ord=None,
+        hardware_category="IT9",
+        product_code="IT9",
+        ordered_quantity=4,
+        received_quantity=0,
+        unit_cost=Decimal("1"),
+    )
+    db_session.add(local)
+    db_session.flush()
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO321", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+
+    assert local.ordered_quantity == 4
+
+
+def test_a_line_gp_deleted_is_held_while_a_receipt_is_in_flight(db_session, project):
+    """#1300's hold: the receipt landing may be for this very line, so nothing moves until it has."""
+    from app.repositories import gp_outbox_repository
+
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO322", [_line(16384, "IT1", 5), _line(32768, "IT2", 5)]), pm
+    )
+    db_session.flush()
+    row = _get(db_session, "PO322")
+    deleted = next(li for li in row.line_items if li.gp_line_ord == 32768)
+    _tie_schedule_rows(db_session, project, deleted, [5])
+    gp_outbox_repository.enqueue(
+        db_session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company=COMPANY,
+        payload={},
+        persist_context={},
+        entity_key=f"po:{row.id}",
+        label="Receipt",
+    )
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO322", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+
+    assert deleted.ordered_quantity == 5
+    assert _tied_and_available(db_session, project, deleted.id) == (5, 0)
+
+
 def test_received_never_reduced_below_stored(db_session, project):
     pm = _project_map(db_session)
     sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO311", [_line(16384, "IT1", 5, received=4)]), pm)
