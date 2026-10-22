@@ -3,7 +3,7 @@
 import httpx
 
 from app.config import CLERK_SECRET_KEY
-from app.demo import DEMO_MODE_METADATA_KEY, is_demo_company
+from app.demo import DEMO_MODE_METADATA_KEY, is_demo_company, may_use_demo_mode
 from app.errors import AppError, ConflictError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
@@ -217,9 +217,15 @@ def update_user_company(user_id: str, company: str | None) -> dict:
         # which leaves its real company where it is for when demo mode is turned off.
         raise ValidationError("DEMO is the demo company; turn on demo mode instead of assigning it.", field="company")
     patch: dict = {"company": cleaned}
-    previous = normalize_company(_public_metadata(user_id).get("company"))
+    metadata = _public_metadata(user_id)
+    previous = normalize_company(metadata.get("company"))
     if previous is not None and previous != cleaned:
         patch["gpBuyerId"] = None
+    if metadata.get(DEMO_MODE_METADATA_KEY) and not may_use_demo_mode(cleaned):
+        # #1658 / #1814: only an account working in a UBC company may be in demo mode, and the flag is
+        # what pins an account to DEMO whatever its company - so a move out of UBC, or a cleared company,
+        # takes it out of demo mode too, or it would keep reading UBC's copy from wherever it went.
+        patch[DEMO_MODE_METADATA_KEY] = None
     return _merge_public_metadata(user_id, patch)
 
 

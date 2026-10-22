@@ -65,6 +65,31 @@ def test_clearing_the_company_clears_the_buyer_id_too(monkeypatch):
     assert written == {"company": None, "gpBuyerId": None}
 
 
+def test_a_move_out_of_ubc_takes_the_account_out_of_demo_mode(monkeypatch):
+    """#1814: the flag pins an account to DEMO whatever its company, and only UBC's may be in it (#1658)."""
+    written = _capture(monkeypatch, {"company": "UBC", "demoMode": True})
+
+    user_repository.update_user_company("u_1", "UCSH")
+
+    assert written == {"company": "UCSH", "gpBuyerId": None, "demoMode": None}
+
+
+def test_a_move_between_ubc_companies_keeps_demo_mode(monkeypatch):
+    written = _capture(monkeypatch, {"company": "UBC", "demoMode": True})
+
+    user_repository.update_user_company("u_1", "TUBC")
+
+    assert "demoMode" not in written
+
+
+def test_clearing_the_company_takes_the_account_out_of_demo_mode(monkeypatch):
+    written = _capture(monkeypatch, {"company": "UBC", "demoMode": True})
+
+    user_repository.update_user_company("u_1", None)
+
+    assert written["demoMode"] is None
+
+
 def test_a_first_company_assignment_keeps_the_buyer_id(monkeypatch):
     written = _capture(monkeypatch, {"gpBuyerId": "JSMITH"})
 
