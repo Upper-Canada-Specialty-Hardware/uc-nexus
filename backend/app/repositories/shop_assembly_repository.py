@@ -290,8 +290,16 @@ def _has_shop_work_evidence(
     by_others: set[tuple[str, str]],
 ) -> bool:
     """#1442: a line is judged only on evidence - schedule rows for it on that opening, or a By Others
-    product. One whose opening holds no rows for it any more is the schedule replacement's business (#342)."""
+    product. One whose opening holds no rows for it any more is off the schedule instead (#1954)."""
     return key in by_classification or (key[1], key[2]) in by_others
+
+
+# #1954: a re-upload trims a pending request only of the openings it removed (#342), so a kept opening's
+# line still says what it was owed when the request was raised - and the schedule may since have dropped
+# the product from that opening, or lowered it. The review and the batch both hold a line to the opening's
+# schedule now: no rows for it is this reason, and the ceiling is what the schedule lists, gross - the
+# same figure the composer owes and a new request is held to (`_check_lines_against_schedule`).
+OFF_SCHEDULE_REASON = "this product is no longer on this opening's schedule, so there is nothing to assemble."
 
 
 def _refuse_if_not_shop_work(
@@ -587,14 +595,25 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
     available = warehouse_repository.get_available_quantities(session, request.project_id, combos)
     # #1540: the batch refuses a line that is no longer shop work (#1442); the review flags it first, from
     # the same facts read the same way - one grouped read for every pending opening - so its Send box is
-    # off with the reason instead of being refused after the manager has composed the batch.
-    _scheduled, by_classification, by_others = _schedule_facts(session, request.project_id, pending_numbers)
+    # off with the reason instead of being refused after the manager has composed the batch. #1954: the
+    # same for a line its opening's schedule no longer lists, and a line is offered no more than it lists.
+    scheduled, by_classification, by_others = _schedule_facts(session, request.project_id, pending_numbers)
+
+    def _key(item: ShopAssemblyRequestItem) -> tuple[str, str, str]:
+        return (item.opening_number, item.hardware_category, item.product_code)
 
     def _reason(item: ShopAssemblyRequestItem) -> str | None:
-        key = (item.opening_number, item.hardware_category, item.product_code)
-        if not _has_shop_work_evidence(key, by_classification, by_others):
-            return None
-        return not_shop_work_reason(key, by_classification, by_others)
+        key = _key(item)
+        if _has_shop_work_evidence(key, by_classification, by_others):
+            reason = not_shop_work_reason(key, by_classification, by_others)
+            if reason is not None:
+                return reason
+        return OFF_SCHEDULE_REASON if scheduled.get(key, 0) <= 0 else None
+
+    def _owed(item: ShopAssemblyRequestItem) -> int:
+        on_schedule = scheduled.get(_key(item), 0)
+        # An off-schedule line keeps what it was owed on show beside its reason; it takes nothing.
+        return min(item.requested_quantity, on_schedule) if on_schedule > 0 else item.requested_quantity
 
     return {
         "request": request,
@@ -606,7 +625,7 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
                         "opening_number": item.opening_number,
                         "hardware_category": item.hardware_category,
                         "product_code": item.product_code,
-                        "requested_quantity": item.requested_quantity,
+                        "requested_quantity": _owed(item),
                         "available_quantity": available.get((item.hardware_category, item.product_code), 0),
                         "not_shop_work_reason": _reason(item),
                     }
@@ -679,8 +698,8 @@ def create_shop_assembly_batch(
     # waiting openings, but not every path that changes it does - and batching it would pull site
     # hardware to the shop. Read after the request lock, so a change committed first is seen. Refused
     # only on evidence - schedule rows that are not shop work, or a By Others product: a line whose
-    # opening holds no rows for it any more is the schedule replacement's business (#342), not this.
-    _scheduled, by_classification, by_others = _schedule_facts(
+    # opening holds no rows for it any more is off the schedule, refused below.
+    scheduled, by_classification, by_others = _schedule_facts(
         session, request.project_id, {key[0] for key in allocations}
     )
     for key in sorted(allocations):
@@ -693,6 +712,21 @@ def create_shop_assembly_batch(
             then="Take the line off the batch.",
             field="lines",
         )
+    # #1954: and held to the opening's schedule now, not the request's snapshot of it - the review offers
+    # the same ceiling and flags the same lines, so only a screen older than the re-upload meets these.
+    for key in sorted(allocations):
+        on_schedule = scheduled.get(key, 0)
+        if on_schedule <= 0:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: {OFF_SCHEDULE_REASON} Take the line off the batch.",
+                field="lines",
+            )
+        if allocations[key] > on_schedule:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: cannot allocate {allocations[key]} - the opening's schedule now "
+                f"gives it {on_schedule}. {REFRESH_HINT}",
+                field="allocated_quantity",
+            )
 
     batch_openings = sorted({key[0] for key in allocations})
 
@@ -783,7 +817,7 @@ def create_shop_assembly_batch(
         opening.batch_id = batch.id
 
     # #1855: the schedule-changed note asks for a review before batching, and the batch is the manager
-    # acting on that review, against today's schedule (the #1442 check above) and stock. Nothing else
+    # acting on that review, against today's schedule (the #1442 and #1954 checks above) and stock. Nothing else
     # cleared it, so it stayed on the request for good.
     request.integrity_note = None
 

@@ -502,6 +502,62 @@ def test_the_batch_review_flags_a_line_that_is_no_longer_shop_work(db_session):
     assert reasons["HG-100"] is not None and "not shop hardware" in reasons["HG-100"]
 
 
+def _hg100_line(quantity: int) -> list[dict]:
+    return [
+        {"opening_number": "A01", "hardware_category": CAT, "product_code": "HG-100", "allocated_quantity": quantity}
+    ]
+
+
+def test_a_line_the_reupload_took_off_a_kept_opening_is_off_the_schedule(db_session):
+    """#1954: the re-upload keeps A01, so the request keeps its HG-100 line - but A01's schedule no longer
+    lists HG-100. The review says so and offers it nothing, and the batch refuses it."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+
+    _finalize(db_session, project, {"HG-200": Classification.SHOP_HARDWARE}, replace=True)
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
+    assert reasons["HG-200"] is None
+    assert reasons["HG-100"] == shop_assembly_repository.OFF_SCHEDULE_REASON
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(2), created_by="manager")
+    assert exc.value.field == "lines"
+    assert "no longer on this opening's schedule" in str(exc.value)
+
+
+def test_a_line_is_capped_at_what_the_openings_schedule_lists_now(db_session):
+    """#1954: the request was raised owing 2, and the re-upload lowered A01 to 1. The review offers 1 and the
+    batch refuses 2, rather than pulling a unit the schedule no longer asks for."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100"])
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01")],
+            "hardware_items": [_item("A01", "HG-100", qty=1)],
+            "classifications": [_classified("HG-100", Classification.SHOP_HARDWARE)],
+            "replace_schedule": True,
+        },
+        created_by="Pat PM",
+    )
+    db_session.flush()
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    (line,) = review["openings"][0]["lines"]
+    assert (line["requested_quantity"], line["not_shop_work_reason"]) == (1, None)
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(2), created_by="manager")
+    assert exc.value.field == "allocated_quantity"
+    assert "schedule now gives it 1" in str(exc.value)
+
+
 def _replace_with_by_others(session, project, codes: list[str], by_others: list[str]):
     import_repository.finalize_import_session(
         session,

@@ -89,7 +89,8 @@ export interface AllocationLine {
   /** Project-wide free stock for this product - a pool the openings compete for, not a share. */
   availableQuantity: number;
   /** #1540: why this line may not go on a batch (its product moved to site or By Others since the request
-   *  was raised), or null while it is still shop work. The batch refuses such a line, so it is never sent. */
+   *  was raised, or #1954 its opening's schedule no longer lists it), or null while it is still shop work.
+   *  The batch refuses such a line, so it is never sent. */
   notShopWorkReason?: string | null;
 }
 

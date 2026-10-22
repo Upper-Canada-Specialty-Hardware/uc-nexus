@@ -39,7 +39,7 @@ from app.repositories import (
 )
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_pull, batch_request, with_schedule
+from tests.shop_assembly_helpers import batch_pull, batch_request, schedule_for, shop_classifications, with_schedule
 
 # --- fixtures / helpers ------------------------------------------------------------------------
 
@@ -496,13 +496,16 @@ def test_a_zero_line_shipping_request_is_refused(db_session):
 # --- schedule re-upload ------------------------------------------------------------------------
 
 
-def _reupload(session, project, opening_numbers):
+def _reupload(session, project, opening_numbers, *, keep=None):
+    """A replacing re-upload of these openings. `keep` is request lines whose hardware the new schedule
+    still lists, as shop hardware; by default it lists none."""
     return import_repository.finalize_import_session(
         session,
         {
             "project_id": str(project.id),
             "openings": [{"opening_number": n} for n in opening_numbers],
-            "hardware_items": [],
+            "hardware_items": schedule_for(keep or []),
+            "classifications": shop_classifications(keep or []),
             "replace_schedule": True,
         },
     )
@@ -624,17 +627,15 @@ def test_batching_clears_the_schedule_changed_note_which_asks_for_a_review_befor
     the batch, the manager acting on it, clears it instead of leaving it on the request for good."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar = _finalize_sar(
-        db_session,
-        project,
-        items=[
-            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
-            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
-        ],
-    )["shop_assembly_request"]
+    items = [
+        {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+        {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
+    ]
+    sar = _finalize_sar(db_session, project, items=items)["shop_assembly_request"]
     db_session.flush()
 
-    _reupload(db_session, project, ["A01", "A02"])
+    # The same hardware again: a batch is held to the opening's schedule now (#1954).
+    _reupload(db_session, project, ["A01", "A02"], keep=items)
     db_session.flush()
     db_session.refresh(sar)
     assert sar.integrity_note.endswith("Review it before batching.")
