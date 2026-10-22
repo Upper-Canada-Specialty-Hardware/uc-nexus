@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
@@ -15,9 +15,14 @@ from app.models.enums import (
     DestockSource,
     InventoryEntrySource,
     PoolKind,
+    PullPickLineState,
+    PullRequestSource,
+    PullRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_item_type import InventoryItemType
+from app.models.pull_pick_line import PullPickLine
+from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
     clone_origin_fields,
@@ -242,6 +247,53 @@ def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, co
         )
 
 
+def _picked_not_shipped(session: Session, project_id: uuid.UUID) -> dict[tuple[str, str], int]:
+    """Units of each pair a pick took off the project's shelves that no packing slip carries (#1814).
+
+    A confirmed pick deducts the rows it names, so these units are no longer on hand, and until a slip
+    is cut they are not shipped out either. Three places hold them, none overlapping the others or a
+    slip: the staging pool (completed shipping-out pulls less what slips carried, the shipping
+    workspace's own figure), the shop (completed shop-assembly pulls, a terminal exit as on the
+    Hardware Status page), and a pull still in progress, whose applied pick lines are off the shelf
+    before the pull is handed over.
+    """
+    from app.repositories import shipping_repository
+
+    out: dict[tuple[str, str], int] = {}
+    for li in shipping_repository.get_ship_ready_items(session, project_id)["loose_items"]:
+        pair = (li["hardware_category"], li["product_code"])
+        out[pair] = out.get(pair, 0) + li["available_quantity"]
+
+    shop_stmt = (
+        select(
+            PullRequestItem.hardware_category,
+            PullRequestItem.product_code,
+            func.sum(PullRequestItem.requested_quantity),
+        )
+        .join(PullRequest, PullRequestItem.pull_request_id == PullRequest.id)
+        .where(
+            PullRequest.project_id == project_id,
+            PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequest.status == PullRequestStatus.COMPLETED,
+        )
+        .group_by(PullRequestItem.hardware_category, PullRequestItem.product_code)
+    )
+    picking_stmt = (
+        select(PullPickLine.hardware_category, PullPickLine.product_code, func.sum(PullPickLine.quantity))
+        .join(PullRequest, PullPickLine.pull_request_id == PullRequest.id)
+        .where(
+            PullRequest.project_id == project_id,
+            PullRequest.status == PullRequestStatus.IN_PROGRESS,
+            PullPickLine.state == PullPickLineState.APPLIED,
+        )
+        .group_by(PullPickLine.hardware_category, PullPickLine.product_code)
+    )
+    for stmt in (shop_stmt, picking_stmt):
+        for category, code, quantity in session.execute(stmt).all():
+            out[(category, code)] = out.get((category, code), 0) + int(quantity or 0)
+    return out
+
+
 def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, project_id: uuid.UUID) -> dict:
     """Where a pool row's units can go on a project (#1647), for the allocate dialog's pair picker.
 
@@ -249,7 +301,9 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
     is exempt and goes under its own pair. `has_schedule` is False for a project with no schedule yet,
     whose allocation lands as floating inventory. `pairs` is every pair on the schedule with what it
     still needs: required, less what the project holds sound, what is on order and not yet received,
-    and what has already shipped out. Two grouped reads that already exist, joined in Python by pair.
+    what has already shipped out, and what a pick took off the shelf that has not shipped yet - staged,
+    at the shop, or on a pull still in progress (#1814). Grouped reads that already exist plus two
+    more, joined in Python by pair.
     """
     from app.models.project import Project as ProjectModel
 
@@ -264,10 +318,13 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
         (r["hardware_category"], r["product_code"]): r["on_hand_quantity"] - r["deficient_quantity"]
         for r in get_project_availability(session, project_id)
     }
+    # #1814: units picked for the project and not yet on a slip are in neither on hand nor shipped out,
+    # so without them a job whose hardware sits staged for a truck read as still needing all of it.
+    picked = _picked_not_shipped(session, project_id)
     pairs = []
     for row in get_project_progress_by_product(session, project_id):
         pair = (row["hardware_category"], row["product_code"])
-        covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"]
+        covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"] + picked.get(pair, 0)
         pairs.append(
             {
                 "hardware_category": row["hardware_category"],

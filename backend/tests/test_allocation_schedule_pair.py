@@ -12,12 +12,22 @@ from decimal import Decimal
 import pytest
 
 from app.errors import ValidationError
-from app.models.enums import HardwareItemState, POStatus
+from app.models.enums import (
+    HardwareItemState,
+    POStatus,
+    PullPickLineState,
+    PullRequestSource,
+    PullRequestStatus,
+    ShipmentStatus,
+)
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import InventoryItemType
 from app.models.project import Opening
+from app.models.pull_pick_line import PullPickLine
+from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.models.shipping import PackingSlip, PackingSlipItem
 from app.repositories import stock as stock_repository
 
 from .inventory_fixtures import make_project, make_stock_item, wh_id
@@ -210,3 +220,105 @@ def test_targets_for_a_type_code_pool_row(db_session):
     targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
 
     assert targets["schedule_hardware"] is False
+
+
+def _pulled(session, project, source, status, category, code, quantity, *, applied=None):
+    """A pull of `quantity` units whose pick already took them off the shelf. `applied` adds the pick
+    lines a pull still in progress carries."""
+    pr = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"PR-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        source=source,
+        status=status,
+        requested_by="tester",
+    )
+    session.add(pr)
+    session.flush()
+    session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            opening_number=None,
+            hardware_category=category,
+            product_code=code,
+            requested_quantity=quantity,
+        )
+    )
+    if applied:
+        session.add(
+            PullPickLine(
+                id=uuid.uuid4(),
+                pull_request_id=pr.id,
+                hardware_category=category,
+                product_code=code,
+                quantity=applied,
+                state=PullPickLineState.APPLIED,
+                entered_by="picker",
+                applied_at=datetime.utcnow(),
+            )
+        )
+    session.flush()
+
+
+def _slipped(session, project, category, code, quantity):
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        shipped_by="shipper",
+        shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.DELIVERED,
+    )
+    session.add(slip)
+    session.flush()
+    session.add(
+        PackingSlipItem(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            opening_number=None,
+            hardware_category=category,
+            product_code=code,
+            quantity=quantity,
+        )
+    )
+    session.flush()
+
+
+def _needed(session, project, si) -> dict:
+    targets = stock_repository.get_allocation_targets(session, stock_item_id=si.id, project_id=project.id)
+    return {(p["hardware_category"], p["product_code"]): p["still_needed_quantity"] for p in targets["pairs"]}
+
+
+def test_hardware_staged_for_a_truck_is_not_still_needed(db_session):
+    """#1814: all 10 picked into staging leaves nothing on hand, on order or shipped, and is covered."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 10))
+    _pulled(db_session, project, PullRequestSource.SHIPPING_OUT, PullRequestStatus.COMPLETED, "HINGE", "HG-100", 10)
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    assert _needed(db_session, project, si) == {("HINGE", "HG-100"): 0}
+
+
+def test_picked_hardware_is_counted_once_wherever_it_is(db_session):
+    """Staged and then partly slipped, pulled to the shop, or picked on a pull not yet handed over:
+    each unit counts once, so what is left is exactly what no pick and no shelf covers."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 20))
+    _pulled(db_session, project, PullRequestSource.SHIPPING_OUT, PullRequestStatus.COMPLETED, "HINGE", "HG-100", 6)
+    _slipped(db_session, project, "HINGE", "HG-100", 2)  # 2 shipped, 4 still staged
+    _pulled(db_session, project, PullRequestSource.SHOP_ASSEMBLY, PullRequestStatus.COMPLETED, "HINGE", "HG-100", 3)
+    _pulled(
+        db_session,
+        project,
+        PullRequestSource.SHOP_ASSEMBLY,
+        PullRequestStatus.IN_PROGRESS,
+        "HINGE",
+        "HG-100",
+        5,
+        applied=2,
+    )
+    _pulled(db_session, project, PullRequestSource.SHIPPING_OUT, PullRequestStatus.CANCELLED, "HINGE", "HG-100", 4)
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    assert _needed(db_session, project, si) == {("HINGE", "HG-100"): 20 - 6 - 3 - 2}
