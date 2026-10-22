@@ -565,6 +565,9 @@ def merge_locations(
                 InventoryLocationModel.aisle == from_aisle,
                 _matches_from(InventoryLocationModel.row, from_row),
                 _matches_from(InventoryLocationModel.bay, from_bay),
+                # #1882: as on the pool side (#1587) - an emptied row is hidden where it is, and moving it
+                # would only write a move nobody made and count it as merged.
+                _holds_something(InventoryLocationModel),
             )
             .order_by(InventoryLocationModel.id)
             .with_for_update()
