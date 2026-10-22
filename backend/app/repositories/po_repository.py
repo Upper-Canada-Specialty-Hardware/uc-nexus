@@ -939,8 +939,9 @@ def _link_available_items(
     asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit.
 
     Only a row's scheduled units are tied (#1814): its units past the latest schedule (#1491) are not in
-    `_available_schedule_units`, the cap on `quantity`, so tying them would leave as many scheduled units
-    AVAILABLE and still to purchase. They stay behind in the split-off part."""
+    `_available_schedule_units_by_product`, the cap on `quantity`, so tying them would leave as many
+    scheduled units AVAILABLE and still to purchase. They stay behind in the split-off part. So the units
+    linked are exactly what that figure loses, which a caller tying several lines counts down by."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -1038,29 +1039,38 @@ def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, k
     return released
 
 
-def _available_schedule_units(
+def _available_schedule_units_by_product(
     session: Session,
     *,
     project_id: uuid.UUID,
-    hardware_category: str,
-    product_code: str,
-) -> int:
-    """How many units of a project's schedule combo are still AVAILABLE - not yet on any PO. The
-    ceiling on what a NEXUS REGISTERED LINE may tie, and the number `_link_available_items` draws
-    from."""
+    products: set[tuple[str, str]],
+) -> dict[tuple[str, str], int]:
+    """How many units of each of a project's schedule combos are still AVAILABLE - not yet on any PO.
+    The ceiling on what a NEXUS REGISTERED LINE may tie, and the number `_link_available_items` draws
+    from. One grouped read for every product a save names (#1891), not one per line; a combo with
+    nothing available is absent."""
     from app.models.hardware import HardwareItem
 
+    if not products:
+        return {}
     # #1491: a released row's units past the latest schedule are not units the schedule still needs, the
     # same figure get_project_schedule_products shows the panel as the cap.
-    total = session.scalar(
-        select(func.coalesce(func.sum(HardwareItem.item_quantity - HardwareItem.beyond_schedule_quantity), 0)).where(
+    rows = session.execute(
+        select(
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            func.sum(HardwareItem.item_quantity - HardwareItem.beyond_schedule_quantity),
+        )
+        .where(
             HardwareItem.project_id == project_id,
-            HardwareItem.hardware_category == hardware_category,
-            HardwareItem.product_code == product_code,
+            HardwareItem.product_code.in_({code for _, code in products}),
             HardwareItem.state == HardwareItemState.AVAILABLE,
         )
-    )
-    return int(total or 0)
+        .group_by(HardwareItem.hardware_category, HardwareItem.product_code)
+    ).all()
+    # Narrowed by code in SQL and by the pair here: a save names a handful of products, so the rows of a
+    # code under a category nobody named are few.
+    return {(category, code): int(total or 0) for category, code, total in rows if (category, code) in products}
 
 
 def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
@@ -1152,6 +1162,11 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
     tied = 0
     # Units each schedule product has given earlier entries of this same save, for the refusal below.
     tied_here: dict[tuple[str, str], int] = {}
+    # #1891: what every line already has tied, and what every product the save names still has
+    # available, are each read once, on the first entry that ties, and counted down here as entries
+    # tie - not re-read per line. The project lock above keeps anyone else from moving either.
+    tied_by_line: dict[uuid.UUID, int] | None = None
+    available_by_product: dict[tuple[str, str], int] | None = None
     for entry in lines:
         line = by_id.get(entry["po_line_item_id"])
         if line is None:
@@ -1188,16 +1203,21 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
         if po.project_id is not None and quantity:
             # What is already tied counts against what is outstanding, so a registered line can be
             # topped up later (#1128) without tying more than it still has coming (#1371, #1398).
-            already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
+            if tied_by_line is None:
+                tied_by_line = tied_units_by_line(session, list(by_id))
+                available_by_product = _available_schedule_units_by_product(
+                    session,
+                    project_id=po.project_id,
+                    products={
+                        ((e.get("hardware_category") or "").strip(), (e.get("product_code") or "").strip())
+                        for e in lines
+                    },
+                )
+            already_tied = tied_by_line.get(line.id, 0)
             # A first registration records what had arrived; a re-registration uses what was recorded.
             before = line.received_before_registration if line.nexus_registered else line.received_quantity
             outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied, before)
-            available = _available_schedule_units(
-                session,
-                project_id=po.project_id,
-                hardware_category=hardware_category,
-                product_code=product_code,
-            )
+            available = available_by_product.get((hardware_category, product_code), 0)
             cap = min(outstanding, available)
             if quantity > cap:
                 # #1372: two lines for one product draw on one schedule. Say when earlier lines of this
@@ -1235,6 +1255,8 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             tied += linked
             key = (hardware_category, product_code)
             tied_here[key] = tied_here.get(key, 0) + linked
+            tied_by_line[line.id] = tied_by_line.get(line.id, 0) + linked
+            available_by_product[key] = available_by_product.get(key, 0) - linked
 
     session.flush()
     return po, tied

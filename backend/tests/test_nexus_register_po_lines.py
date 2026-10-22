@@ -484,6 +484,76 @@ def test_two_lines_for_one_product_split_the_schedule_between_them(db_session, p
     assert (_tied_units(db_session, first), _tied_units(db_session, second)) == (5, 2)
 
 
+def test_a_save_reads_ties_and_available_units_once_whatever_its_lines(db_session, project):
+    """#1891: three tying lines over two products read what is tied and what is available once each,
+    and count them down between lines - not two reads per line. The countdown is what lets the second
+    line for a product take only what the first left."""
+    from sqlalchemy import event
+
+    _schedule_rows(db_session, project, [1] * 4)
+    for n in range(2):
+        opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"1{n:02d}")
+        db_session.add(opening)
+        db_session.flush()
+        db_session.add(
+            HardwareItem(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                opening_id=opening.id,
+                hardware_category=CATEGORY,
+                product_code="HG-200",
+                item_quantity=1,
+                state=HardwareItemState.AVAILABLE,
+            )
+        )
+    po, first = _mirrored_po(db_session, project=project, ordered=2)
+    others = []
+    for ord_ in (32768, 49152):
+        line = POLineItem(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            gp_line_ord=ord_,
+            hardware_category="HD 001 HINGE 4.5 X 4.5",
+            product_code="HD 001",
+            ordered_quantity=2,
+            received_quantity=0,
+            unit_cost=Decimal("10.00"),
+            nexus_registered=False,
+        )
+        db_session.add(line)
+        others.append(line)
+    db_session.flush()
+    second, third = others
+
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        _po, tied = po_repository.nexus_register_po_lines(
+            db_session,
+            po.id,
+            [
+                _entry(first, tie_quantity=2),
+                _entry(second, tie_quantity=2),
+                _entry(third, product_code="HG-200", tie_quantity=2),
+            ],
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+
+    sums = [s for s in statements if "sum(hardware_items.item_quantity" in s]
+    assert len(sums) == 2, sums
+    assert tied == 6
+    assert [_tied_units(db_session, line) for line in (first, second, third)] == [2, 2, 2]
+
+    # The first save took all four HG-100 units, so a fresh save sees none left.
+    with pytest.raises(ValidationError, match="0 still available"):
+        po_repository.nexus_register_po_lines(db_session, po.id, [_entry(first, tie_quantity=1)])
+
+
 def test_tied_units_by_line_sums_each_line_in_one_read(db_session, project):
     _schedule_rows(db_session, project, [2, 2, 2])
     po, line = _mirrored_po(db_session, project=project, ordered=6)
