@@ -245,6 +245,16 @@ def _persist_health(jobs: list[dict], company: str) -> int:
     return stamped
 
 
+def _health_checked_jobs(jobs: list[dict]) -> list:
+    """The listed jobs whose GP setup is worth a read (#1875): the active ones.
+
+    Since #730 a mirroring relay's list is GP's full job record, closed history included, and each job
+    checked costs one GP read from the shared budget - a company's years of closed jobs were spending
+    it on every pass. Only an ACTIVE job takes Nexus writes, so only its verdict gates anything. A job
+    the list carries no state for (an older relay's list, number and name only) is checked as before."""
+    return [j.get("job_number") for j in jobs if str(j.get("gp_job_state") or "").strip().lower() in ("", "active")]
+
+
 async def _stamp_setup_health(company: str, job_numbers: list[str], *, background: bool = False) -> None:
     """Ask the relay for each job's GP setup verdict and record it (#425), in batches.
 
@@ -383,7 +393,7 @@ async def run_once(*, background: bool = False, only_company: str | None = None)
             )
             total += company_total
             adopted += company_adopted
-            await _stamp_setup_health(company, [j.get("job_number") for j in jobs], background=background)
+            await _stamp_setup_health(company, _health_checked_jobs(jobs), background=background)
             # Stamped where the company's pass finished, so a company whose read failed keeps the
             # record of the last one that worked rather than claiming this one did.
             _last_run[company] = {"at": datetime.utcnow(), "total": company_total, "adopted": company_adopted}
