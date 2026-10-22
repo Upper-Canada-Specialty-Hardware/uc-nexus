@@ -576,7 +576,10 @@ describe("POGenerateDialog waits for GP's figures and saves only what the buyer 
     expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeDisabled();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeEnabled());
+    // GP answers after 1.5s here, past waitFor's default wait.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeEnabled(), {
+      timeout: 5000,
+    });
     expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeEnabled();
   });
 
