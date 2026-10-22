@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -37,6 +37,7 @@ import { rackLabel, racksCaption, useProjectRacks } from './racks';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
 // same module rather than a second copy that can drift (#613).
 import {
+  HISTORY_PAGE_SIZE,
   STAGE_COLOR,
   STAGE_LABEL,
   STAGE_ORDER,
@@ -168,18 +169,54 @@ export default function ShippingRequestsPage() {
   // person who raised a request should still see what happens to it next. Editing a pending request
   // stays open to everyone, because correcting your own request is not a review.
   const canManage = ownsTenant || hasRole('Shipping Manager');
-  const { data, loading, error, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
+  const paged = view === 'APPROVED' || view === 'REJECTED';
+  const { data, loading, error, refetch, fetchMore } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
       variables:
         view === 'OPEN'
           ? { projectId: projectId ?? null, status: null, openOnly: true }
-          : { projectId: projectId ?? null, status: view, openOnly: false },
+          : paged
+            ? {
+                projectId: projectId ?? null,
+                status: view,
+                openOnly: false,
+                limit: HISTORY_PAGE_SIZE,
+                offset: 0,
+                newestFirst: true,
+              }
+            : { projectId: projectId ?? null, status: view, openOnly: false },
       fetchPolicy: 'cache-and-network',
     },
   );
 
   const requests = useMemo(() => data?.shippingOutRequests ?? [], [data]);
+
+  // Where a Load more came back short, per tab and project: a full page that turns out to be the last
+  // offers no more, and a changed tab or project, or a refetch back to the first page, offers it again.
+  const listKey = `${view}:${projectId ?? ''}`;
+  const [endAt, setEndAt] = useState<{ key: string; count: number } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const hasMore =
+    paged &&
+    requests.length > 0 &&
+    requests.length % HISTORY_PAGE_SIZE === 0 &&
+    !(endAt?.key === listKey && endAt.count === requests.length);
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: requests.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          shippingOutRequests: [...(prev.shippingOutRequests ?? []), ...(fetchMoreResult?.shippingOutRequests ?? [])],
+        }),
+      });
+      const got = res.data?.shippingOutRequests?.length ?? 0;
+      if (got < HISTORY_PAGE_SIZE) setEndAt({ key: listKey, count: requests.length + got });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   // One count per rung over the accepted requests already in hand - the stage is on every row, so the
   // ladder is a reduction over the list, not a second query.
@@ -324,6 +361,17 @@ export default function ShippingRequestsPage() {
           )
         }
       />
+
+      {hasMore && (
+        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+            Showing the newest {requests.length} - older requests exist.
+          </Typography>
+          <Button size="small" variant="outlined" onClick={handleLoadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 }

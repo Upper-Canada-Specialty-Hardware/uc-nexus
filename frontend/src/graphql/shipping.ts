@@ -494,9 +494,25 @@ export const MARK_SHIPMENT_DELIVERED = gql`
   }
 `;
 
+// The Accepted and Rejected tabs page with limit/offset, newest first (#1888); the Pending and Open
+// views send neither and read every request they hold.
 export const GET_SHIPPING_OUT_REQUESTS = gql`
-  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus, $openOnly: Boolean = false) {
-    shippingOutRequests(projectId: $projectId, status: $status, openOnly: $openOnly) {
+  query GetShippingOutRequests(
+    $projectId: ID
+    $status: ShippingOutRequestStatus
+    $openOnly: Boolean = false
+    $limit: Int
+    $offset: Int
+    $newestFirst: Boolean
+  ) {
+    shippingOutRequests(
+      projectId: $projectId
+      status: $status
+      openOnly: $openOnly
+      limit: $limit
+      offset: $offset
+      newestFirst: $newestFirst
+    ) {
       id
       requestNumber
       projectId

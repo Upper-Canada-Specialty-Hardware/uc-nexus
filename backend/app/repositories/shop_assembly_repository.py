@@ -335,6 +335,9 @@ def get_shop_assembly_requests(
     *,
     company: str | None = None,
     include_lines: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_first: bool = False,
 ) -> list[ShopAssemblyRequest]:
     """List shop-assembly requests for the requests page. Defaults to PENDING.
 
@@ -344,6 +347,11 @@ def get_shop_assembly_requests(
 
     include_lines=False loads the batches alone - all a stage needs (`_stage_for`) - and leaves the
     items, openings and batch items unloaded (#1856). Only for a caller that reads none of them.
+
+    The Worked and Rejected tabs page here (#1888), as pull history does (#1268): those requests only
+    accumulate, so they read newest first (approved or rejected at, id as the tiebreak) a page at a time
+    instead of every one and its children on each visit. `limit` None keeps the unpaged, oldest-first
+    read the Pending board relies on.
     """
     effective_status = status if status is not None else ShopAssemblyRequestStatus.PENDING
     options = (
@@ -359,9 +367,15 @@ def get_shop_assembly_requests(
         select(ShopAssemblyRequest)
         .options(*options)
         .where(ShopAssemblyRequest.status == effective_status)
-        .order_by(ShopAssemblyRequest.created_at.asc())
         .execution_options(populate_existing=True)
     )
+    if newest_first:
+        decided_at = func.coalesce(
+            ShopAssemblyRequest.rejected_at, ShopAssemblyRequest.approved_at, ShopAssemblyRequest.created_at
+        )
+        stmt = stmt.order_by(decided_at.desc(), ShopAssemblyRequest.id.desc())
+    else:
+        stmt = stmt.order_by(ShopAssemblyRequest.created_at.asc())
     if project_id is not None:
         stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
     if company is not None:
@@ -379,6 +393,8 @@ def get_shop_assembly_requests(
             )
         )
         stmt = stmt.where(discardable.exists())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 

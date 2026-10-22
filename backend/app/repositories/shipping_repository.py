@@ -989,6 +989,9 @@ def get_shipping_out_requests(
     *,
     company: str | None = None,
     open_only: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_first: bool = False,
 ) -> list[ShippingOutRequest]:
     """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
     given. Items are eagerly loaded (shipping_out_request_to_type walks them).
@@ -998,13 +1001,21 @@ def get_shipping_out_requests(
     so it lists exactly the requests Reopen can act on, not every request ever accepted.
 
     open_only (#1551): every open request whatever its status - pending ones and accepted ones whose pull
-    is still in flight - by the clause the project page's tile counts with. `status` is ignored with it."""
+    is still in flight - by the clause the project page's tile counts with. `status` is ignored with it.
+
+    The Accepted and Rejected tabs page here (#1888), as pull history does (#1268): those requests only
+    accumulate, so they read newest first (accepted or rejected at, id as the tiebreak) a page at a time
+    instead of every one and its items on each visit. `limit` None keeps the unpaged, oldest-first read
+    the Pending and Open views rely on."""
     effective_status = status if status is not None else ShippingOutRequestStatus.PENDING
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .order_by(ShippingOutRequest.created_at.asc())
-    )
+    stmt = select(ShippingOutRequest).options(selectinload(ShippingOutRequest.items))
+    if newest_first:
+        decided_at = func.coalesce(
+            ShippingOutRequest.rejected_at, ShippingOutRequest.approved_at, ShippingOutRequest.created_at
+        )
+        stmt = stmt.order_by(decided_at.desc(), ShippingOutRequest.id.desc())
+    else:
+        stmt = stmt.order_by(ShippingOutRequest.created_at.asc())
     if open_only:
         stmt = stmt.outerjoin(PullRequestModel, PullRequestModel.id == ShippingOutRequest.pull_request_id).where(
             open_request_clause()
@@ -1021,6 +1032,8 @@ def get_shipping_out_requests(
         stmt = stmt.join(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id).where(
             PullRequestModel.status == PullRequestStatus.PENDING
         )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 

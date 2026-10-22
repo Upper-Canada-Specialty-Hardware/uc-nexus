@@ -59,6 +59,7 @@ from .inputs import (
     ShippingOutPRDraftItemInput,
     UpdateShipmentDetailsInput,
 )
+from .limits import cap_limit, cap_offset
 from .types import (
     PackingSlip,
     ProductRackLocations,
@@ -316,18 +317,31 @@ class ShippingQueries:
         status: ShippingOutRequestStatus | None = None,
         reopenable_only: bool = False,
         open_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[ShippingOutRequest]:
         """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on. openOnly (#1551) lists every
         open request - pending, or accepted with its pull in flight - whatever `status` says: what the
-        project page's open requests tile counts."""
+        project page's open requests tile counts. The Accepted and Rejected tabs page with
+        `limit`/`offset` and `newestFirst` (#1888); without a limit the read is unpaged, as the Pending
+        and Open views want."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             reqs = shipping_repository.get_shipping_out_requests(
-                session, pid, status, reopenable_only, company=scope, open_only=open_only
+                session,
+                pid,
+                status,
+                reopenable_only,
+                company=scope,
+                open_only=open_only,
+                limit=cap_limit(limit) if limit is not None else None,
+                offset=cap_offset(offset),
+                newest_first=newest_first,
             )
             return _requests_to_types(session, reqs)
 

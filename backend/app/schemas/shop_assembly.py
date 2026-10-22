@@ -16,6 +16,7 @@ from app.services import notification_service
 from .converters import shop_assembly_allocation_review_to_type, shop_assembly_request_to_type
 from .enums import ShopAssemblyRequestStatus
 from .inputs import CreateShopAssemblyBatchInput
+from .limits import cap_limit, cap_offset
 from .types import ShopAssemblyAllocationReview, ShopAssemblyRequest
 
 # The request's own columns plus its stage: what a read may ask for and still take the light path
@@ -98,12 +99,16 @@ class ShopAssemblyQueries:
         project_id: strawberry.ID | None = None,
         status: ShopAssemblyRequestStatus | None = None,
         reopenable_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[ShopAssemblyRequest]:
         """Shop-assembly requests for a project, PENDING by default.
 
         reopenableOnly keeps only requests carrying a batch whose pull is still PENDING - the
         Accepted view uses it so it lists only requests a discard can still act on. Open to any
-        signed-in user.
+        signed-in user. The Worked and Rejected tabs page with `limit`/`offset` and `newestFirst`
+        (#1888); without a limit the read is unpaged, as the Pending board wants.
         """
         with SessionLocal() as session:
             scope = tenant_scope(info)
@@ -111,7 +116,15 @@ class ShopAssemblyQueries:
             tenancy.require_project_in_scope(session, pid, scope)
             light = _asks_only_for_light_fields(info)
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, pid, status, reopenable_only, company=scope, include_lines=not light
+                session,
+                pid,
+                status,
+                reopenable_only,
+                company=scope,
+                include_lines=not light,
+                limit=cap_limit(limit) if limit is not None else None,
+                offset=cap_offset(offset),
+                newest_first=newest_first,
             )
             return _requests_to_types(session, reqs, include_lines=not light)
 
