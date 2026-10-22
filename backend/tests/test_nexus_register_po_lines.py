@@ -309,6 +309,42 @@ def test_the_row_that_would_overshoot_is_split_so_the_exact_quantity_ties(db_ses
     assert total == 12
 
 
+@pytest.mark.parametrize(
+    ("beyond", "tied_by_opening"),
+    [
+        ([4, 0], {"002": 4}),  # the first opening's row is all past the schedule: the second one ties
+        ([2, 2], {"001": 2, "002": 2}),  # each row is half surplus: each ties its scheduled half
+    ],
+)
+def test_a_tie_takes_scheduled_units_and_leaves_the_surplus_available(db_session, project, beyond, tied_by_opening):
+    """#1814: rows released with units past the latest schedule (#1491) still carry them. The cap counts
+    scheduled units only, so the tie takes those, not the oldest opening's surplus."""
+    rows = _schedule_rows(db_session, project, [4, 4])
+    for hi, b in zip(rows, beyond, strict=True):
+        hi.beyond_schedule_quantity = b
+    db_session.flush()
+    po, line = _mirrored_po(db_session, project=project, ordered=4)
+
+    _po, tied = po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=4)])
+    db_session.flush()
+
+    assert tied == 4
+    numbers = {
+        o.id: o.opening_number for o in db_session.scalars(select(Opening).where(Opening.project_id == project.id))
+    }
+    all_rows = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    on_line = [hi for hi in all_rows if hi.po_line_item_id == line.id]
+    by_opening: dict[str, int] = {}
+    for hi in on_line:
+        by_opening[numbers[hi.opening_id]] = by_opening.get(numbers[hi.opening_id], 0) + hi.item_quantity
+    assert by_opening == tied_by_opening
+    assert sum(hi.beyond_schedule_quantity for hi in on_line) == 0
+    # Every unit is still on the schedule, and the surplus waits AVAILABLE where it was.
+    available = [hi for hi in all_rows if hi.state == HardwareItemState.AVAILABLE]
+    assert sum(hi.item_quantity for hi in all_rows) == 8
+    assert sum(hi.item_quantity for hi in available) == sum(hi.beyond_schedule_quantity for hi in available) == 4
+
+
 def test_a_registered_line_can_be_topped_up_to_what_is_untied_and_no_further(db_session, project):
     _schedule_rows(db_session, project, [1] * 10)
     po, line = _mirrored_po(db_session, project=project, ordered=10)

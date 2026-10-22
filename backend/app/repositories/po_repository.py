@@ -925,12 +925,16 @@ def _link_available_items(
 ) -> int:
     """Greedily attach `quantity` units of a schedule combo to a PO line for coverage tracking
     (gp-owned-po mirror). Marks AVAILABLE HardwareItem rows for the project IN_PO with po_line_item_id,
-    oldest opening first. Returns the units actually linked, which is `quantity` whenever that many are
-    AVAILABLE.
+    oldest opening first. Returns the units actually linked, which is `quantity` whenever that many
+    scheduled units are AVAILABLE.
 
     The row that would overshoot is split (#1128): the part the line needs goes IN_PO and the rest stays
     behind as an AVAILABLE row on the same opening. Skipping it instead, as this used to, left a line
-    asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit."""
+    asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit.
+
+    Only a row's scheduled units are tied (#1814): its units past the latest schedule (#1491) are not in
+    `_available_schedule_units`, the cap on `quantity`, so tying them would leave as many scheduled units
+    AVAILABLE and still to purchase. They stay behind in the split-off part."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -956,13 +960,16 @@ def _link_available_items(
     linked = 0
     remaining = quantity
     for hi in rows:
-        if hi.item_quantity > remaining:
-            session.add(_split_off_hardware_row(hi, hi.item_quantity - remaining))
-            hi.item_quantity = remaining
+        take = min(remaining, hi.item_quantity - (hi.beyond_schedule_quantity or 0))
+        if take <= 0:
+            continue
+        if hi.item_quantity > take:
+            session.add(_split_off_hardware_row(hi, hi.item_quantity - take))
+            hi.item_quantity = take
         hi.state = HardwareItemState.IN_PO
         hi.po_line_item_id = po_line_item_id
-        remaining -= hi.item_quantity
-        linked += hi.item_quantity
+        remaining -= take
+        linked += take
         if remaining <= 0:
             break
     return linked
@@ -971,8 +978,13 @@ def _link_available_items(
 def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, keep: int) -> int:
     """Release the schedule rows tied to a PO line beyond its first `keep` units back to AVAILABLE
     (#1167), the reverse of `_link_available_items`: rows are kept in its order (oldest opening first)
-    and the row that straddles `keep` is split, its kept part staying IN_PO and the rest going back as an
-    AVAILABLE row on the same opening. Returns the units released."""
+    and a row kept in part is split, its kept part staying IN_PO and the rest going back as an AVAILABLE
+    row on the same opening. Returns the units released.
+
+    Scheduled units are kept before surplus ones (#1814): every row's units the latest schedule still
+    asks for are kept first, and its units past that schedule (#1491) only from what `keep` has left.
+    Kept in opening order alone, a trim kept an opening's surplus and released another opening's
+    scheduled units, leaving them both surplus on the line and still to purchase."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -990,20 +1002,29 @@ def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, k
         .scalars()
         .all()
     )
-    released = 0
     remaining = max(keep, 0)
+    kept = []
     for hi in rows:
-        if remaining >= hi.item_quantity:
-            remaining -= hi.item_quantity
+        take = min(remaining, hi.item_quantity - (hi.beyond_schedule_quantity or 0))
+        kept.append(take)
+        remaining -= take
+    for i, hi in enumerate(rows):
+        take = min(remaining, hi.beyond_schedule_quantity or 0)
+        kept[i] += take
+        remaining -= take
+
+    released = 0
+    for hi, keep_here in zip(rows, kept, strict=True):
+        if keep_here >= hi.item_quantity:
             continue
-        if remaining > 0:
-            excess = _split_off_hardware_row(hi, hi.item_quantity - remaining)
+        if keep_here > 0:
+            # The split-off part takes the row's surplus first, so what stays is what was counted above.
+            excess = _split_off_hardware_row(hi, hi.item_quantity - keep_here)
             excess.state = HardwareItemState.AVAILABLE
             excess.po_line_item_id = None
             session.add(excess)
-            hi.item_quantity = remaining
+            hi.item_quantity = keep_here
             released += excess.item_quantity
-            remaining = 0
             continue
         hi.state = HardwareItemState.AVAILABLE
         hi.po_line_item_id = None

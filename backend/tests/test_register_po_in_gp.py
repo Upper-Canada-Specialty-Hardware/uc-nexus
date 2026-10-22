@@ -19,6 +19,7 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository, po_repository
+from app.repositories import warehouse as warehouse_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
 from app.services.relay_gateway import (
@@ -1447,6 +1448,82 @@ def test_registering_a_line_at_a_higher_quantity_keeps_its_ties(db_session):
     _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 10), (lines["HG-200"], "HINGE", "HG-200", 1)])
 
     assert _tied_units(db_session, hinge.id) == 6
+
+
+@pytest.mark.parametrize(
+    ("revised", "tied_by_opening"),
+    [
+        ({"A02": 4}, {"A02": 4}),  # A01 dropped the product: all 4 of its units are surplus
+        ({"A01": 2, "A02": 2}, {"A01": 2, "A02": 2}),  # each opening needs 2 of its 4
+    ],
+)
+def test_lowering_a_line_past_a_revision_releases_the_surplus_first(db_session, revised, tied_by_opening):
+    """#1814: A01 and A02 each have 4 of HG-100 on one Draft line of 8, and a revision leaves the
+    schedule asking for 4 (#1491). Registering the line at 4 keeps the 4 scheduled units and lets the
+    surplus go - kept oldest opening first, A01's surplus stayed on the line and A02's scheduled units
+    went back as still to purchase."""
+    project = _make_project(db_session)
+    openings = [_opening_input(o) for o in ("A01", "A02")]
+    items = []
+    for opening in ("A01", "A02"):
+        item = _hardware_item_input(opening, "HG-100")
+        item["item_quantity"] = 4
+        items.append(item)
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": openings,
+            "hardware_items": items,
+            "po_drafts": [
+                {
+                    "po_number": None,
+                    "notes": None,
+                    "hardware_item_refs": [
+                        {"opening_number": o, "product_code": "HG-100", "hardware_category": "HINGE"}
+                        for o in ("A01", "A02")
+                    ],
+                    "line_item_aliases": [],
+                }
+            ],
+        },
+    )
+    db_session.flush()
+    revised_items = []
+    for opening, quantity in revised.items():
+        item = _hardware_item_input(opening, "HG-100")
+        item["item_quantity"] = quantity
+        revised_items.append(item)
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": openings,
+            "hardware_items": revised_items,
+            "replace_schedule": True,
+        },
+    )
+    db_session.flush()
+    po = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).one()
+    (hinge,) = po.line_items
+    assert _tied_units(db_session, hinge.id) == 8
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 4)])
+
+    numbers = {
+        o.id: o.opening_number for o in db_session.scalars(select(Opening).where(Opening.project_id == project.id))
+    }
+    tied: dict[str, int] = {}
+    for r in _hinge_rows(db_session, project):
+        if r.po_line_item_id == hinge.id:
+            tied[numbers[r.opening_id]] = tied.get(numbers[r.opening_id], 0) + r.item_quantity
+    assert tied == tied_by_opening
+    status = next(
+        r
+        for r in warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
+        if r["product_code"] == "HG-100"
+    )
+    assert (status["required_quantity"], status["surplus_quantity"], status["not_purchased"]) == (4, 0, 0)
 
 
 # --- the currency GP resolved (#1557) ------------------------------------------------------------
