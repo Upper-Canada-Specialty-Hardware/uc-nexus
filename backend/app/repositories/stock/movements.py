@@ -575,6 +575,9 @@ def _find_matching_inventory_location(
         (InventoryLocationModel.receive_line_item_id, src.receive_line_item_id),
         (InventoryLocationModel.stock_item_id, src.stock_item_id),
         (InventoryLocationModel.shipment_return_item_id, src.shipment_return_item_id),
+        # How the row got there (#1699) is part of its origin too: merged into a row of another, the moved
+        # units would read with the target's label (#1826).
+        (InventoryLocationModel.entry_source, src.entry_source),
     ):
         stmt = stmt.where(col.is_(None)) if val is None else stmt.where(col == val)
     return session.scalars(stmt).first()

@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import DestockCost, DestockSource
+from app.models.enums import DestockCost, DestockSource, InventoryEntrySource
 from app.models.inventory import InventoryLocation
 from app.models.stock_item import StockItem
 from app.repositories import stock as stock_repository
@@ -342,6 +342,35 @@ def test_transfer_merges_into_a_matching_destination_row(db_session):
     assert src.quantity == 6
     assert existing.quantity == 7  # merged, not a new row
     assert len(_dest_rows(db_session, project.id, "B", "2", "2")) == 1
+
+
+def test_transfer_does_not_merge_rows_that_got_there_differently(db_session):
+    """#1826: one stock item, but one row a stock allocation and the other the legacy migration - merged,
+    the moved units would take the target's label."""
+    project = make_project(db_session)
+    si = make_stock_item(db_session, quantity=20)
+    src = make_il(db_session, project, quantity=10, stock_item_id=si.id, aisle="A", row="1", bay="1")
+    src.entry_source = InventoryEntrySource.STOCK_ALLOCATION
+    other = make_il(db_session, project, quantity=3, stock_item_id=si.id, aisle="B", row="2", bay="2")
+    other.entry_source = InventoryEntrySource.LEGACY_MIGRATION
+    define_location(db_session, src.warehouse_id, "B", "2", "2")
+    db_session.flush()
+
+    stock_repository.transfer_inventory(
+        db_session,
+        source_type="INVENTORY_LOCATION",
+        source_id=src.id,
+        quantity=4,
+        dest_warehouse_id=wh_id(db_session),
+        dest_aisle="B",
+        dest_row="2",
+        dest_bay="2",
+        performed_by="warehouse",
+    )
+
+    assert other.quantity == 3
+    dest = _dest_rows(db_session, project.id, "B", "2", "2")
+    assert sorted(r.entry_source.value for r in dest) == ["LEGACY_MIGRATION", "STOCK_ALLOCATION"]
 
 
 def test_transfer_does_not_merge_two_different_return_origins(db_session):
