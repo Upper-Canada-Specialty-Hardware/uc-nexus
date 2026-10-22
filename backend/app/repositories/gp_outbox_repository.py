@@ -86,6 +86,9 @@ HELD_REGISTRATION_REFUSAL = (
 )
 
 
+GP_TOOK_CANCEL_REFUSAL = "GP already took this write, so it can't be cancelled here. Finish it with Retry."
+
+
 def _registration_holds_draft(row: GpWriteOutbox, ledger) -> bool:
     """Whether a registration row still holds its draft, given its key's ledger row (or None).
 
@@ -114,21 +117,41 @@ def registration_holds_draft(session: Session, row: GpWriteOutbox) -> bool:
     return _registration_holds_draft(row, session.get(GpWriteIdempotency, row.idempotency_key))
 
 
-def registrations_holding_drafts(session: Session, rows: list[GpWriteOutbox]) -> set[uuid.UUID]:
-    """The ids of `rows` that are registrations holding their draft, with one ledger read for the lot."""
+def ledgers_for(session: Session, rows: list[GpWriteOutbox]) -> dict:
+    """The ledger rows of `rows`' keys, by key, in one read: what a list works out per row from."""
     from app.models.gp_write import GpWriteIdempotency
 
+    keys = [r.idempotency_key for r in rows]
+    if not keys:
+        return {}
+    return {row.key: row for row in session.scalars(select(GpWriteIdempotency).where(GpWriteIdempotency.key.in_(keys)))}
+
+
+def registrations_holding_drafts(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict | None = None
+) -> set[uuid.UUID]:
+    """The ids of `rows` that are registrations holding their draft, with one ledger read for the lot."""
     registrations = [r for r in rows if r.op == "register_po_in_gp"]
-    keys = [r.idempotency_key for r in registrations if r.status == "FAILED"]
-    ledgers = (
-        {
-            row.key: row
-            for row in session.scalars(select(GpWriteIdempotency).where(GpWriteIdempotency.key.in_(keys))).all()
-        }
-        if keys
-        else {}
-    )
+    if ledgers is None:
+        ledgers = ledgers_for(session, [r for r in registrations if r.status == "FAILED"])
     return {r.id for r in registrations if _registration_holds_draft(r, ledgers.get(r.idempotency_key))}
+
+
+def _gp_took(ledger) -> bool:
+    """GP answered the write and Nexus never saved it, so GP holds it (#1948): it is finished with Retry,
+    never cancelled - a cancel abandons a PO or a receipt GP has and frees its draft to be written again."""
+    return ledger is not None and ledger.relay_result is not None and ledger.result_id is None
+
+
+def writes_gp_took(rows: list[GpWriteOutbox], ledgers: dict) -> set[uuid.UUID]:
+    """The ids of `rows` GP already took - the ones `cancel_entry` refuses - off `ledgers_for`'s one read."""
+    return {r.id for r in rows if _gp_took(ledgers.get(r.idempotency_key))}
+
+
+def write_gp_took(session: Session, row: GpWriteOutbox) -> bool:
+    from app.models.gp_write import GpWriteIdempotency
+
+    return _gp_took(session.get(GpWriteIdempotency, row.idempotency_key))
 
 
 def list_registrations_holding_drafts(
@@ -482,11 +505,8 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
         return None
     # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
     # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
-    from app.models.gp_write import GpWriteIdempotency
-
-    ledger = session.get(GpWriteIdempotency, row.idempotency_key)
-    if ledger is not None and ledger.relay_result is not None and ledger.result_id is None:
-        raise ConflictError("GP already took this write, so it can't be cancelled here. Finish it with Retry.")
+    if write_gp_took(session, row):
+        raise ConflictError(GP_TOOK_CANCEL_REFUSAL)
     row.status = "CANCELLED"
     session.flush()
     _release_receive_draft(session, row)

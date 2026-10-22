@@ -150,6 +150,9 @@ export const GET_GP_OUTBOX = gql`
       createdAt
       # #1948: a PO registration that still holds its draft, FAILED ones included.
       holdsDraft
+      # #1948: GP took the write (no Cancel), or may have (Cancel warns to check GP first).
+      gpTook
+      maybeInGp
     }
   }
 `;

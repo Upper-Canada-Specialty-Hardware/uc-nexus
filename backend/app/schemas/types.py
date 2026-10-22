@@ -2363,6 +2363,10 @@ class GpOutboxEntry:
     # #1948: a PO registration that still holds its draft - waiting, or FAILED after GP took it or may
     # have. The PO list holds Register, Cancel and edits on it, as it does for a waiting one.
     holds_draft: bool = False
+    # #1948: GP answered this write and Nexus never saved it - it is in GP, so it is finished with Retry
+    # and cancelling it is refused. `maybe_in_gp`: an attempt may have reached GP with no answer back.
+    gp_took: bool = False
+    maybe_in_gp: bool = False
 
 
 @strawberry.type

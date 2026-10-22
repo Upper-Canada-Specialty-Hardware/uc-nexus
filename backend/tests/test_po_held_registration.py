@@ -126,6 +126,20 @@ def test_the_po_list_reads_the_holding_registrations_however_many_failed_ones_pi
     assert {r.id for r in rows} == {held.id, maybe.id, waiting.id}
 
 
+def test_the_list_says_which_writes_gp_took_the_ones_cancel_refuses(db_session):
+    """#1948: Cancel was offered on every FAILED row and refused on one GP took. The list says which, off
+    one ledger read, so the screen never offers it."""
+    po = _po(db_session)
+    took = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED)
+    maybe = _failed_registration(db_session, po.id, kind="exhausted", maybe_in_gp=True)
+    finished = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED, result_id="done")
+    rows = [took, maybe, finished]
+
+    assert gp_outbox_repository.writes_gp_took(rows, gp_outbox_repository.ledgers_for(db_session, rows)) == {took.id}
+    with pytest.raises(ConflictError, match="GP already took this write"):
+        gp_outbox_repository.cancel_entry(db_session, took.id)
+
+
 def test_retry_is_refused_while_a_window_is_registering_the_po(db_session):
     po = _po(db_session)
     row = _failed_registration(db_session, po.id, relay_result=GP_ANSWERED)

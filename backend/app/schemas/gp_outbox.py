@@ -118,17 +118,21 @@ class GpOutboxQueries:
                 rows = gp_outbox_repository.list_registrations_holding_drafts(
                     session, company=tenant_scope(info), limit=max(1, min(limit, 500))
                 )
-                return [gp_outbox_entry_to_type(r, holds_draft=True) for r in rows]
-            rows = gp_outbox_repository.list_entries(
-                session,
-                status=status.value if status else None,
-                limit=max(1, min(limit, 500)),
-                ops=ops or None,
-                company=tenant_scope(info),
-                statuses=[s.value for s in statuses] if statuses else None,
-            )
-            holding = gp_outbox_repository.registrations_holding_drafts(session, rows)
-            return [gp_outbox_entry_to_type(r, holds_draft=r.id in holding) for r in rows]
+            else:
+                rows = gp_outbox_repository.list_entries(
+                    session,
+                    status=status.value if status else None,
+                    limit=max(1, min(limit, 500)),
+                    ops=ops or None,
+                    company=tenant_scope(info),
+                    statuses=[s.value for s in statuses] if statuses else None,
+                )
+            # One ledger read for the list: which registrations hold their draft, and which writes GP took
+            # (#1948), so the screen offers no Cancel the backend would refuse.
+            ledgers = gp_outbox_repository.ledgers_for(session, rows)
+            holding = gp_outbox_repository.registrations_holding_drafts(session, rows, ledgers)
+            took = gp_outbox_repository.writes_gp_took(rows, ledgers)
+            return [gp_outbox_entry_to_type(r, holds_draft=r.id in holding, gp_took=r.id in took) for r in rows]
 
 
 @strawberry.type
@@ -151,7 +155,9 @@ class GpOutboxMutations:
             if row is None:
                 raise _refusal(session, uuid.UUID(str(id)), "retry", _NO_RETRYABLE_ENTRY)
             entry = gp_outbox_entry_to_type(
-                row, holds_draft=gp_outbox_repository.registration_holds_draft(session, row)
+                row,
+                holds_draft=gp_outbox_repository.registration_holds_draft(session, row),
+                gp_took=gp_outbox_repository.write_gp_took(session, row),
             )
             session.commit()
         # Drain immediately rather than waiting for the next poll tick.

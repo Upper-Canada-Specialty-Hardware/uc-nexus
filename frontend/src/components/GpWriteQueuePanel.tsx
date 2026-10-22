@@ -42,6 +42,13 @@ const AMBIGUOUS_RETRY_WARNING =
   'This write may already have posted in GP. Retrying could create a duplicate. Check GP first.';
 const NORMAL_RETRY_WARNING =
   'This puts the write back on the queue with a fresh attempt budget. It will be sent as soon as the GP relay is connected.';
+const NORMAL_CANCEL_WARNING =
+  'This abandons the write. It will never reach GP, and whoever submitted it will have to redo it.';
+// #1948: a registration that may have reached GP with no answer back may already be a PO in GP. Cancelled,
+// that PO has no row here and the draft is free to be registered again - a second PO in GP.
+const MAYBE_IN_GP_CANCEL_WARNING =
+  'GP may already hold this PO - an attempt reached GP and no answer came back. Check GP first: if the PO is ' +
+  'there, cancelling leaves a PO in GP with nothing here for it, and registering the draft again makes a second one.';
 
 // #1216: who may retry or cancel a held write, by the GP-side op it is waiting to make - the same map
 // as `_ROLES_BY_RELAY_OP` in backend/app/schemas/gp_outbox.py, which refuses everyone else. Anything
@@ -202,7 +209,11 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
       <ConfirmDialog
         open={cancelTarget !== null}
         title={`Cancel "${cancelTarget?.label ?? ''}"?`}
-        message="This abandons the write. It will never reach GP, and whoever submitted it will have to redo it."
+        message={
+          cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
+            ? MAYBE_IN_GP_CANCEL_WARNING
+            : NORMAL_CANCEL_WARNING
+        }
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"
         onConfirm={handleCancel}

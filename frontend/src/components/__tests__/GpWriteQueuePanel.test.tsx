@@ -201,6 +201,35 @@ it('lets a po user act on a held po registration', async () => {
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
 });
 
+// #1948: the backend refuses to cancel a write GP took, so the button is off and says why.
+it('offers no cancel on a write GP took, and says to finish it with retry', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', gpTook: true })]);
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  expect(screen.getByLabelText(/GP already took this write, so it can't be cancelled/)).toBeInTheDocument();
+});
+
+it('warns before cancelling a registration GP may hold to check GP first', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [
+    entry({ status: 'FAILED', failureKind: 'exhausted', maybeInGp: true, gpTook: false }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this PO/)).toBeInTheDocument();
+  expect(screen.getByText(/Check GP first/)).toBeInTheDocument();
+});
+
+it('keeps the plain cancel words for a write nothing says reached GP', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', maybeInGp: false })]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/This abandons the write/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this PO/)).toBeNull();
+});
+
 it('keeps a held po registration out of a warehouse manager hands', async () => {
   identity.roles = ['Warehouse Manager'];
   identity.ownsTenant = false;
