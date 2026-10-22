@@ -22,8 +22,8 @@ extension in main.py, before the resolver runs, so ordering is structural rather
 each body has to honour.
 
 What is deliberately NOT here: `require_admin_request`, the gate for the plain FastAPI routes in
-main.py (`/admin/reset-data`, `/testing/clerk-sign-in`). Those are not GraphQL, no extension runs for
-them, and they keep their own explicit gate - see app/auth.py.
+main.py (`/admin/reset-data`). Those are not GraphQL, no extension runs for them, and they keep their
+own explicit gate - see app/auth.py.
 """
 
 import logging

@@ -593,14 +593,13 @@ def require_admin_request(request) -> dict:
     the GraphQL path makes - identity from the Clerk JWT, roles from the Clerk Backend API - so a
     route and a root field cannot drift apart on what "admin" means. Returns {user_id, roles}.
 
-    The cross-tenant role and not the tenant-level one (#729): both routes behind this gate act on
-    the whole deployment. `/admin/reset-data` empties every company's data at once, and
-    `/testing/clerk-sign-in` mints a real Clerk session for any staff account.
+    The cross-tenant role and not the tenant-level one (#729): the route behind this gate acts on
+    the whole deployment. `/admin/reset-data` empties every company's data at once.
 
     Deliberately un-memoised: a plain route handles one request and makes one check, so there is no
     second call to save, and taking the per-request store would mean inventing one for a Request that
-    never goes through `get_context`. `/testing/clerk-sign-in` and `/admin/reset-data` depend on this
-    path staying exactly as it was (#422)."""
+    never goes through `get_context`. `/admin/reset-data` depends on this path staying exactly as it
+    was (#422)."""
     token = _bearer_token(request)
     if not token:
         raise AuthError("Authentication required")

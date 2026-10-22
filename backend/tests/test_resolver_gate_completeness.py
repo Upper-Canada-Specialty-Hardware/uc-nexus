@@ -147,8 +147,9 @@ def test_roster_backed_fields_are_role_gated():
 # --- plain FastAPI routes in main.py (#422) -------------------------------------------------------
 #
 # Untouched by #423, and deliberately so. The schema extension only runs for GraphQL; a plain
-# @app.get route like /testing/clerk-sign-in - which mints a real Clerk session for any staff email -
-# has nothing in front of it, which is exactly how it sat with no auth at all until #422. Routes get
+# @app.get route has nothing in front of it, which is exactly how the retired /testing/clerk-sign-in
+# (which minted a real Clerk session for any staff email, gone under #1922) sat with no auth at all
+# until #422. Routes get
 # the same treatment as root fields did: call a gate or appear below with a reason. There is no
 # ordering check here, and that is deliberate - the gated routes check TESTING_ENABLED before auth so
 # a production deployment refuses outright rather than leaking whether the credential would have been
@@ -202,7 +203,7 @@ def test_every_main_py_route_was_collected():
     """Guard the guard, same shape as the root-field count above: if the decorator predicate
     regressed, the parametrized test below would silently shrink instead of failing."""
     collected = {fn.name for fn in _ROUTES}
-    expected = {"health", "relay_link", "reset_data", "get_clerk_sign_in_token", "clerk_email_webhook"}
+    expected = {"health", "relay_link", "reset_data", "clerk_email_webhook"}
     missing = expected - collected
     assert not missing, f"known main.py routes were not collected; the AST walk likely regressed: {sorted(missing)}"
 

@@ -811,67 +811,6 @@ def reset_data(request: Request):
     }
 
 
-@app.get("/testing/clerk-sign-in")
-def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
-    """Create a Clerk sign-in token for E2E testing.
-
-    Gated twice, like /admin/reset-data (#422). TESTING_ENABLED keeps it off any deployment that is
-    not a test target, checked first so a production deployment refuses outright rather than leaking
-    whether the caller's credential would have been good enough. Then the caller must prove they are
-    already a UC Nexus Admin, or present the shared testing secret in X-Testing-Secret - the
-    bootstrap path for a deployment where no session exists yet. Auth is not optional here: every
-    environment shares the production Clerk instance, so what this mints is a real session for a real
-    staff account, a UC Nexus Admin included, and with only the environment switch this route was a
-    full impersonation primitive on any deployment where the switch was left on."""
-    import hashlib
-    import hmac
-
-    import httpx
-
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, testing_sign_in_secret_hash
-
-    if not TESTING_ENABLED:
-        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
-
-    expected_hash = testing_sign_in_secret_hash()
-    presented = (request.headers.get("x-testing-secret") or "").strip()
-    secret_ok = bool(expected_hash) and bool(presented)
-    if secret_ok:
-        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        secret_ok = hmac.compare_digest(digest, expected_hash.lower())
-    if not secret_ok:
-        try:
-            require_admin_request(request)
-        except AppError as e:
-            status = 403 if e.code == "FORBIDDEN" else 401
-            return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
-
-    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
-
-    # Find user by email
-    users_resp = httpx.get(
-        "https://api.clerk.com/v1/users",
-        headers=headers,
-        params={"email_address": email},
-    )
-    users_resp.raise_for_status()
-    users = users_resp.json()
-    if not users:
-        return JSONResponse(status_code=404, content={"error": f"No user found with email {email}"})
-
-    user_id = users[0]["id"]
-
-    # Create sign-in token
-    token_resp = httpx.post(
-        "https://api.clerk.com/v1/sign_in_tokens",
-        headers=headers,
-        json={"user_id": user_id},
-    )
-    token_resp.raise_for_status()
-    data = token_resp.json()
-    return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
-
-
 @app.post("/webhooks/clerk/email")
 async def clerk_email_webhook(request: Request):
     """Clerk's signed `email.created` event: send the sign-in code it carries (#1690).

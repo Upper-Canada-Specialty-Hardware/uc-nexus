@@ -86,7 +86,7 @@ def test_the_deny_fires_through_authenticated_user_id_on_production(monkeypatch)
 
 
 def test_the_deny_fires_through_require_admin_request_on_production(monkeypatch):
-    """The plain-route gate (/admin/reset-data, /testing/clerk-sign-in). The refusal lands before the
+    """The plain-route gate (/admin/reset-data). The refusal lands before the
     Clerk roles lookup, so no roster call is needed to reach it."""
     monkeypatch.setattr(config, "E2E_CLERK_USER_ID", _E2E_USER)
     _prod(monkeypatch)
