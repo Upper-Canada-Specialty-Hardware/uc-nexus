@@ -729,8 +729,10 @@ export default function GpPurchaseOrderDialog({
     }
     if (seededRef.current) return;
     seededRef.current = true;
-    // Fresh open = fresh user action, so start a new idempotency key on the next submit.
-    idempotencyKeyRef.current = null;
+    // Fresh open = fresh user action, so start a new idempotency key on the next submit - unless GP already
+    // made a PO for this draft that Nexus never recorded (#1950): its attempt's key is reused, as a
+    // receipt's approvalIdempotencyKey is, so Register finishes that registration instead of pushing again.
+    idempotencyKeyRef.current = registerPo?.registeringKey ?? null;
     // #490: a draft raised with a cost code arrives at register with it already chosen. Falls back
     // to blank for a draft that carries none, and the stale-code check below still applies.
     setCostCode(registerPo?.costCode ?? '');
@@ -1648,6 +1650,13 @@ export default function GpPurchaseOrderDialog({
             : jobProjectData
               ? "This draft's project couldn't be found, so it can't register - it would go to GP with no job or cost codes."
               : "Reading this draft's project - it registers once its job is known."}
+        </Alert>
+      )}
+      {isRegister && registerPo?.registeringKey && (
+        <Alert severity="warning" sx={{ mb: 2 }} data-testid="unrecorded-registration">
+          GP already made PO {registerPo.registeringGpPoNumber} for this draft, but it was not recorded here.
+          Register finishes recording it as GP has it - nothing is sent to GP again, and changes made here are
+          not what is saved.
         </Alert>
       )}
       {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}

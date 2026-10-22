@@ -520,15 +520,28 @@ def _release_registration(po_id, key) -> None:
         logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
 
 
+# #1950: where the online push keeps the context it sent beside GP's answer in the ledger. Nexus's own key,
+# never GP's; it is taken off again before the answer is saved.
+PUSHED_CONTEXT_KEY = "nexus_persist_context"
+
+
+def _without_pushed_context(gp_result: dict) -> tuple[dict, dict | None]:
+    """GP's answer as GP gave it, and the context the push kept beside it (None on an older answer)."""
+    if not isinstance(gp_result, dict) or PUSHED_CONTEXT_KEY not in gp_result:
+        return gp_result, None
+    answer = {k: v for k, v in gp_result.items() if k != PUSHED_CONTEXT_KEY}
+    return answer, gp_result[PUSHED_CONTEXT_KEY]
+
+
 def _held_registration(key: str, po_id: uuid.UUID) -> dict | None:
     """What a resume saves (#1950): the held write GP's answer belongs to, with the context GP was sent.
 
     The resume used to save this call's lines, vendor, costs and project over GP's answer - a form the
     person could have edited since the push. None when the key has no held write: its save and the queueing
     of it both failed, or GP answered before #1950. Refusing that left the draft held by an answer nothing
-    could finish, so the resume saves from this call's context instead - the window that pushed it, under
-    its key, and no other window may resume it; the server refuses edits to the draft from the moment GP
-    answers (#1903), so this call's is the nearest to what GP was sent that is left."""
+    could finish, so the resume saves from the context the push kept with GP's answer, or - for an answer
+    recorded before it was kept - this call's context: the window that pushed it, under its key, and no
+    other window may resume it; the server refuses edits to the draft from the moment GP answers (#1903)."""
     with SessionLocal() as session:
         row = gp_outbox_repository.registration_for_key(session, key)
         if row is None:
@@ -1236,6 +1249,11 @@ class POMutations:
                 # With no held write to save from, this call's context is saved, and held as a fresh push's
                 # is when that save fails too, so a resume can always finish it.
                 held = await asyncio.to_thread(_held_registration, key, pid)
+                gp_result, pushed_context = _without_pushed_context(gp_result)
+                if held is None and pushed_context is not None:
+                    # #1950: no held write, so what GP was sent is the context kept with its answer - never
+                    # this call's form, which a dialog reopened on the draft could have edited since.
+                    persist_context = pushed_context
                 if held is not None and held["status"] in ("PENDING", "IN_FLIGHT"):
                     # The queue is finishing it right now; the queued row holds the draft from here.
                     release = True
@@ -1306,7 +1324,13 @@ class POMutations:
                     if refusal is not None:
                         raise refusal from e
                     raise
-                await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
+                # #1950: kept with GP's answer, what was sent saves it if the save and its queueing both fail.
+                await asyncio.to_thread(
+                    gp_idempotency.record_relay_result,
+                    key,
+                    "register_po_in_gp",
+                    {**gp_result, PUSHED_CONTEXT_KEY: persist_context},
+                )
 
             try:
                 # The save the queue makes, from the same context (#1950): this call's on a fresh push, the

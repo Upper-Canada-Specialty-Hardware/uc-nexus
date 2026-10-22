@@ -190,6 +190,11 @@ export interface PurchaseOrder {
   receiveRecords: ReceiveRecord[];
   documents: PODocumentInfo[];
   documentData: PODocumentData | null;
+  // #1950: a draft GP already made a PO for that Nexus never recorded: the claiming attempt's key, which
+  // Register reuses to finish it, and GP's number for it. Null otherwise; optional, as not every document
+  // that builds a PurchaseOrder selects them.
+  registeringKey?: string | null;
+  registeringGpPoNumber?: string | null;
 }
 
 // One register row (gp-owned-po mirror). Slim on purpose - a lineItemCount scalar, not the lines.

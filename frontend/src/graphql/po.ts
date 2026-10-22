@@ -64,6 +64,10 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
     orderedAt
     createdAt
     updatedAt
+    # #1950: set only on a draft GP already made a PO for that Nexus never recorded - the key Register
+    # reuses to finish it, and GP's number for it.
+    registeringKey
+    registeringGpPoNumber
     documentData {
       id
       poId

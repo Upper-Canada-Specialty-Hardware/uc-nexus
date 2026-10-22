@@ -589,6 +589,15 @@ describe('PODetailModal', () => {
     expect(screen.getByLabelText('PO Number')).toBeEnabled();
   });
 
+  // #1950: GP made the PO and Nexus never recorded it, with no held write: Register finishes it.
+  it('says GP already made the PO for a draft it never recorded, and offers no cancel', () => {
+    renderModal({ ...draftPo, registeringKey: 'held-attempt-1950', registeringGpPoNumber: '0001950' });
+    expect(screen.getByTestId('unrecorded-registration')).toHaveTextContent(
+      'GP already made PO 0001950 for this draft',
+    );
+    expect(screen.queryByRole('button', { name: 'Cancel PO' })).toBeNull();
+  });
+
   it('locks the PO number on a registered PO, saying why (#979)', () => {
     renderModal(registeredPo);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));

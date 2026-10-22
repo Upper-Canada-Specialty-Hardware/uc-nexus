@@ -1977,6 +1977,15 @@ def _unrecorded_gp_po_number(session: Session, po: PurchaseOrder) -> str | None:
     return str((row.relay_result or {}).get("po_number") or "") or "(number not recorded)"
 
 
+def unrecorded_registration(session: Session, po: PurchaseOrder) -> tuple[str, str] | None:
+    """The claiming attempt's key and GP's PO number, for a draft GP answered that Nexus never recorded
+    (#1950). The key lived only in the dialog that pushed it; handed back, reopening Register resumes it."""
+    if po.status != POStatus.DRAFT or po.deleted_at is not None or po.registering_key is None:
+        return None
+    gp_number = _unrecorded_gp_po_number(session, po)
+    return (po.registering_key, gp_number) if gp_number is not None else None
+
+
 def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
     """Take the draft for one registration attempt, under the PO's row lock (#1274).
 

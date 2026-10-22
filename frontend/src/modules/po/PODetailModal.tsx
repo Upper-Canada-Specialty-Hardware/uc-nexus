@@ -20,6 +20,7 @@ import {
   DialogActions,
   CircularProgress,
   Tooltip,
+  Alert,
 } from '@mui/material';
 import { Trash2, Download, Upload, FileText, Mail, Pencil } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
@@ -707,7 +708,8 @@ export default function PODetailModal({
   // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
   // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound. A queued
   // registration is on its way into GP, so it is held the same way (#1166).
-  const canCancel = po.status === 'DRAFT' && !registrationQueued;
+  // #1950: nor one GP already made a PO for that Nexus never recorded - the server refuses it.
+  const canCancel = po.status === 'DRAFT' && !registrationQueued && !po.registeringKey;
 
   // #858: the supplier PO document reads its details from GP, so it is offered only for a PO GP
   // holds and has been read back from - hidden on a Nexus Draft, held while the registration or its
@@ -865,6 +867,15 @@ export default function PODetailModal({
             </Box>
           )}
         </Box>
+
+        {/* #1950: GP answered this draft's registration and the save failed, with no held write to finish
+            it. Reopening Register reuses the attempt's key, which finishes it without a second PO. */}
+        {po.status === 'DRAFT' && po.registeringKey && (
+          <Alert severity="warning" sx={{ mb: 2 }} data-testid="unrecorded-registration">
+            GP already made PO {po.registeringGpPoNumber} for this draft, but it was not recorded here. Register
+            in GP finishes recording it - nothing is sent to GP again.
+          </Alert>
+        )}
 
         {/* Info Fields */}
         {editing ? (

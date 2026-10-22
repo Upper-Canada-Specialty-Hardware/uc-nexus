@@ -804,6 +804,11 @@ class PurchaseOrder:
     # #1877: the PO's own project, archived or not. The detail and receiving screens used to find it in
     # the `projects` list, which leaves archived jobs out. Null on a PO with no project.
     project: "PurchaseOrderProject | None" = None
+    # #1950: a draft GP already made a PO for that Nexus never recorded - its save and the queueing of it
+    # both failed, so no held write finishes it. The claiming attempt's key, which the register dialog
+    # reuses so Register finishes it through the same-key resume, and GP's number for it. Null otherwise.
+    registering_key: str | None = None
+    registering_gp_po_number: str | None = None
 
 
 @strawberry.type

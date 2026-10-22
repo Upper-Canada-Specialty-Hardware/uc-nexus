@@ -765,6 +765,53 @@ describe('GpPurchaseOrderDialog', () => {
     expect(retryKey).toBe(firstKey);
   });
 
+  // #1950: GP answered, and the save and its queueing both failed - the key lived only in the dialog
+  // that pushed it. The PO hands it back now, and a reopened dialog registers under it to finish.
+  it('reuses the key of a GP answer Nexus never saved, and says GP already made the PO', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const okMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const held = { ...stockDraft, registeringKey: 'held-attempt-1950', registeringGpPoNumber: '0001950' };
+    const { onRegistered } = renderDialog({ registerPo: held }, [...baseMocks(), okMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    expect(screen.getByTestId('unrecorded-registration')).toHaveTextContent(
+      'GP already made PO 0001950 for this draft',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+
+    expect((calls[0].input as Record<string, unknown>).idempotencyKey).toBe('held-attempt-1950');
+  });
+
+  it('starts a fresh key on a draft with no unrecorded answer, and shows no such banner', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const okMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const { onRegistered } = renderDialog({ registerPo: { ...stockDraft, registeringKey: null } }, [
+      ...baseMocks(),
+      okMock,
+    ]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    expect(screen.queryByTestId('unrecorded-registration')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+    expect((calls[0].input as Record<string, unknown>).idempotencyKey).toMatch(UUID_RE);
+  });
+
   it('makes no no-duplicate promise when the relay call timed out', async () => {
     // A timeout leaves GP possibly holding the PO, so the toast must not say a retry is free of
     // duplicates. Register puts a timed-out write on the outbox instead of failing, so this code

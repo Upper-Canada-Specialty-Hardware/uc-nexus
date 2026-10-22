@@ -410,3 +410,94 @@ def test_a_finished_key_answers_only_for_the_po_it_registered(monkeypatch, db_se
 
     assert excinfo.value.field == "idempotency_key"
     assert pushes == []
+
+
+# --- #1950: a GP answer Nexus never saved, with no held write to finish it -------------------------------
+
+
+def test_the_po_hands_back_the_claim_key_of_a_gp_answer_nexus_never_saved(db_session):
+    """The key lived only in the dialog's ref, so once that closed nothing could resume the attempt. The PO
+    says it now - only while the draft is held by that unrecorded answer - with GP's number for it."""
+    from app.schemas.converters import po_to_type
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    assert po_to_type(po_repository.reload_po(db_session, draft.id)).registering_key is None  # just on its way
+
+    _ledger(db_session, key, po_number="0001950")
+    shown = po_to_type(po_repository.reload_po(db_session, draft.id))
+    assert (shown.registering_key, shown.registering_gp_po_number) == (key, "0001950")
+
+    draft.status = POStatus.CANCELLED
+    db_session.flush()
+    assert po_to_type(po_repository.reload_po(db_session, draft.id)).registering_key is None
+
+
+def test_a_fresh_push_keeps_what_it_sent_beside_gps_answer(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    recorded: dict = {}
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        return {"po_number": "0001951", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    monkeypatch.setattr(po_schema.gp_idempotency, "record_relay_result", lambda k, op, r: recorded.update(r))
+    _run_register(draft, str(uuid.uuid4()))
+
+    assert recorded["po_number"] == "0001951"
+    pushed = recorded[po_schema.PUSHED_CONTEXT_KEY]
+    assert pushed["po_id"] == str(draft.id)
+    assert pushed["line_items_data"][0]["unit_cost"] == float(draft.line_items[0].unit_cost)
+
+
+def test_a_resume_with_no_held_write_saves_what_gp_was_sent_not_the_reopened_form(monkeypatch, db_session):
+    """Reopened on the draft, the dialog sends the form again under the claim's key - a form the person could
+    have edited. GP was sent 7.25 and the form says 10.00: what GP was sent is what is saved."""
+    from app.services.gp_idempotency import IdempotencyState
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001952")
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    _ledger(db_session, key, po_number="0001952")
+    line = draft.line_items[0]
+    pushed = {
+        "po_id": str(draft.id),
+        "gp_vendor_id": "GPV1",
+        "vendor_name_snapshot": "GP Vendor",
+        "line_items_data": [
+            {
+                "id": str(line.id),
+                "hardware_category": line.hardware_category,
+                "product_code": line.product_code,
+                "ordered_quantity": line.ordered_quantity,
+                "unit_cost": 7.25,
+                "classification": None,
+                "order_as": None,
+                "custom_inventory_item_id": None,
+                "cost_code": None,
+                "uofm": None,
+                "job_cost": None,
+            }
+        ],
+        "cost_code": None,
+        "buyer_id": "mira",
+        "shipping_cost": None,
+        "tariff_amount": None,
+        "project_id": None,
+    }
+    answered = IdempotencyState(
+        op="register_po_in_gp",
+        relay_result={"po_number": "0001952", "company": "TUBC", po_schema.PUSHED_CONTEXT_KEY: pushed},
+        result_id=None,
+    )
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: answered if k == key else None)
+
+    result = _run_register(draft, key)
+
+    assert pushes == []
+    assert result.purchase_order.po_number == "0001952"
+    po = po_repository.reload_po(db_session, draft.id)
+    assert po.status == POStatus.GP_REGISTERED
+    assert [float(li.unit_cost) for li in po.line_items] == [7.25]

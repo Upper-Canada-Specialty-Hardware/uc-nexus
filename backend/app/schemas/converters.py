@@ -488,6 +488,12 @@ def po_to_type(po, receive_records=None, *, projects: dict | None = None) -> Pur
             project = projects.get(po.project_id)
         elif (session := object_session(po)) is not None:
             project = session.get(ProjectModel, po.project_id)
+    # #1950: read by primary key, and only for a draft still under a claim - a handful at any time.
+    unrecorded = None
+    if po.registering_key is not None and (session := object_session(po)) is not None:
+        from app.repositories.po_repository import unrecorded_registration
+
+        unrecorded = unrecorded_registration(session, po)
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
@@ -525,6 +531,8 @@ def po_to_type(po, receive_records=None, *, projects: dict | None = None) -> Pur
         documents=[po_document_to_type(doc) for doc in documents],
         document_data=po_document_data_to_type(doc_data) if doc_data is not None else None,
         project=po_project_to_type(project) if project is not None else None,
+        registering_key=unrecorded[0] if unrecorded else None,
+        registering_gp_po_number=unrecorded[1] if unrecorded else None,
     )
 
 
