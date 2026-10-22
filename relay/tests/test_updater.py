@@ -1,6 +1,7 @@
 """Updater: release discovery over the public GitHub API, the current-vs-latest comparison, and the onedir
-zip-download + junction-repoint self-update. No network (urlopen/urlretrieve mocked), no real junction."""
+zip-download + junction-repoint self-update. No network (urlopen mocked), no real junction."""
 
+import io
 import json
 import logging
 import zipfile
@@ -32,6 +33,52 @@ def _bundle_zip(dest):
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
         zf.writestr("ucnexus-relay.exe", b"N" * 6_000_000)
         zf.writestr("_internal/base_library.zip", b"stub")
+
+
+_BUNDLE: list[bytes] = []
+
+
+def _bundle_bytes() -> bytes:
+    if not _BUNDLE:
+        buf = io.BytesIO()
+        _bundle_zip(buf)
+        _BUNDLE.append(buf.getvalue())
+    return _BUNDLE[0]
+
+
+class _Download:
+    """A release asset response: the body read in chunks, the Content-Length header the server sent
+    (the true length unless told otherwise), and optionally a read that stalls part-way."""
+
+    def __init__(self, body: bytes, content_length="auto", stall_after: int | None = None):
+        self._body = io.BytesIO(body)
+        length = str(len(body)) if content_length == "auto" else content_length
+        self.headers = {"Content-Length": length} if length is not None else {}
+        self._stall_after = stall_after
+
+    def read(self, n=-1):
+        if self._stall_after is not None and self._body.tell() >= self._stall_after:
+            raise TimeoutError("timed out")
+        return self._body.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _serve(monkeypatch, body: bytes | None = None, **kw) -> list:
+    """Answer every urlopen with a _Download of `body` (the bundle by default); returns the timeouts it
+    was opened with."""
+    timeouts = []
+
+    def _open(url, timeout=None):
+        timeouts.append(timeout)
+        return _Download(_bundle_bytes() if body is None else body, **kw)
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", _open)
+    return timeouts
 
 
 # --- release discovery / check_update -----------------------------------------------------------------
@@ -156,7 +203,7 @@ def test_check_update_no_release(monkeypatch):
 
 
 def test_stage_update_extracts_version_seeds_ledger_and_spawns_helper(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    _serve(monkeypatch)
     helper_exe = tmp_path / "app-old" / "ucnexus-relay.exe"
     monkeypatch.setattr(single_instance, "installed_exe_path", lambda d: helper_exe)
     calls = []
@@ -193,7 +240,7 @@ def test_stage_update_spawns_the_helper_from_the_resolved_real_folder(tmp_path, 
     The `..` segment here stands in for the junction: it is a path that only collapses if the code
     resolves it, so dropping the resolve() call fails this test.
     """
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    _serve(monkeypatch)
     real = tmp_path / "app-old" / "ucnexus-relay.exe"
     real.parent.mkdir(parents=True, exist_ok=True)
     real.write_bytes(b"exe")
@@ -211,7 +258,7 @@ def test_stage_update_spawns_the_helper_from_the_resolved_real_folder(tmp_path, 
 def test_stage_update_defers_when_the_relay_got_busy_during_the_download(tmp_path, monkeypatch):
     """#1212: a GP write that arrived while the build downloaded must not be killed by the handoff. No
     ledger is written and no helper spawned - the helper would force the app down at its deadline."""
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    _serve(monkeypatch)
 
     def _no_spawn(*a, **k):
         raise AssertionError("must not spawn the helper while the relay is busy")
@@ -224,7 +271,7 @@ def test_stage_update_defers_when_the_relay_got_busy_during_the_download(tmp_pat
 
 
 def test_stage_update_hands_off_when_still_ready_after_the_download(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    _serve(monkeypatch)
     monkeypatch.setattr(single_instance, "installed_exe_path", lambda d: tmp_path / "app-old" / "ucnexus-relay.exe")
     calls = []
     monkeypatch.setattr(updater, "_spawn_detached", lambda args, cwd: calls.append(args))
@@ -235,7 +282,7 @@ def test_stage_update_hands_off_when_still_ready_after_the_download(tmp_path, mo
 
 
 def test_stage_update_rejects_a_tiny_download_and_does_not_spawn(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"tiny"))
+    _serve(monkeypatch, b"tiny")
 
     def _no_spawn(*a, **k):
         raise AssertionError("must not spawn the helper on a bad download")
@@ -246,7 +293,7 @@ def test_stage_update_rejects_a_tiny_download_and_does_not_spawn(tmp_path, monke
 
 
 def test_stage_update_keeps_attempts_for_same_target_but_resets_for_new(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    _serve(monkeypatch)
     monkeypatch.setattr(single_instance, "installed_exe_path", lambda d: tmp_path / "cur" / "ucnexus-relay.exe")
     monkeypatch.setattr(updater, "_spawn_detached", lambda args, cwd: None)
     updater._write_ledger(tmp_path, {"status": "failed", "target_build": "relay-v0.1.0-build.11", "attempts": 2})
@@ -256,6 +303,51 @@ def test_stage_update_keeps_attempts_for_same_target_but_resets_for_new(tmp_path
 
     updater.stage_update("u", tmp_path, 1, target_build="relay-v0.1.0-build.12")
     assert updater.read_ledger(tmp_path)["attempts"] == 0  # a new target -> fresh count
+
+
+def test_the_download_is_opened_with_a_timeout(tmp_path, monkeypatch):
+    # #1928: urlretrieve opened the connection with no timeout, so a stalled server held the thread forever.
+    timeouts = _serve(monkeypatch)
+    ver, error = updater._download_and_extract("u", tmp_path, "relay-v0.1.0-build.14")
+    assert error is None and ver is not None
+    assert timeouts == [updater._DOWNLOAD_TIMEOUT_SECONDS]
+
+
+def test_a_download_that_stalls_part_way_fails_and_leaves_no_file(tmp_path, monkeypatch):
+    _serve(monkeypatch, stall_after=1_000_000)
+
+    ver, error = updater._download_and_extract("u", tmp_path, "relay-v0.1.0-build.14")
+
+    assert ver is None and "download failed" in error
+    assert list(tmp_path.iterdir()) == []  # no partial zip, no .part, no version folder
+
+
+def test_a_download_past_its_deadline_is_abandoned(tmp_path, monkeypatch):
+    _serve(monkeypatch)
+    ticks = iter([0.0, 1.0])
+    monkeypatch.setattr(updater, "_monotonic", lambda: next(ticks, updater._DOWNLOAD_DEADLINE_SECONDS + 1))
+
+    ver, error = updater._download_and_extract("u", tmp_path, "relay-v0.1.0-build.14")
+
+    assert ver is None and "download failed" in error
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_download_shorter_than_its_content_length_is_refused(tmp_path, monkeypatch):
+    # A dropped connection reads as a clean end of file; the announced length is what gives it away.
+    body = _bundle_bytes()
+    _serve(monkeypatch, body[:-100], content_length=str(len(body)))
+
+    ver, error = updater._download_and_extract("u", tmp_path, "relay-v0.1.0-build.14")
+
+    assert ver is None and f"of the {len(body)} bytes" in error
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_download_without_a_content_length_is_still_taken(tmp_path, monkeypatch):
+    _serve(monkeypatch, content_length=None)
+    ver, error = updater._download_and_extract("u", tmp_path, "relay-v0.1.0-build.14")
+    assert error is None and (ver / layout.ASSET_NAME).exists()
 
 
 # --- apply_staged_update: the helper repoints the junction + health-gates the relaunch ----------------

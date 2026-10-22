@@ -17,6 +17,7 @@ The build identity comes from _build.py, which CI stamps into the package at bui
 .github/workflows/relay-release.yml). A dev checkout has no _build.py, so current_build() is 'dev', which
 compares unequal to any release tag (always "behind")."""
 
+import http.client
 import json
 import logging
 import os
@@ -48,6 +49,13 @@ _STATE_FILE = "update-state.json"  # the attempt ledger the helper reads/writes 
 _CANCEL_FLAG = "update-cancel"  # touched by a user-initiated shutdown to abort an in-flight update
 _UPDATE_LOG = "update.log"  # the helper's own log, next to config.toml
 _DOWNLOAD_NAME = "ucnexus-relay-download.zip"
+# The bundle download's bounds (#1928). urlretrieve had none, so a connection that stalled mid-body held
+# the poller's thread - and with it every later update check - forever. The socket timeout bounds each
+# connect and read; the deadline bounds the whole body, which a ~27MB bundle clears in well under a
+# minute on any line a workstation has.
+_DOWNLOAD_TIMEOUT_SECONDS = 30.0
+_DOWNLOAD_DEADLINE_SECONDS = 600.0
+_DOWNLOAD_CHUNK_BYTES = 1 << 16
 MAX_ATTEMPTS = 3  # circuit breaker: give up on a target build after this many helper runs
 _GLOBAL_DEADLINE_SECONDS = 90.0  # hard wall-clock cap on the whole sequence
 # How long a staging/applying ledger may sit untouched before it is read as abandoned rather than
@@ -520,12 +528,44 @@ def _current_target(install_dir: Path) -> Path | None:
 # --- staging + applying -------------------------------------------------------------------------------
 
 
+def _download(url: str, dest: Path) -> None:
+    """Fetch `url` to `dest` within the bounds above, or raise OSError and leave no file behind (#1928).
+
+    Written to a .part file and moved into place only once whole, and refused when the body is shorter
+    than the Content-Length the server announced: a dropped connection otherwise reads as a clean end of
+    file, and only the size floor stood between a truncated zip and the extract."""
+    part = dest.with_name(dest.name + ".part")
+    deadline = _monotonic() + _DOWNLOAD_DEADLINE_SECONDS
+    try:
+        with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as resp:  # noqa: S310 (release asset URL)
+            announced = (resp.headers.get("Content-Length") or "").strip()
+            written = 0
+            with open(part, "wb") as out:
+                while True:
+                    if _monotonic() >= deadline:
+                        raise TimeoutError(f"not finished after {int(_DOWNLOAD_DEADLINE_SECONDS)}s")
+                    chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    written += len(chunk)
+        if announced.isdigit() and written != int(announced):
+            raise OSError(f"got {written} of the {announced} bytes announced")
+        os.replace(part, dest)
+    except http.client.HTTPException as e:
+        _unlink_quietly(part)
+        raise OSError(f"{type(e).__name__}: {e}") from e
+    except BaseException:
+        _unlink_quietly(part)
+        raise
+
+
 def _download_and_extract(url: str, install_dir: Path, target_build: str | None) -> tuple[Path | None, str | None]:
     """Download the bundle zip and extract it to a versioned app-<build>/ folder. Returns (version_dir,
     None) on success or (None, error)."""
     zip_path = install_dir / _DOWNLOAD_NAME
     try:
-        urllib.request.urlretrieve(url, str(zip_path))  # noqa: S310 (release asset URL from latest_release)
+        _download(url, zip_path)
     except OSError as e:
         return None, f"download failed: {e}"
     if zip_path.stat().st_size < _MIN_ZIP_BYTES:
