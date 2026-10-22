@@ -818,10 +818,15 @@ _NEVER_REACHED_GP_KINDS = ("gp_rejected", "exhausted")
 def outbox_entry_never_reached_gp(session: Session, entry) -> bool:
     """True when a queued receipt's outbox row is finished and GP never committed it (#1298).
 
-    A cancelled row qualifies unless it had already failed ambiguously or after GP committed; a failed
-    row only for the kinds above. Either way the GP idempotency ledger has the last word: a recorded
-    relay result means GP answered with a receipt, whatever the row says now."""
+    A row that may be in GP (#1849) never qualifies. A cancelled row qualifies unless it had already
+    failed ambiguously or after GP committed; a failed row only for the kinds above. Either way the GP
+    idempotency ledger has the last word: a recorded relay result means GP answered with a receipt,
+    whatever the row says now."""
     if entry is None or entry.op != "create_receive":
+        return False
+    # #1849: an earlier attempt may have left the receipt in GP under this row's key, whatever the row's
+    # last outcome says. Released, the draft would be approved under a new key and posted a second time.
+    if entry.maybe_in_gp:
         return False
     if entry.status == "CANCELLED":
         if entry.failure_kind not in (None, *_NEVER_REACHED_GP_KINDS):

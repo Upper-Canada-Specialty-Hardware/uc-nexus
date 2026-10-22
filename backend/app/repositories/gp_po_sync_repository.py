@@ -302,9 +302,10 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
     """True while a receipt for this PO has reached (or may have reached) GP but not yet Nexus (#1300).
 
     That is a draft mid-approval (a live approval, or one whose relay call went ambiguous and will be
-    resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously (a retry
-    persists it). A queued approval is covered by its outbox row. The sync must not raise
-    received_quantity then: the persist adds its own units on top of what is stored."""
+    resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously or after
+    an attempt that may have reached GP (#1849, an exhausted keyed receipt) - a retry persists either.
+    A queued approval is covered by its outbox row. The sync must not raise received_quantity then:
+    the persist adds its own units on top of what is stored."""
     from app.models.enums import ReceiveDraftStatus
     from app.models.receive_draft import ReceiveDraft
 
@@ -326,7 +327,10 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
             GpWriteOutbox.entity_key == f"po:{po_id}",
             or_(
                 GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
-                and_(GpWriteOutbox.status == "FAILED", GpWriteOutbox.failure_kind == "ambiguous"),
+                and_(
+                    GpWriteOutbox.status == "FAILED",
+                    or_(GpWriteOutbox.failure_kind == "ambiguous", GpWriteOutbox.maybe_in_gp.is_(True)),
+                ),
             ),
         )
         .limit(1)

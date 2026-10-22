@@ -846,6 +846,7 @@ def test_approving_while_the_relay_is_down_queues_the_receipt_and_still_closes_t
     assert row.persist_context["received_by"] == AUTHOR_NAME, (
         "the queued receipt must post in the counter's name too, not the approver's"
     )
+    assert row.maybe_in_gp is False, "it never left the backend, so GP cannot hold it"
 
 
 def test_a_failure_after_queueing_saves_neither_the_row_nor_the_draft(committed, monkeypatch, approve_env):
@@ -955,6 +956,8 @@ def test_an_ambiguous_relay_failure_queues_the_receipt_under_its_key(committed, 
     row = _queued_row(result)
     assert row.idempotency_key == key
     assert row.payload["idempotency_key"] == key, "the retry must carry the key GP got on the first attempt"
+    # #1849: and the row says GP may hold it, so running out or a cancel never hands the draft back.
+    assert row.maybe_in_gp is True
 
 
 def test_the_receipt_payload_carries_the_approvals_key(committed, monkeypatch, approve_env):

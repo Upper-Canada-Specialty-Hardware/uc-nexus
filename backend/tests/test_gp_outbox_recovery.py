@@ -60,6 +60,11 @@ def _read(row_id):
         return {"status": row.status, "failure_kind": row.failure_kind, "attempts": row.attempts}
 
 
+def _maybe_in_gp(row_id) -> bool:
+    with SessionLocal() as session:
+        return gp_outbox_repository.get_entry(session, row_id).maybe_in_gp
+
+
 def _delete(*row_ids):
     with SessionLocal() as session:
         for row_id in row_ids:
@@ -90,6 +95,9 @@ def test_the_sweep_puts_a_stale_registration_back_and_fails_a_stale_receipt_as_a
         assert _read(pending)["status"] == "PENDING"
         assert receipt in notified
         assert keyed_receipt not in notified
+        # #1849: the stopped attempt may have got as far as GP, so every row it settles says so.
+        assert all(_maybe_in_gp(r) for r in (registration, keyed_receipt, receipt))
+        assert not _maybe_in_gp(pending)
     finally:
         _delete(registration, receipt, keyed_receipt, pending)
 
@@ -145,6 +153,7 @@ def test_an_unexpected_error_never_leaves_the_row_in_flight(_migrate_database, m
         asyncio.run(gp_outbox_worker._drain_one(row_id))
         state = _read(row_id)
         assert (state["status"], state["failure_kind"]) == expected
+        assert _maybe_in_gp(row_id)  # #1849: the error may have come after GP took it
     finally:
         _delete(row_id)
 

@@ -67,6 +67,7 @@ def enqueue(
     project_id: uuid.UUID | None = None,
     requested_by: str | None = None,
     session: Session | None = None,
+    maybe_in_gp: bool = False,
 ) -> str:
     """Queue the write and return the outbox entry id (as a string).
 
@@ -89,6 +90,7 @@ def enqueue(
             label=label,
             project_id=project_id,
             requested_by=requested_by,
+            maybe_in_gp=maybe_in_gp,
         )
     with SessionLocal() as own:
         entry_id = _enqueue_in(
@@ -103,6 +105,7 @@ def enqueue(
             label=label,
             project_id=project_id,
             requested_by=requested_by,
+            maybe_in_gp=maybe_in_gp,
         )
         own.commit()
     logger.info("gp outbox: queued", extra={"op": op, "label": label, "entry_id": entry_id})

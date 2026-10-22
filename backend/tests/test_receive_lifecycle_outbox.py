@@ -178,6 +178,26 @@ def test_a_failure_that_may_have_reached_gp_keeps_the_draft(db_session, kind):
     assert draft.status == ReceiveDraftStatus.APPROVED
 
 
+@pytest.mark.parametrize("end", ["exhausted", "cancelled"])
+def test_a_receipt_an_earlier_attempt_may_have_left_in_gp_keeps_its_draft(db_session, end):
+    """#1849: a keyed receipt that timed out goes back on the queue rather than failing as ambiguous,
+    and GP may hold it under the row's key. Running out of attempts or being cancelled afterwards must
+    not send the draft back, or a new approval under a new key would post the receipt a second time."""
+    project = _project(db_session)
+    po, li = _po(db_session, project.id)
+    draft, row = _queued_approval(db_session, po, li, 4)
+    gp_outbox_repository.mark_retry(db_session, row, error="GP did not answer in time", maybe_in_gp=True)
+
+    if end == "exhausted":
+        gp_outbox_repository.mark_failed(db_session, row, kind="exhausted", error="GP did not answer in time")
+    else:
+        gp_outbox_repository.cancel_entry(db_session, row.id)
+    db_session.refresh(draft)
+    assert draft.status == ReceiveDraftStatus.APPROVED
+    assert draft.approved_outbox_entry_id == row.id
+    assert not _told_author(db_session, project.id)
+
+
 def test_a_ledger_relay_result_means_gp_took_it_so_the_draft_stays(db_session):
     project = _project(db_session)
     po, li = _po(db_session, project.id)
@@ -281,6 +301,29 @@ def test_the_sync_does_not_raise_received_while_a_receipt_is_queued(db_session):
         entity_key=f"po:{po.id}",
         label="Receipt",
     )
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number, 6), {})
+    db_session.flush()
+    db_session.refresh(li)
+    assert li.received_quantity == 2
+
+
+def test_the_sync_does_not_raise_received_while_an_exhausted_receipt_may_be_in_gp(db_session):
+    """#1849: an exhausted receipt that may be in GP keeps its draft, and a retry persists it, so the
+    sync holds received the way it does for an ambiguous failure."""
+    po_number, po, li = _mirrored(db_session)
+    row = gp_outbox_repository.enqueue(
+        db_session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company=COMPANY,
+        payload={},
+        persist_context={},
+        entity_key=f"po:{po.id}",
+        label="Receipt",
+    )
+    gp_outbox_repository.mark_failed(db_session, row, kind="exhausted", error="timed out", maybe_in_gp=True)
 
     sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number, 6), {})
     db_session.flush()

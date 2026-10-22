@@ -290,8 +290,9 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         row = await asyncio.to_thread(_load_row, row_id)
         if row is None or row.status != "IN_FLIGHT":
             return
+        # #1849: the error may have come after GP took the write, so the row says it may be there.
         if gp_outbox_repository.retry_is_safe(row.relay_op, row.payload):
-            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True, maybe_in_gp=True)
             await _fail_if_exhausted(row_id)
         else:
             applied = await asyncio.to_thread(
@@ -300,6 +301,7 @@ async def _drain_one(row_id: uuid.UUID) -> None:
                 "mark_failed",
                 kind="ambiguous",
                 error=f"Unexpected error while sending; check GP before retrying: {e}",
+                maybe_in_gp=True,
             )
             if applied:
                 await asyncio.to_thread(_notify_failure, row_id)
@@ -374,7 +376,8 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 # The job was on the wire when the socket died, so GP may already hold this PO or
                 # receipt - but it holds it under this key, and the relay hands that same one back
                 # instead of writing a second. Asking again is safe; the attempt budget still bounds a
-                # GP that is permanently too slow to answer.
+                # GP that is permanently too slow to answer. The row is marked as maybe in GP (#1849), so
+                # however it ends, its draft is never sent back to be approved again under a new key.
                 await asyncio.to_thread(
                     _finish,
                     row_id,
@@ -383,13 +386,20 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                     error_code=e.code,
                     bump_attempts=True,
                     retry_in_seconds=POLL_SECONDS,
+                    maybe_in_gp=True,
                 )
                 await _fail_if_exhausted(row_id)
                 return
             # The job was on the wire when the socket died: GP may hold the write. Retrying could
             # duplicate it, so this needs a human who can look in GP.
             await asyncio.to_thread(
-                _finish, row_id, "mark_failed", kind="ambiguous", error=str(e.message), error_code=e.code
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="ambiguous",
+                error=str(e.message),
+                error_code=e.code,
+                maybe_in_gp=True,
             )
             await asyncio.to_thread(_notify_failure, row_id)
             return
@@ -417,13 +427,20 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 error_code=e.code,
                 bump_attempts=True,
                 retry_in_seconds=POLL_SECONDS,
+                maybe_in_gp=True,
             )
             await _fail_if_exhausted(row_id)
             return
         # Same ambiguity as a dispatched disconnect - the job reached the relay and we do not know
         # what GP did with it.
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="ambiguous", error=str(e.message), error_code=e.code
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="ambiguous",
+            error=str(e.message),
+            error_code=e.code,
+            maybe_in_gp=True,
         )
         await asyncio.to_thread(_notify_failure, row_id)
         return

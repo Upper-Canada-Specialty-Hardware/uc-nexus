@@ -1240,7 +1240,7 @@ class WarehouseMutations:
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 raise
 
-            async def _queue() -> ApproveReceiveDraftResult:
+            async def _queue(maybe_in_gp: bool = False) -> ApproveReceiveDraftResult:
                 json_line_items = _json_line_items(ctx.line_items_data)
                 project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
                 entry_id = await asyncio.to_thread(
@@ -1266,6 +1266,7 @@ class WarehouseMutations:
                     label=label,
                     project_id=project_id,
                     requested_by=user["user_id"],
+                    maybe_in_gp=maybe_in_gp,
                 )
                 draft = await asyncio.to_thread(_load_draft_type, draft_id)
                 # Nothing is in inventory yet - the persist is deferred with the GP write.
@@ -1298,14 +1299,16 @@ class WarehouseMutations:
                     if refusal is not None:
                         raise refusal from e
                 raise
-            except (RelayTimeoutError, RelayUnavailableError):
+            except (RelayTimeoutError, RelayUnavailableError) as e:
                 # #353 PR E queued the receipt that never left the backend; #1389 queues the other two as
                 # well - the socket dying with the job on the wire, and the relay not answering in time.
                 # Those used to be re-raised with the claim held, because a retry might post a second
                 # receipt; the relay now recognises the approval's key and hands back the receipt it
                 # already posted, so the outbox asking again cannot double-count. The queued row keeps
-                # the draft from a second approval, as the claim did.
-                return await _queue()
+                # the draft from a second approval, as the claim did. #1849: those two are queued as
+                # maybe in GP, so a row that later runs out or is cancelled never hands the draft back.
+                dispatched = isinstance(e, RelayTimeoutError) or e.dispatched
+                return await _queue(maybe_in_gp=dispatched)
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
         record = await asyncio.to_thread(

@@ -41,13 +41,19 @@ def enqueue(
     label: str,
     project_id: uuid.UUID | None = None,
     requested_by: str | None = None,
+    maybe_in_gp: bool = False,
 ) -> GpWriteOutbox:
     """Queue a GP write, or return the row that is already queued under this idempotency key.
 
     Returning the existing row rather than raising is what makes a resubmit-while-queued a no-op: the
-    user pressing the button again gets the same entry, not a second GP write."""
+    user pressing the button again gets the same entry, not a second GP write.
+
+    `maybe_in_gp` (#1849) is for a write queued after an online attempt that may have reached GP."""
     existing = session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == idempotency_key)).first()
     if existing is not None:
+        if maybe_in_gp:
+            existing.maybe_in_gp = True
+            session.flush()
         return existing
 
     row = GpWriteOutbox(
@@ -65,6 +71,7 @@ def enqueue(
         status="PENDING",
         attempts=0,
         next_attempt_at=datetime.utcnow(),
+        maybe_in_gp=maybe_in_gp,
     )
     session.add(row)
     session.flush()
@@ -149,14 +156,19 @@ def mark_retry(
     error_code: str | None = None,
     bump_attempts: bool = True,
     retry_in_seconds: float | None = None,
+    maybe_in_gp: bool = False,
 ) -> None:
     """Put a row back on the queue.
 
     `bump_attempts=False` is the load-bearing option: "the relay is still down" is not a failure of
     this row, and counting it would let a week-long outage exhaust the attempt budget of every queued
-    write and fail them all the moment they became deliverable again."""
+    write and fail them all the moment they became deliverable again.
+
+    `maybe_in_gp` says this attempt may have left the write in GP (#1849); it only ever sets the flag."""
     if bump_attempts:
         row.attempts += 1
+    if maybe_in_gp:
+        row.maybe_in_gp = True
     delay = retry_in_seconds if retry_in_seconds is not None else _backoff_seconds(row.attempts)
     row.status = "PENDING"
     row.next_attempt_at = datetime.utcnow() + timedelta(seconds=delay)
@@ -165,8 +177,19 @@ def mark_retry(
     session.flush()
 
 
-def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, error_code: str | None = None) -> None:
+def mark_failed(
+    session: Session,
+    row: GpWriteOutbox,
+    *,
+    kind: str,
+    error: str,
+    error_code: str | None = None,
+    maybe_in_gp: bool = False,
+) -> None:
     row.status = "FAILED"
+    # #1849: set before the release below reads it, and never cleared.
+    if maybe_in_gp:
+        row.maybe_in_gp = True
     row.failure_kind = kind
     row.last_error = error
     row.last_error_code = error_code
@@ -271,6 +294,8 @@ def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_
     )
     failed = []
     for row in rows:
+        # #1849: nothing says whether the stopped attempt got as far as GP, so it may have.
+        row.maybe_in_gp = True
         if retry_is_safe(row.relay_op, row.payload):
             row.status = "PENDING"
             row.next_attempt_at = datetime.utcnow()
@@ -334,6 +359,7 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     row.status = "PENDING"
     row.attempts = 0
     row.next_attempt_at = datetime.utcnow()
+    # maybe_in_gp stays (#1849): a fresh budget does not take back what an earlier attempt may have written.
     row.failure_kind = None
     session.flush()
     return row

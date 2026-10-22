@@ -66,6 +66,7 @@ def _read(row_id: uuid.UUID):
             "attempts": row.attempts,
             "failure_kind": row.failure_kind,
             "last_error": row.last_error,
+            "maybe_in_gp": row.maybe_in_gp,
         }
 
 
@@ -120,6 +121,7 @@ def test_a_dispatched_disconnect_fails_as_ambiguous_and_is_never_retried(_migrat
         state = _read(row_id)
         assert state["status"] == "FAILED"
         assert state["failure_kind"] == "ambiguous"
+        assert state["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -132,6 +134,7 @@ def test_a_timeout_fails_as_ambiguous(_migrate_database, monkeypatch):
         _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
         asyncio.run(gp_outbox_worker._drain_one(row_id))
         assert _read(row_id)["failure_kind"] == "ambiguous"
+        assert _read(row_id)["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -159,6 +162,34 @@ def test_a_keyed_receipt_that_went_unanswered_is_asked_again(_migrate_database, 
         assert state["status"] == "PENDING"
         assert state["failure_kind"] is None
         assert state["attempts"] == 1
+        # #1849: GP may hold it under this key, and the row keeps saying so however it ends.
+        assert state["maybe_in_gp"] is True
+    finally:
+        _delete(row_id)
+
+
+def test_a_keyed_receipt_that_went_unanswered_still_may_be_in_gp_once_exhausted(_migrate_database, monkeypatch):
+    """#1849: the last attempt's outcome is exhausted, but an earlier one timed out with the receipt
+    possibly in GP. A manual retry's fresh budget does not take that back either."""
+    from app.database import SessionLocal
+
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        with SessionLocal() as session:
+            gp_outbox_repository.get_entry(session, row_id).attempts = gp_outbox_repository.MAX_ATTEMPTS
+            session.commit()
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "exhausted", True)
+
+        with SessionLocal() as session:
+            gp_outbox_repository.retry_entry(session, row_id)
+            session.commit()
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 0, True)
     finally:
         _delete(row_id)
 
