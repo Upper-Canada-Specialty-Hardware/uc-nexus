@@ -650,13 +650,19 @@ class ShippingMutations:
         against the Clerk-authenticated caller (#427)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
+        container_ids = [uuid.UUID(str(cid)) for cid in input.container_ids]
         with SessionLocal() as session:
-            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
+            scope = tenant_scope(info)
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), scope)
+            # #1872: every container too, before the repository runs - it locks each one and names it in
+            # its refusals before it compares the container's project with this one.
+            for cid in container_ids:
+                tenancy.require_container_in_scope(session, cid, scope)
             _refuse_driver_only(info)
             slip = shipment_containers.confirm_shipment_from_containers(
                 session,
                 uuid.UUID(str(input.project_id)),
-                [uuid.UUID(str(cid)) for cid in input.container_ids],
+                container_ids,
                 shipped_by=actor,
                 details=_site_form_details(input),
                 expected_contents=(

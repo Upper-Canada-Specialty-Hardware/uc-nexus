@@ -763,3 +763,45 @@ def test_the_overview_shows_only_the_callers_company(db_session):
 
     assert project.id in _overview(db_session, company="TUBC")
     assert project.id not in _overview(db_session, company="UBC")
+
+
+def test_booking_scope_checks_every_container_before_the_repository_reads_one(monkeypatch):
+    """#1872: the resolver checked only the project, and the repository locks each container and names it
+    in its refusals before it compares the container's project - so a scoped caller could probe another
+    company's containers by id. Each is now checked first, and a foreign one stops the booking there."""
+    from types import SimpleNamespace
+
+    from app.repositories import tenancy
+    from app.schemas import shipping as shipping_module
+
+    own, foreign = uuid.uuid4(), uuid.uuid4()
+    checked = []
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def require_container(session, container_id, scope):
+        checked.append((container_id, scope))
+        if container_id == foreign:
+            raise NotFoundError(f"Container {container_id} not found")
+
+    def repository_must_not_run(*a, **k):
+        raise AssertionError("the repository read a container before every one was scope-checked")
+
+    monkeypatch.setattr(shipping_module, "SessionLocal", _Session)
+    monkeypatch.setattr(shipping_module, "current_user", lambda info: {"user_id": "user_x"})
+    monkeypatch.setattr(shipping_module, "resolve_display_name", lambda user_id: "X")
+    monkeypatch.setattr(shipping_module, "tenant_scope", lambda info: "TUBC")
+    monkeypatch.setattr(tenancy, "require_project_in_scope", lambda session, project_id, scope: None)
+    monkeypatch.setattr(tenancy, "require_container_in_scope", require_container)
+    monkeypatch.setattr(containers, "confirm_shipment_from_containers", repository_must_not_run)
+
+    booking = SimpleNamespace(project_id=str(uuid.uuid4()), container_ids=[str(own), str(foreign)])
+    with pytest.raises(NotFoundError):
+        shipping_module.ShippingMutations().confirm_shipment_from_containers(None, booking)
+
+    assert checked == [(own, "TUBC"), (foreign, "TUBC")]
