@@ -225,11 +225,12 @@ graphql_app = GraphQLRouter(schema, context_getter=get_context, graphql_ide=_gra
 
 # #1921: the most a /graphql request body may carry. Strawberry reads the whole body before anything
 # looks at it, so without a cap one request could hold as much memory as it cared to send. The largest
-# legitimate request is a single file upload: a PO document at its 20 MB cap
-# (po_repository.MAX_PO_DOCUMENT_BYTES) is ~27 MB as base64, and a shipment photo is less. Every upload
-# mutation takes one file and the frontend sends each upload as its own request, so the cap sits just
-# above one maximum upload.
-MAX_GRAPHQL_BODY_BYTES = 32 * 1024 * 1024
+# legitimate requests are a single file upload - a PO document at its 20 MB cap
+# (po_repository.MAX_PO_DOCUMENT_BYTES) is ~27 MB as base64 - and an import finalize, which sends the whole
+# parsed schedule (a 25,000-item schedule is ~10 MB as JSON, and larger ones exist). Every upload mutation
+# takes one file and the frontend sends each as its own request; the cap leaves room for a schedule a few
+# times the largest seen.
+MAX_GRAPHQL_BODY_BYTES = 64 * 1024 * 1024
 
 
 class GraphQLBodyCapMiddleware:
