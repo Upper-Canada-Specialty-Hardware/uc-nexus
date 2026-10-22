@@ -5,7 +5,8 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import String, and_, bindparam, delete, func, or_, select, tuple_, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -1350,13 +1351,26 @@ def finalize_import_session(
         **product_classification,
         **{product: value for product, value in listed.items() if product in schedule_products},
     }
-    for (hardware_category, product_code), classification in whole_product.items():
+    # One UPDATE per value rather than per product (#1890): a schedule of hundreds of products was as many
+    # round trips. The products are matched against two arrays unnested side by side, not a literal
+    # row-constructor IN list, which Postgres parses recursively and overflows at schedule scale (see
+    # reconcile_schedule). "fetch" still writes the new value onto the rows this session holds,
+    # so the steps below read them as they now are.
+    products_by_value: dict[Classification, list[tuple[str, str]]] = {}
+    for product, classification in whole_product.items():
+        products_by_value.setdefault(classification, []).append(product)
+    for classification, products in products_by_value.items():
+        pairs = select(
+            func.unnest(
+                bindparam("categories", [c for c, _ in products], type_=ARRAY(String)),
+                bindparam("codes", [p for _, p in products], type_=ARRAY(String)),
+            ).table_valued("hardware_category", "product_code")
+        )
         session.execute(
             update(HardwareItemModel)
             .where(
                 HardwareItemModel.project_id == project.id,
-                HardwareItemModel.hardware_category == hardware_category,
-                HardwareItemModel.product_code == product_code,
+                tuple_(HardwareItemModel.hardware_category, HardwareItemModel.product_code).in_(pairs),
                 or_(HardwareItemModel.classification.is_(None), HardwareItemModel.classification != classification),
             )
             .values(classification=classification)

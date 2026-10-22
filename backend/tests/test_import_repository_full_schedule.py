@@ -479,6 +479,96 @@ def test_classifying_a_product_updates_its_rows_already_on_a_po(db_session):
     assert classes[("HG-100", HardwareItemState.AVAILABLE)] == {Classification.SHOP_HARDWARE}
 
 
+def test_whole_product_classifications_are_one_update_per_value(db_session):
+    """#1890: the #1264 whole-product write is one UPDATE per classification value, not one per product,
+    and the rows this session already holds read the new value (`_classes` reads through the identity
+    map, so a stale object would show here)."""
+    from sqlalchemy import event
+
+    project = _make_project(db_session)
+    db_session.commit()
+    codes = [f"HG-{n}" for n in range(100, 105)]
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", code, item_quantity=4) for code in codes],
+    }
+    import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(*(_ref("A01", code, 2) for code in codes))]}
+    )
+    db_session.flush()
+    _classes(db_session, project.id)  # the session now holds every row
+
+    value = {code: "SHOP_HARDWARE" if code < "HG-103" else "SITE_HARDWARE" for code in codes}
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        import_repository.finalize_import_session(
+            db_session,
+            {
+                **base,
+                "classifications": [
+                    {"hardware_category": "HINGE", "product_code": c, "unit_cost": 10.0, "classification": v}
+                    for c, v in value.items()
+                ],
+            },
+        )
+        db_session.flush()
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+
+    whole_product_writes = [
+        s
+        for s in statements
+        if s.startswith("UPDATE hardware_items SET classification") and "hardware_items.project_id" in s
+    ]
+    assert len(whole_product_writes) == 2, whole_product_writes
+    classes = _classes(db_session, project.id)
+    for code, v in value.items():
+        assert classes[(code, HardwareItemState.IN_PO)] == {Classification(v)}
+        assert classes[(code, HardwareItemState.AVAILABLE)] == {Classification(v)}
+
+
+def test_the_finalize_response_builds_no_openings_and_keeps_the_count(monkeypatch, db_session):
+    """#1890: the wizard reads a few of the project's scalars off the finalize response, so it goes back
+    without its openings, carrying the real count (#1874). The POs keep their lines: the demo build
+    reads them off this response."""
+    from types import SimpleNamespace
+
+    from app.schemas import imports as imports_schema
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    project = _make_project(db_session)
+    db_session.commit()
+    payload = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01"), _opening_input("A02")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=2)],
+        "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))],
+    }
+    monkeypatch.setattr(imports_schema, "SessionLocal", _Borrowed)
+    monkeypatch.setattr(imports_schema, "current_user", lambda info: {"user_id": "user_1"})
+    monkeypatch.setattr(imports_schema, "resolve_display_name", lambda user_id: "Dana Planner")
+    monkeypatch.setattr(imports_schema, "tenant_scope", lambda info: None)
+    monkeypatch.setattr(imports_schema, "finalize_payload", lambda input, **k: payload)
+
+    result = imports_schema.ImportMutations().finalize_import_session(None, SimpleNamespace(project_id=project.id))
+
+    assert result.project.openings == []
+    assert result.project.opening_count == 2
+    assert [len(po.line_items) for po in result.purchase_orders] == [1]
+
+
 def test_finalize_refuses_a_category_that_is_a_company_type_code(db_session):
     """#1343: a schedule category equal (case-insensitively) to one of the company's inventory item type
     codes is refused, naming it; nothing is written. Another company's type code does not count."""
