@@ -754,10 +754,11 @@ def test_a_finalize_from_an_older_schedule_revision_is_refused(db_session):
     assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.AVAILABLE): 4}
     assert project.schedule_revision == 2
 
-    # A caller that doesn't name one (the demo build) is not checked.
+    # A caller that doesn't name one (the demo build) is not checked. Not a replace, it writes no new
+    # schedule, so it doesn't move the revision another open tab works from.
     import_repository.finalize_import_session(db_session, stale)
     db_session.flush()
-    assert project.schedule_revision == 3
+    assert project.schedule_revision == 2
 
 
 def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):

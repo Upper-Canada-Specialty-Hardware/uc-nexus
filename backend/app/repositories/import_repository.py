@@ -939,7 +939,11 @@ def finalize_import_session(
                 "The schedule changed since you opened this. Reload it and start again.",
                 field="expected_schedule_revision",
             )
-    project.schedule_revision += 1
+    # Bumped only by a finalize that writes a new schedule - a replace, a freshly parsed file (the only
+    # kind that carries its file name) or the first import. A request or PO raised off the schedule as it
+    # stands changes nothing a second open tab works from, and bumping on it refused that tab for nothing.
+    if replace_schedule or schedule_filename or project.schedule_revision == 0:
+        project.schedule_revision += 1
 
     # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
     # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
