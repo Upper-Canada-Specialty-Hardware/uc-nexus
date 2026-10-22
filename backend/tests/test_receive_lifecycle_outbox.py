@@ -366,13 +366,27 @@ def test_the_sync_does_not_raise_received_while_gp_holds_a_receipt_nexus_never_s
     # As a row failed before the flag was set on a persist failure, then perhaps cancelled.
     gp_outbox_repository.mark_failed(db_session, row, kind="persist_failed", error="bin not defined")
     if end == "cancelled":
-        gp_outbox_repository.cancel_entry(db_session, row.id)
+        # As one cancelled before cancel refused a write GP had taken.
+        row.status = "CANCELLED"
+        db_session.flush()
     assert row.maybe_in_gp is False
 
     sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number, 6), {})
     db_session.flush()
     db_session.refresh(li)
     assert li.received_quantity == 2
+
+
+def test_a_write_gp_took_but_nexus_never_saved_cannot_be_cancelled(db_session):
+    """#1948: cancelling it abandons what GP holds and frees its draft to be written again."""
+    from app.errors import ConflictError
+
+    _po_number, po, _li = _mirrored(db_session)
+    row = _receipt_row_gp_answered(db_session, po, saved=False)
+    gp_outbox_repository.mark_failed(db_session, row, kind="persist_failed", error="bin not defined")
+
+    with pytest.raises(ConflictError, match="GP already took this write"):
+        gp_outbox_repository.cancel_entry(db_session, row.id)
 
 
 def test_the_sync_raises_received_once_the_receipt_gp_took_is_saved(db_session):

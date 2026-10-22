@@ -442,6 +442,13 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("PENDING", "FAILED"):
         return None
+    # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
+    # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
+    from app.models.gp_write import GpWriteIdempotency
+
+    ledger = session.get(GpWriteIdempotency, row.idempotency_key)
+    if ledger is not None and ledger.relay_result is not None and ledger.result_id is None:
+        raise ConflictError("GP already took this write, so it can't be cancelled here. Finish it with Retry.")
     row.status = "CANCELLED"
     session.flush()
     _release_receive_draft(session, row)
