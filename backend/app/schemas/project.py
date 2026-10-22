@@ -110,6 +110,19 @@ class ProjectQueries:
             return project_to_type(p)
 
     @strawberry.field
+    def project(self, info: strawberry.Info, id: strawberry.ID) -> Project | None:
+        """One project by its UUID, archived included (#1877) - for a screen scoped to a project by a
+        link, whose picker read it off `projects` and so showed an archived one as blank. Built without
+        its openings, with the count from one COUNT. Null when it is not the caller's."""
+        with SessionLocal() as session:
+            p = project_repository.get_project(session, uuid.UUID(str(id)), company=tenant_scope(info))
+            if p is None:
+                return None
+            return project_to_type(
+                p, include_openings=False, opening_count=project_repository.count_project_openings(session, p.id)
+            )
+
+    @strawberry.field
     def admin_project_detail(self, info: strawberry.Info, id: strawberry.ID) -> AdminProjectDetail | None:
         """What the Tenant Owner module's Projects page shows when a row is opened (#637) - the
         project plus the three rollups that answer "is anything still live on this job" before

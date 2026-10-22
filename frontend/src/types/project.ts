@@ -68,6 +68,17 @@ export interface GpJobStatus {
 }
 
 /**
+ * #1877: a PO's own project, read off the PO rather than found in the `projects` list, which leaves
+ * archived jobs out - an archived job's PO showed no project, and receiving skipped its warnings.
+ */
+export interface PurchaseOrderProject extends GpSetupStatus, GpJobStatus {
+  id: string;
+  projectId: string;
+  description: string | null;
+  archived?: boolean;
+}
+
+/**
  * Is this project's GP job closed to writes (#730)? Strictly one of the three named states: undefined
  * (not requested), null (never mirrored) and ACTIVE all pass, the same permissive-on-unknown rule as
  * isGpSetupBroken. The server enforces it either way.

@@ -79,6 +79,8 @@ const draftPo: PurchaseOrder = {
   gpSyncedAt: null,
   nexusRegistered: false,
   projectId: 'p1',
+  // #1877: read off the PO itself, not the projects list.
+  project: { id: 'p1', projectId: '80001', description: 'Cowichan Dist Hospital' },
   status: 'DRAFT',
   company: 'TUBC',
   gpCompany: null,
@@ -123,7 +125,8 @@ const registeredPo: PurchaseOrder = {
 function projectsMock(): MockedResponse {
   return {
     request: { query: GET_PROJECTS },
-    // p1 is the project draftPo belongs to (#960).
+    // p1 is the project draftPo belongs to (#960). The modal no longer names it from here (#1877);
+    // the list stays mocked for the GP dialog that reads it.
     result: {
       data: {
         projects: [
@@ -532,6 +535,16 @@ describe('PODetailModal', () => {
     renderModal(draftPo);
     expect(await screen.findByText('Cowichan Dist Hospital #80001')).toBeInTheDocument();
     expect(screen.queryByText('No Project')).toBeNull();
+  });
+
+  it("names an archived project's job, which the projects list leaves out (#1877)", async () => {
+    const archivedPo: PurchaseOrder = {
+      ...registeredPo,
+      projectId: 'p-old',
+      project: { id: 'p-old', projectId: '70002', description: 'Old Library', archived: true },
+    };
+    renderModal(archivedPo);
+    expect(await screen.findByText('Old Library #70002')).toBeInTheDocument();
   });
 
   it('confirms before deleting a document, and says when it undoes Vendor Confirmed (#978)', async () => {

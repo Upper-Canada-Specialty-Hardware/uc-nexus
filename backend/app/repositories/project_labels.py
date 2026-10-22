@@ -23,3 +23,15 @@ def project_labels(session: Session, project_ids: Iterable[uuid.UUID | None]) ->
         return {}
     rows = session.execute(select(Project.id, Project.project_id, Project.description).where(Project.id.in_(ids)))
     return {pid: (number, description) for pid, number, description in rows}
+
+
+def projects_by_id(session: Session, project_ids: Iterable[uuid.UUID | None]) -> dict[uuid.UUID, Project]:
+    """The project rows themselves, archived included, for every id given. One query, openings not loaded.
+
+    For a PO, which shows its project's GP job state and setup verdict as well as its label (#1877):
+    receiving looked both up in the `projects` list too, so an archived project's PO lost its
+    quarantine warning and its closed-job block along with its name."""
+    ids = {pid for pid in project_ids if pid is not None}
+    if not ids:
+        return {}
+    return {p.id: p for p in session.scalars(select(Project).where(Project.id.in_(ids)))}

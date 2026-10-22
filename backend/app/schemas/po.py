@@ -30,7 +30,7 @@ from app.repositories import (
     tenancy,
     user_repository,
 )
-from app.repositories.project_labels import project_labels
+from app.repositories.project_labels import project_labels, projects_by_id
 from app.services import email as email_service
 from app.services import (
     gp_idempotency,
@@ -569,7 +569,9 @@ class POQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             pos = po_repository.get_purchase_orders(session, pid, status, company=scope)
-            return [po_to_type(po) for po in pos]
+            # #1877: every PO's project in one read, not one per PO.
+            projects = projects_by_id(session, (po.project_id for po in pos))
+            return [po_to_type(po, projects=projects) for po in pos]
 
     @strawberry.field
     def po_line_tied_quantities(self, info: strawberry.Info, po_id: strawberry.ID) -> list[PoLineTiedQuantity]:
@@ -736,7 +738,8 @@ class POQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             pos = po_repository.get_open_pos(session, pid, company=scope)
-            return [po_to_type(po) for po in pos]
+            projects = projects_by_id(session, (po.project_id for po in pos))  # #1877: one read for the list
+            return [po_to_type(po, projects=projects) for po in pos]
 
     @strawberry.field
     def open_pos_summary(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpenPOSummary]:

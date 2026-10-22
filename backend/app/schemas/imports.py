@@ -304,7 +304,8 @@ class ImportMutations:
 
             return FinalizeImportResult(
                 project=project_to_type(project),
-                purchase_orders=[po_to_type(po) for po in pos],
+                # #1877: every PO here is this project's, so it is handed over rather than read per PO.
+                purchase_orders=[po_to_type(po, projects={project.id: project}) for po in pos],
                 shipping_out_requests=[shipping_out_request_to_type(req) for req in shipping_requests],
                 shop_assembly_request=sar_type,
             )

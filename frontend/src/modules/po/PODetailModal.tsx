@@ -32,8 +32,7 @@ import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR, GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
-import { GET_PRIOR_ORDER_AS_VALUES, GET_PROJECTS } from '../../graphql/shared';
-import type { Project } from '../../types/project';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
@@ -607,10 +606,9 @@ export default function PODetailModal({
     skip: !canEditItems || distinctProductCodes.length === 0,
   });
 
-  // #960: the job a project PO is for, by name and number. The same projects read every picker
-  // makes, so it is normally already cached; skipped on a PO with no project.
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !po.projectId });
-  const project = po.projectId ? projectsData?.projects.find((p) => p.id === po.projectId) : undefined;
+  // #960: the job a project PO is for, by name and number. Off the PO itself (#1877): the projects
+  // list every picker reads leaves archived jobs out, so an archived job's PO showed no project.
+  const project = po.projectId ? po.project : null;
   const projectLabel = project
     ? `${project.description || project.projectId} #${project.projectId}`
     : null;

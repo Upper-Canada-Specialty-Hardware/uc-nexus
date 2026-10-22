@@ -57,6 +57,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import type { PoolKind } from '../../types/poolKind';
+import type { PurchaseOrderProject } from '../../types/project';
 import { PoolKindChip } from '../../components/PoolKind';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -158,6 +159,9 @@ export interface PurchaseOrder {
   // True when every one of this PO's lines is a NEXUS REGISTERED LINE.
   nexusRegistered: boolean;
   projectId: string | null;
+  // #1877: the PO's own project, archived included. Optional because not every document that builds
+  // a PurchaseOrder selects it.
+  project?: PurchaseOrderProject | null;
   // #832: Stock or Overhead - which half of the pool a PO with no project receives into. Optional
   // because not every document that builds a PurchaseOrder selects it.
   poolKind?: PoolKind;

@@ -209,6 +209,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # module's picker offers. `createGpJob` writes to the accounting system of record.
     "adminProjectDetail": TENANT_OWNERS,
     "adminProjects": TENANT_OWNERS,
+    "project": SIGNED_IN,
     "projectByScheduleId": SIGNED_IN,
     "projectShipTo": SIGNED_IN,
     "projects": SIGNED_IN,

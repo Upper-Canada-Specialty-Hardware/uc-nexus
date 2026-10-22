@@ -794,6 +794,9 @@ class PurchaseOrder:
     receive_records: list[ReceiveRecord]
     documents: list[PODocumentInfo]
     document_data: PODocumentData | None = None
+    # #1877: the PO's own project, archived or not. The detail and receiving screens used to find it in
+    # the `projects` list, which leaves archived jobs out. Null on a PO with no project.
+    project: "PurchaseOrderProject | None" = None
 
 
 @strawberry.type
@@ -804,6 +807,21 @@ class GpSetupIssue:
 
     cost_code: str  # 'phase-step-element', as the register-PO dropdown shows it
     account_index: int  # the dangling index, absent from GL00105
+
+
+@strawberry.type
+class PurchaseOrderProject:
+    """What a PO's screens show of its project (#1877): its number and name, and the GP job state and
+    setup verdict receiving warns and blocks on. Scalar columns off the project row, so no opening is
+    read and there is no count to get wrong."""
+
+    id: strawberry.ID
+    project_id: str  # the job number, as on Project
+    description: str | None
+    archived: bool
+    gp_job_state: GpJobState | None
+    gp_setup_ok: bool | None
+    gp_setup_issues: list[GpSetupIssue]
 
 
 @strawberry.type

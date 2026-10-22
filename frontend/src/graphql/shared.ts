@@ -3,9 +3,7 @@ import { gql } from '@apollo/client/core';
 // gpSetupOk / gpSetupIssues (#425) ride along on every project read: they are scalar columns on the
 // project row (no relationship walk, no N+1), and every module that lets a user pick a project has to
 // be able to badge a quarantined one rather than discovering it at the submit button.
-export const GET_PROJECTS = gql`
-  query GetProjects {
-    projects {
+const PICKER_PROJECT_FIELDS = `
       id
       projectId
       description
@@ -26,6 +24,22 @@ export const GET_PROJECTS = gql`
       }
       # #730: inactive, closed or missing in GP. Tagged in every picker, and the GP-bound ones grey it out.
       gpJobState
+`;
+
+export const GET_PROJECTS = gql`
+  query GetProjects {
+    projects {
+      ${PICKER_PROJECT_FIELDS}
+    }
+  }
+`;
+
+// #1877: one project by its id, archived included, with the picker's fields - for a screen scoped to
+// a project by a link, where `projects` (which leaves archived jobs out) cannot fill the picker.
+export const GET_PROJECT = gql`
+  query GetProject($id: ID!) {
+    project(id: $id) {
+      ${PICKER_PROJECT_FIELDS}
     }
   }
 `;

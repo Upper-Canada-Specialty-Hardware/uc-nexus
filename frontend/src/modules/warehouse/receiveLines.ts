@@ -8,6 +8,8 @@
  * dialog happened to have them first.
  */
 
+import type { PurchaseOrderProject } from '../../types/project';
+
 export const MAX_LOC_LEN = 20;
 
 export interface PODetailLineItem {
@@ -30,6 +32,8 @@ export interface PODetails {
   // #425: which project (and therefore which GP job) this PO belongs to, so a dialog can say the
   // receipt will be refused before the user finishes counting. Null for a stock PO.
   projectId: string | null;
+  // #1877: that project itself, archived or not, with its GP job state and setup verdict.
+  project?: PurchaseOrderProject | null;
   // The GP company this PO was registered in. A receive posts to GP, so it can only run against a PO
   // that was registered there (has a gpCompany + poNumber). See isPoGpRegistered.
   gpCompany: string | null;

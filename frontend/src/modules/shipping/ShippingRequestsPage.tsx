@@ -30,7 +30,7 @@ import ProjectPicker from '../../components/ProjectPicker';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useDropProjectOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import type { Project } from '../../types/project';
-import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_PROJECT, GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { rackLabel, racksCaption, useProjectRacks } from './racks';
@@ -137,9 +137,16 @@ export default function ShippingRequestsPage() {
   // #1528: a company switch takes the scoped project with it, as on Inventory (#1469).
   useDropProjectOnCompanySwitch();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
+  const listed = projectId ? projectsData?.projects.find((p) => p.id === projectId) : undefined;
+  // #1877: the list leaves archived jobs out, so an archived project's tile linked here filtered the
+  // requests and left the picker blank. A project the list does not hold is read by its id instead.
+  const { data: projectData } = useQuery<{ project: Project | null }>(GET_PROJECT, {
+    variables: { id: projectId ?? '' },
+    skip: !projectId || !!listed,
+  });
   const project = useMemo(
-    () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
-    [projectsData, projectId],
+    () => (projectId ? (listed ?? (projectData?.project?.id === projectId ? projectData.project : null)) : null),
+    [listed, projectData, projectId],
   );
   const setProject = useCallback(
     (next: Project | null) => {

@@ -7,6 +7,7 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 from datetime import datetime
 
 import strawberry
+from sqlalchemy.orm import object_session
 
 from app.models.enums import PoolKind as PoolKindDB
 from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatusDB
@@ -68,6 +69,7 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
+    PurchaseOrderProject,
     ReceiveDraft,
     ReceiveDraftLineItem,
     ReceiveDraftLocation,
@@ -453,13 +455,36 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
     )
 
 
-def po_to_type(po, receive_records=None) -> PurchaseOrder:
+def po_project_to_type(p: ProjectModel) -> PurchaseOrderProject:
+    return PurchaseOrderProject(
+        id=strawberry.ID(str(p.id)),
+        project_id=p.project_id,
+        description=p.description,
+        archived=p.archived,
+        gp_job_state=p.gp_job_state,
+        gp_setup_ok=p.gp_setup_ok,
+        gp_setup_issues=[
+            GpSetupIssue(cost_code=issue["cost_code"], account_index=issue["account_index"])
+            for issue in project_repository.parse_gp_setup_issues(p.gp_setup_detail)
+        ],
+    )
+
+
+def po_to_type(po, receive_records=None, *, projects: dict | None = None) -> PurchaseOrder:
+    """`projects` is a list caller's batched `projects_by_id` read (#1877). A single-PO caller leaves it
+    out and the PO's own project is read here, by primary key (no query when the session holds it)."""
     documents = getattr(po, "documents", None) or []
     # Read document_data ONLY if the caller eager-loaded it (in __dict__): a bare attribute access would
     # lazy-load, turning list resolvers that don't need it into an N+1. get_purchase_orders /
     # get_purchase_order selectinload it (that's what the generate dialog reads); everything else gets None.
     doc_data = po.__dict__.get("document_data")
     line_items = list(po.line_items)
+    project = None
+    if po.project_id is not None:
+        if projects is not None:
+            project = projects.get(po.project_id)
+        elif (session := object_session(po)) is not None:
+            project = session.get(ProjectModel, po.project_id)
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
@@ -495,6 +520,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         receive_records=[receive_record_to_type(rr) for rr in (receive_records or [])],
         documents=[po_document_to_type(doc) for doc in documents],
         document_data=po_document_data_to_type(doc_data) if doc_data is not None else None,
+        project=po_project_to_type(project) if project is not None else None,
     )
 
 
