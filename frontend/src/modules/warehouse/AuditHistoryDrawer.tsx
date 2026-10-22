@@ -16,6 +16,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_AUDIT_LOG, GET_WAREHOUSES } from '../../graphql/shared';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { auditActionLabel } from './auditActions';
 
 interface AuditLogEntry {
   id: string;
@@ -54,26 +55,6 @@ const ACTION_COLORS: Record<string, 'default' | 'primary' | 'secondary' | 'succe
   PULL_RESTOCK: 'success',
   PULL_CANCELLED: 'error',
   POOL_KIND_CHANGE: 'secondary',
-};
-
-const ACTION_LABELS: Record<string, string> = {
-  RECEIVE: 'Received',
-  ADJUSTMENT: 'Qty Adjusted',
-  MOVE: 'Moved',
-  UNLOCATE: 'Unlocated',
-  PUT_AWAY: 'Put Away',
-  PULL_DEDUCTION: 'Pull Deduction',
-  SPOT_CHECK: 'Spot Check',
-  DESTOCK: 'Destocked',
-  ALLOCATE_FROM_STOCK: 'Allocated from Stock',
-  RECLASSIFY: 'Reclassified',
-  REPORT_DEFICIENT: 'Reported Deficient',
-  RESOLVE_DEFICIENT: 'Deficiency Resolved',
-  TRANSFER: 'Transferred',
-  RETURN: 'Returned',
-  PULL_RESTOCK: 'Pull Restocked',
-  PULL_CANCELLED: 'Pull Cancelled',
-  POOL_KIND_CHANGE: 'Kind Changed',
 };
 
 // #974: the words each detail value is shown in, where the stored value is a code.
@@ -315,7 +296,7 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
     <Box sx={{ py: 1.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Chip
-          label={createdByOverride ? 'Created by Override' : (ACTION_LABELS[entry.action] ?? entry.action)}
+          label={createdByOverride ? 'Created by Override' : auditActionLabel(entry.action)}
           color={ACTION_COLORS[entry.action] ?? 'default'}
           size="small"
           variant="outlined"
