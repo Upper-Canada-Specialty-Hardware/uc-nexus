@@ -142,8 +142,9 @@ def _clip(value: str | None, limit: int = FIELD_LIMIT) -> str:
 
 
 def _cell(value: str | None) -> str:
-    """A markdown table cell: one line, pipes escaped, a dash when empty."""
-    value = re.sub(r"\s+", " ", _clip(value)).replace("|", "\\|")
+    """A markdown table cell: one line, pipes escaped, mentions defused, a dash when empty. The cells are
+    client text too (#1814): a screen of `1920x1080 @2x` would otherwise ping the account named 2x."""
+    value = _defuse(re.sub(r"\s+", " ", _clip(value)).replace("|", "\\|"))
     return value or "-"
 
 

@@ -338,6 +338,20 @@ def test_mentions_in_the_report_do_not_notify():
     assert "@​someone" in body
 
 
+def test_mentions_in_the_context_table_do_not_notify():
+    report = issue_report.Report(
+        kind="problem",
+        description="x",
+        context=issue_report.ClientContext(screen="2560x1440 @2x", page_title="@Upper-Canada-Specialty-Hardware/devs"),
+    )
+
+    body = _body(report, _reporter(name="@alice"))
+
+    assert "| screen | 2560x1440 @​2x |" in body
+    assert "@Upper-Canada-Specialty-Hardware/devs" not in body
+    assert "@alice" not in body
+
+
 def test_an_admin_working_in_another_company_is_named_with_both():
     report = issue_report.Report(kind="change", description="x", context=issue_report.ClientContext())
 
