@@ -506,6 +506,35 @@ describe('ReceiveDraftReviewModal', () => {
       await openModal();
       expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
     });
+
+    // A queued receipt that may be in GP, cancelled or failed with no answer: the draft stays approved.
+    it('offers the release on an approved draft whose queued receipt stopped, and approves nothing', async () => {
+      let released = 0;
+      const releaseMock: MockedResponse = {
+        request: { query: RELEASE_HELD_RECEIVE_APPROVAL, variables: { id: 'draft-1' } },
+        result: () => {
+          released += 1;
+          return { data: { releaseHeldReceiveApproval: { ...draft(), __typename: 'ReceiveDraft' } } };
+        },
+      };
+      await openModal(
+        [releaseMock, rereadMock('PENDING_APPROVAL')],
+        draft({ status: 'APPROVED', outboxEntryId: 'entry-1', queuedReceiptStopped: true }),
+      );
+
+      expect(document.body.textContent).toMatch(/stays approved until a manager checks GP/);
+      expect(approveButton()).toBeDisabled();
+      expect(screen.queryByTestId('approve-finished-reason')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: RELEASE }));
+      const confirm = await screen.findByRole('dialog', { name: 'Release this held approval' }, SLOW);
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Release it' }));
+      await vi.waitFor(() => expect(released).toBe(1), SLOW);
+    });
+
+    it('does not offer the release on an approved draft whose queued receipt is still going', async () => {
+      await openModal([], draft({ status: 'APPROVED', outboxEntryId: 'entry-1', queuedReceiptStopped: false }));
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
   });
 
   it('says another manager finished it, not "fix or reject", when the re-read is approved (#1582)', async () => {

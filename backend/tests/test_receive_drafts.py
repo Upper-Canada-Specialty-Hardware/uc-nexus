@@ -1366,6 +1366,86 @@ def test_only_a_held_approval_gp_never_answered_can_be_released(committed, monke
     assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVING
 
 
+def _queue_as_maybe_in_gp(f, monkeypatch):
+    """An approval whose relay call timed out: the receipt queued under its key, as maybe in GP."""
+    from app.errors import RelayTimeoutError
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayTimeoutError()))
+    return _queued_row(_approve(f.draft_id)).id
+
+
+def _end_queued_row(row_id, ending) -> None:
+    from app.database import SessionLocal
+    from app.repositories import gp_outbox_repository
+
+    with SessionLocal() as session:
+        if ending == "CANCELLED":
+            gp_outbox_repository.cancel_entry(session, row_id)
+        else:
+            row = gp_outbox_repository.get_entry_locked(session, row_id)
+            gp_outbox_repository.mark_failed(session, row, kind="exhausted", error="timed out", maybe_in_gp=True)
+        session.commit()
+
+
+@pytest.mark.parametrize("ending", ["CANCELLED", "FAILED"])
+def test_a_manager_releases_an_approved_draft_whose_queued_receipt_stopped(committed, monkeypatch, approve_env, ending):
+    """#1945: a queued receipt that may be in GP never hands its draft back, so cancelled or run out it left
+    the draft APPROVED with nothing booked for good, its units blocking every re-count. It is held on GP
+    now, and a manager who checked GP releases it like a held claim."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, ending)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVED
+
+    held = warehouse_module.WarehouseQueries().receive_drafts(_Info(), held_on_gp=True)
+    (mine,) = [d for d in held if d.id == str(f.draft_id)]
+    assert mine.queued_receipt_stopped is True
+
+    released = _release(f.draft_id)
+
+    assert released.status.value == "PENDING_APPROVAL"
+    assert released.queued_receipt_stopped is False
+    draft = _read_draft(f.draft_id)
+    assert draft.approved_outbox_entry_id is None
+    assert "checked GP" in draft.rejection_reason
+    # The ended row can't be put back: its draft is no longer its, and a fresh approval posts instead.
+    with SessionLocal() as session, pytest.raises(ConflictError, match="went back for review"):
+        gp_outbox_repository.retry_entry(session, row_id)
+
+
+def test_an_approved_draft_is_not_released_while_its_receipt_is_queued_or_once_gp_answered(
+    committed, monkeypatch, approve_env
+):
+    from app.errors import ConflictError
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    with pytest.raises(ConflictError, match="still queued"):
+        _release(f.draft_id)
+    assert [d.id for d in warehouse_module.WarehouseQueries().receive_drafts(_Info(), held_on_gp=True)].count(
+        str(f.draft_id)
+    ) == 0
+
+    _end_queued_row(row_id, "CANCELLED")
+    gp_idempotency.record_relay_result(_queued_row_key(row_id), "create_receive", {"receipt_number": "RCT01945"})
+    with pytest.raises(ConflictError, match="GP already took this receipt"):
+        _release(f.draft_id)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVED
+
+
+def _queued_row_key(row_id) -> str:
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        return session.get(GpWriteOutbox, row_id).idempotency_key
+
+
 def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):
     """A project-less PO routes to the stock pool. Drafts apply to it and approve unchanged."""
     f = committed(with_project=False, quantity=2)

@@ -235,8 +235,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   // retried, not edited or rejected. The backend refuses both on APPROVING, and an edit sent first
   // would stop the same-key approve, the only way to finish the post, from ever being reached.
   const retrying = draft?.status === 'APPROVING' || approveFailed;
+  // #1945: approved with nothing booked, and the queued receipt behind it cancelled or failed with no answer
+  // from GP. Nothing here approves it again; a manager who checked GP releases it.
+  const stoppedQueued = draft?.status === 'APPROVED' && !draft.receiveRecordId && !!draft.queuedReceiptStopped;
   // #1593: approved or rejected by someone else meanwhile - there is nothing left to approve or edit here.
-  const finishedElsewhere = draft?.status === 'APPROVED' || draft?.status === 'REJECTED';
+  const finishedElsewhere = (draft?.status === 'APPROVED' && !stoppedQueued) || draft?.status === 'REJECTED';
 
   // ---- Actions ----
 
@@ -490,7 +493,8 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
           quarantined ||
           jobNotOpen ||
           submitting ||
-          finishedElsewhere
+          finishedElsewhere ||
+          stoppedQueued
         }
         onClick={() => setConfirmOpen(true)}
       >
@@ -501,7 +505,8 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
 
   const lastChanged = draftLastChanged(draft)?.toLocaleString() ?? null;
   // #1945: held on GP with nothing booked here - refused just now as maybe in GP, or reopened still claimed.
-  const canRelease = !succeeded && (heldOnGp || (draft.status === 'APPROVING' && !draft.receiveRecordId));
+  const canRelease =
+    !succeeded && (heldOnGp || (draft.status === 'APPROVING' && !draft.receiveRecordId) || stoppedQueued);
 
   // #1354: inventory moves when GP accepts the receipt, which is now only while the relay is up.
   const inventoryNote =
@@ -600,6 +605,13 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
             {mutationError}
           </Alert>
         )}
+        {stoppedQueued && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This count was approved and its GP receipt queued, but the queued receipt was cancelled or failed
+            without an answer from GP, so nothing was booked here. It stays approved until a manager checks GP:
+            if GP holds no receipt for it, release it back for review; if GP has it, have it reconciled.
+          </Alert>
+        )}
         {canRelease && (
           <Box sx={{ mb: 2 }}>
             <Button
@@ -656,7 +668,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 labelId="review-warehouse-label"
                 label="Receive into warehouse"
                 value={warehouseId}
-                disabled={retrying || finishedElsewhere}
+                disabled={retrying || finishedElsewhere || stoppedQueued}
                 onChange={(e) => setWarehouseId(e.target.value)}
               >
                 {warehouses.map((w) => (
@@ -672,7 +684,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 receiveQuantities={receiveQuantities}
                 onQuantityChange={handleQuantityChange}
                 showPoHeaders={false}
-                readOnly={retrying || finishedElsewhere}
+                readOnly={retrying || finishedElsewhere || stoppedQueued}
               />
             )}
           </>

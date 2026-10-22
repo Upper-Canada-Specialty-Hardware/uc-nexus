@@ -234,6 +234,27 @@ it('offers cancel on a registration whose po is already in nexus, and says the d
   expect(screen.queryByText(/GP may already hold this PO/)).toBeNull();
 });
 
+// #1945: a receipt that may be in GP never sends its draft back, so the warning says it stays approved.
+it('warns before cancelling a receipt GP may hold that its draft stays approved until a manager releases it', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'exhausted',
+      maybeInGp: true,
+      gpTook: false,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this receipt/)).toBeInTheDocument();
+  expect(screen.getByText(/the draft stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
+  expect(screen.queryByText(/whoever submitted it will have to redo it/)).toBeNull();
+});
+
 it('keeps the plain cancel words for a write nothing says reached GP', async () => {
   renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', maybeInGp: false })]);
 

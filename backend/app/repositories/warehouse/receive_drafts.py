@@ -358,6 +358,7 @@ def get_receive_drafts(
     *,
     company: str | None = None,
     statuses: list[ReceiveDraftStatus] | None = None,
+    held_on_gp: bool = False,
 ) -> list[tuple]:
     """Drafts with the PO they are against, newest first.
 
@@ -367,6 +368,7 @@ def get_receive_drafts(
 
     `statuses` filters to any of a set (#1889): my drafts shows only the rejected and the waiting, and
     an author's approved drafts only accumulate, so they are never read for it. Additive with `status`.
+    `held_on_gp` keeps the approvals a manager may have to release after checking GP (#1945).
     """
     stmt = (
         select(ReceiveDraftModel, POModel)
@@ -378,6 +380,12 @@ def get_receive_drafts(
         stmt = stmt.where(ReceiveDraftModel.status == status)
     if statuses:
         stmt = stmt.where(ReceiveDraftModel.status.in_(statuses))
+    if held_on_gp:
+        # #1945: the approvals held on GP - claimed, or approved with nothing booked behind a queued receipt
+        # that stopped. Narrowed here, settled by `drafts_with_stopped_receipts` below.
+        stmt = stmt.where(
+            ReceiveDraftModel.status.in_(_IN_FLIGHT_STATUSES), ReceiveDraftModel.receive_record_id.is_(None)
+        )
     if po_id is not None:
         stmt = stmt.where(ReceiveDraftModel.po_id == po_id)
     if created_by_user_id is not None:
@@ -386,7 +394,11 @@ def get_receive_drafts(
         # Through the PO, which is already joined: a draft has a nullable warehouse but always a PO,
         # and the PO is what the receive is for.
         stmt = stmt.where(POModel.company == company)
-    return [(draft, po) for draft, po in session.execute(stmt).unique().all()]
+    rows = [(draft, po) for draft, po in session.execute(stmt).unique().all()]
+    if held_on_gp:
+        stopped = drafts_with_stopped_receipts(session, [draft for draft, _ in rows])
+        rows = [(d, po) for d, po in rows if d.status == ReceiveDraftStatus.APPROVING or d.id in stopped]
+    return rows
 
 
 def get_receive_draft(session: Session, draft_id: uuid.UUID):
@@ -815,22 +827,46 @@ def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: s
     posted the receipt, and nothing else released an APPROVING draft: it sat claimed for good. Only a
     person can answer the question the claim is guarding, by looking in GP, so only a manager's word lets
     it go. Refused while the ledger holds GP's answer for the claim's key: GP took that receipt, and the
-    same-key retry is what books it."""
+    same-key retry is what books it.
+
+    So is an APPROVED draft with nothing booked whose queued receipt ended - cancelled, or failed - without
+    an answer from GP. One that may be in GP never hands its draft back on its own (#1849), so the draft
+    stayed approved for good and its units blocked every re-count (`_assert_no_conflicting_claim`)."""
+    from app.models.gp_outbox import GpWriteOutbox
     from app.models.gp_write import GpWriteIdempotency
 
+    # The queued row's lock before the draft's, the order the outbox's own release takes them in.
+    seen = session.get(ReceiveDraftModel, draft_id)
+    entry = None
+    if seen is not None and seen.approved_outbox_entry_id is not None:
+        entry = session.get(GpWriteOutbox, seen.approved_outbox_entry_id, with_for_update=True, populate_existing=True)
     draft = _lock_draft(session, draft_id)
-    if draft.status != ReceiveDraftStatus.APPROVING or draft.receive_record_id is not None:
+    if draft.receive_record_id is not None or draft.status not in _IN_FLIGHT_STATUSES:
         raise InvalidStateTransitionError(
             f"Only an approval still held on GP can be released; this draft is {status_label(draft.status)}. "
             f"{REFRESH_HINT}"
         )
-    ledger = session.get(GpWriteIdempotency, draft.approval_idempotency_key) if draft.approval_idempotency_key else None
+    key = draft.approval_idempotency_key
+    if draft.status == ReceiveDraftStatus.APPROVED:
+        if entry is None or entry.id != draft.approved_outbox_entry_id:
+            raise InvalidStateTransitionError(
+                f"Only an approval still held on GP can be released; this draft is approved. {REFRESH_HINT}"
+            )
+        if entry.status not in ("CANCELLED", "FAILED"):
+            raise ConflictError(
+                "This draft's GP receipt is still queued, so the approval can't be released. It books itself "
+                "when the receipt posts."
+            )
+        key = entry.idempotency_key
+    ledger = session.get(GpWriteIdempotency, key) if key else None
     if ledger is not None and ledger.relay_result is not None:
         raise ConflictError(
             "GP already took this receipt, so the approval can't be released. Retry posting to book it here."
         )
     draft.status = ReceiveDraftStatus.PENDING_APPROVAL
     draft.approval_idempotency_key = None
+    # A queued row released from is left as it ended; its Retry is refused, as the draft is no longer its.
+    draft.approved_outbox_entry_id = None
     draft.reviewed_by_user_id = None
     draft.reviewed_by_name = None
     draft.reviewed_at = None
@@ -839,6 +875,36 @@ def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: s
     )
     session.flush()
     return draft
+
+
+def drafts_with_stopped_receipts(session: Session, drafts) -> set[uuid.UUID]:
+    """The approved drafts, of `drafts`, whose queued receipt ended - cancelled, or failed - with no answer
+    from GP and nothing booked (#1945): the ones a manager who checked GP can release. One read for the lot."""
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.repositories import gp_outbox_repository
+
+    queued = {
+        d.approved_outbox_entry_id: d.id
+        for d in drafts
+        if d.status == ReceiveDraftStatus.APPROVED
+        and d.receive_record_id is None
+        and d.approved_outbox_entry_id is not None
+    }
+    if not queued:
+        return set()
+    entries = list(
+        session.scalars(
+            select(GpWriteOutbox).where(
+                GpWriteOutbox.id.in_(list(queued)), GpWriteOutbox.status.in_(("CANCELLED", "FAILED"))
+            )
+        ).all()
+    )
+    ledgers = gp_outbox_repository.ledgers_for(session, entries)
+    return {
+        queued[e.id]
+        for e in entries
+        if (ledger := ledgers.get(e.idempotency_key)) is None or ledger.relay_result is None
+    }
 
 
 def mark_approved(

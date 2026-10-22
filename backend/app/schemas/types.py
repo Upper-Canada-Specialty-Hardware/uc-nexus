@@ -584,6 +584,9 @@ class ReceiveDraft:
     created_at: datetime
     updated_at: datetime
     line_items: list[ReceiveDraftLineItem]
+    # #1945: approved with nothing booked, and its queued receipt cancelled or failed with no answer from
+    # GP. It stays approved - its units held against the PO - until a manager checks GP and releases it.
+    queued_receipt_stopped: bool = False
 
 
 @strawberry.type

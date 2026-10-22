@@ -323,7 +323,16 @@ def _is_warehouse_manager(info) -> bool:
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
     with SessionLocal() as session:
         draft, po = warehouse_repository.get_receive_draft(session, draft_id)
-        return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
+        return _draft_type(session, draft, po)
+
+
+def _draft_type(session, draft, po) -> ReceiveDraft:
+    return receive_draft_to_type(
+        draft,
+        po,
+        project_labels(session, [po.project_id if po else None]),
+        queued_receipt_stopped=bool(warehouse_repository.drafts_with_stopped_receipts(session, [draft])),
+    )
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
@@ -455,6 +464,7 @@ class WarehouseQueries:
         po_id: strawberry.ID | None = None,
         mine: bool = False,
         statuses: list[ReceiveDraftStatus] | None = None,
+        held_on_gp: bool = False,
     ) -> list[ReceiveDraft]:
         """Counted receives waiting on (or returned from) approval, newest first.
 
@@ -462,6 +472,8 @@ class WarehouseQueries:
         their own counts, and what a manager needs is everybody's. Signed-in rather than
         manager-gated for the same reason: a rejected draft is only actionable by its author.
         `statuses` filters to any of a set, so my drafts reads only the two it shows (#1889).
+        `heldOnGp` answers with the approvals held on GP instead (#1945): claimed, or approved with nothing
+        booked behind a queued receipt that stopped - what a manager releases once they have checked GP.
         """
         from app.models.enums import ReceiveDraftStatus as ReceiveDraftStatusDB
 
@@ -474,16 +486,21 @@ class WarehouseQueries:
                 created_by_user_id=user["user_id"] if mine else None,
                 company=tenant_scope(info),
                 statuses=[ReceiveDraftStatusDB(s.value) for s in statuses] if statuses else None,
+                held_on_gp=held_on_gp,
             )
             labels = project_labels(session, (po.project_id for _, po in rows if po is not None))
-            return [receive_draft_to_type(draft, po, labels) for draft, po in rows]
+            stopped = warehouse_repository.drafts_with_stopped_receipts(session, [draft for draft, _ in rows])
+            return [
+                receive_draft_to_type(draft, po, labels, queued_receipt_stopped=draft.id in stopped)
+                for draft, po in rows
+            ]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
             tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
-            return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
+            return _draft_type(session, draft, po)
 
     @strawberry.field
     def project_inventory_availability(
@@ -1181,7 +1198,8 @@ class WarehouseMutations:
     def release_held_receive_approval(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         """Send a held approval back to the queue, on a manager's word that GP holds no receipt for it
         (#1945). A resumed approval refused on its re-check keeps its claim, since an earlier attempt may
-        have posted the receipt, and before this nothing could release it."""
+        have posted the receipt, and before this nothing could release it. So does an approved draft whose
+        queued receipt was cancelled or failed with no answer from GP."""
         user = current_user(info)
         draft_id = uuid.UUID(str(id))
         with SessionLocal() as session:

@@ -505,6 +505,9 @@ const RECEIVE_DRAFT_FIELDS = `
   approvalIdempotencyKey
   receiveRecordId
   outboxEntryId
+  # #1945: approved, nothing booked, and its queued receipt cancelled or failed with no answer from GP -
+  # held until a manager checks GP and releases it.
+  queuedReceiptStopped
   # #632: the counter's remark for the approver ("box crushed"). Carried onto the record at approval.
   notes
   totalQuantity
@@ -521,8 +524,14 @@ const RECEIVE_DRAFT_FIELDS = `
 `;
 
 export const GET_RECEIVE_DRAFTS = gql`
-  query GetReceiveDrafts($status: ReceiveDraftStatus, $statuses: [ReceiveDraftStatus!], $poId: ID, $mine: Boolean) {
-    receiveDrafts(status: $status, statuses: $statuses, poId: $poId, mine: $mine) {
+  query GetReceiveDrafts(
+    $status: ReceiveDraftStatus
+    $statuses: [ReceiveDraftStatus!]
+    $poId: ID
+    $mine: Boolean
+    $heldOnGp: Boolean
+  ) {
+    receiveDrafts(status: $status, statuses: $statuses, poId: $poId, mine: $mine, heldOnGp: $heldOnGp) {
       ${RECEIVE_DRAFT_FIELDS}
     }
   }

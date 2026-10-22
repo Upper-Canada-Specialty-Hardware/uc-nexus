@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -124,6 +124,32 @@ describe('ReceiveApprovalsPage', () => {
     renderPage([draftsMock('PENDING_APPROVAL', [draft()])]);
 
     expect(await screen.findByText('PO-123', undefined, SLOW)).toBeInTheDocument();
+  });
+
+  // #1945: an approval held on GP - claimed, or approved behind a queued receipt that stopped - is found
+  // under its own view, from a server filter, and opens to be retried or released.
+  it('lists the approvals held on GP under their own view', async () => {
+    mockIdentity.roles = ['Warehouse Manager'];
+    const heldMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFTS, variables: { heldOnGp: true } },
+      result: {
+        data: {
+          receiveDrafts: [
+            draft({ id: 'd1', poNumber: 'PO-1', status: 'APPROVING' }),
+            draft({ id: 'd2', poNumber: 'PO-2', status: 'APPROVED', outboxEntryId: 'e-1', queuedReceiptStopped: true }),
+          ],
+        },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+    };
+    renderPage([draftsMock('PENDING_APPROVAL', []), heldMock]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Held on GP' }, SLOW));
+
+    expect(await screen.findByText('PO-2', undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getByText('Receipt stopped — check GP')).toBeInTheDocument();
+    expect(screen.getByText('PO-2').closest('tr')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByText('PO-1').closest('tr')).toHaveAttribute('tabindex', '0');
   });
 
   it('says so when the queue is empty', async () => {

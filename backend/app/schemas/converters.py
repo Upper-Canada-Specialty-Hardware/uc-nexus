@@ -187,7 +187,9 @@ def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
     )
 
 
-def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft:
+def receive_draft_to_type(
+    draft, po, labels: dict | None = None, *, queued_receipt_stopped: bool = False
+) -> ReceiveDraft:
     """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
     walked off a relationship so a list read stays one query. `labels` is the caller's batched
     `project_labels` read (#1196), so the project name costs one query per list, not one per row."""
@@ -220,6 +222,7 @@ def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft
         created_at=draft.created_at,
         updated_at=draft.updated_at,
         line_items=[receive_draft_line_item_to_type(li) for li in draft.line_items],
+        queued_receipt_stopped=queued_receipt_stopped,
     )
 
 

@@ -51,6 +51,9 @@ export interface ReceiveDraft {
   approvalIdempotencyKey: string | null;
   receiveRecordId: string | null;
   outboxEntryId: string | null;
+  /** #1945: approved with nothing booked, its queued receipt cancelled or failed with no answer from GP. It
+   *  stays approved until a manager checks GP and releases it. */
+  queuedReceiptStopped?: boolean | null;
   /** #504: the PO document (type PACKING_SLIP) this count was made against, or null on drafts raised
    *  before the requirement existed. Its presigned URL is fetched on demand for viewing. */
   packingSlipDocumentId: string | null;

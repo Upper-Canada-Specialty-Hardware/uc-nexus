@@ -49,6 +49,12 @@ const NORMAL_CANCEL_WARNING =
 const MAYBE_IN_GP_CANCEL_WARNING =
   'GP may already hold this PO - an attempt reached GP and no answer came back. Check GP first: if the PO is ' +
   'there, cancelling leaves a PO in GP with nothing here for it, and registering the draft again makes a second one.';
+// #1945: a receipt that may be in GP never hands its draft back on its own - released, it could be approved
+// and posted again. Cancelled, the draft stays approved, holding its units, until a manager releases it.
+const MAYBE_IN_GP_RECEIPT_CANCEL_WARNING =
+  'GP may already hold this receipt - an attempt reached GP and no answer came back. Cancelling does not send ' +
+  'its count back for review: the draft stays approved until a Warehouse Manager checks GP and, if no receipt ' +
+  'was posted, releases it from Receive Approvals under Held on GP.';
 
 // #1948: a registration GP took whose PO the mirror already copied: its save can never land, and cancelling
 // it abandons nothing in GP. The draft is cancelled with it, so it is never registered a second time.
@@ -220,7 +226,9 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
             ? alreadyInNexusCancelWarning(cancelTarget.alreadyInNexusAs)
             : cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
               ? MAYBE_IN_GP_CANCEL_WARNING
-              : NORMAL_CANCEL_WARNING
+              : cancelTarget?.relayOp === 'create_receipt' && cancelTarget.maybeInGp
+                ? MAYBE_IN_GP_RECEIPT_CANCEL_WARNING
+                : NORMAL_CANCEL_WARNING
         }
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"
