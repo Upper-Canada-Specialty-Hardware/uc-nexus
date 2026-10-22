@@ -1399,6 +1399,26 @@ def _return_units_to_project_inventory(
     return il
 
 
+def _lock_combos(session: Session, project_id: uuid.UUID, combos: set[tuple[str, str]]) -> None:
+    """Lock every inventory row of the project's `combos`, in id order, read fresh."""
+    from app.repositories.warehouse.reservations import _combo_filter
+
+    if not combos:
+        return
+    session.scalars(
+        select(InventoryLocationModel)
+        .where(
+            InventoryLocationModel.project_id == project_id,
+            _combo_filter(
+                sorted(combos), InventoryLocationModel.hardware_category, InventoryLocationModel.product_code
+            ),
+        )
+        .order_by(InventoryLocationModel.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+
 def _restock_cancelled_pull(
     session: Session,
     pr: PullRequestModel,
@@ -1425,6 +1445,12 @@ def _restock_cancelled_pull(
       lines are discarded with it, since a draft is a note about hardware, not a hold on it.
     """
     applied = [line for line in _pick_lines(session, pr.id, PullPickLineState.APPLIED) if line.quantity > 0]
+    # #1904: every row of every combo in play first, in id order - the set and the order a pick and the
+    # availability gate take - and only then the picked rows below. Taking the picked rows first, then
+    # the combos for the re-reserve, was the opposite order to a pick's, and the two could deadlock.
+    _lock_combos(
+        session, pr.project_id, set(needs_by_combo) | {(ln.hardware_category, ln.product_code) for ln in applied}
+    )
 
     if not applied:
         if pr.picked_at is None:
