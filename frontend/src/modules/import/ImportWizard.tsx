@@ -65,7 +65,14 @@ import {
   type DraftGroup,
   type DraftInfoField,
 } from './types';
-import { buildPoDrafts, describeDraftShortfalls, toPoDraftInput, type PODraftOutcomeData } from './poDrafts';
+import {
+  buildPoDrafts,
+  describeDraftShortfalls,
+  describeStrandedDocuments,
+  poIdByDraft,
+  toPoDraftInput,
+  type PODraftOutcomeData,
+} from './poDrafts';
 import * as draftOps from './draftOps';
 import { carryDraftEdits, describeUnattached, mergeAddedProducts, unattachedDocuments } from './draftOps';
 import type { Project } from '../../types/project';
@@ -1243,8 +1250,8 @@ export default function ImportWizard({
   }
 
   // #570/#588: the PO drafts to create, built once. Carries sourceDraftId (stripped before the
-  // mutation) so #588 can map each returned PO back to its draft's pre-attached documents - the
-  // backend creates POs in this exact order.
+  // mutation) so #588 can map each returned PO back to its draft's pre-attached documents - through
+  // the draft index finalize reports per PO (#1884), as a draft that claims nothing makes none.
   const poDraftBuild = useMemo(
     () => (purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null),
     [purpose, draftGroups, vendorGroups, orderAsValues],
@@ -1385,20 +1392,26 @@ export default function ImportWizard({
       const data = result.data?.finalizeImportSession as FinalizeResultData;
 
       // #588: the request(s) are created; now land each draft's pre-attached documents on its PO.
-      // Positional map: data.purchaseOrders[i] is poDraftBuild[i]'s PO (both in included-draft
-      // order), and sourceDraftId ties that back to the draft holding the files. The PO already
+      // #1884: matched by the draft index finalize reports for each PO, not by position - the backend
+      // skips a draft that claims nothing (#640), which shifted every later draft's documents onto the
+      // next draft's PO. A skipped draft's documents have no PO and are not uploaded. The PO already
       // exists, so a failed upload does not undo the finalize - it just leaves that doc off, which
       // the user re-uploads on the PO. Collect the names that failed rather than throwing.
       const attachFailures: string[] = [];
-      if (poDraftBuild && data.purchaseOrders.length > 0) {
-        const jobs = data.purchaseOrders.flatMap((po, i) => {
-          const draft = draftGroups.find((g) => g.id === poDraftBuild[i]?.sourceDraftId);
+      const poByDraft = poDraftBuild
+        ? poIdByDraft(poDraftBuild, data.poDraftOutcomes ?? [])
+        : new Map<string, string>();
+      if (poDraftBuild && poByDraft.size > 0) {
+        const jobs = poDraftBuild.flatMap((built) => {
+          const poId = poByDraft.get(built.sourceDraftId);
+          if (!poId) return [];
+          const draft = draftGroups.find((g) => g.id === built.sourceDraftId);
           return (draft?.attachments ?? []).map((att) =>
             (async () => {
               try {
                 await uploadPoDocument({
                   variables: {
-                    poId: po.id,
+                    poId,
                     fileName: att.file.name,
                     contentType: att.file.type || 'application/octet-stream',
                     documentType: att.documentType,
@@ -1428,6 +1441,12 @@ export default function ImportWizard({
         : null;
       const warnings: string[] = [];
       if (shortfall) warnings.push(shortfall);
+      // #1884: a draft finalize did not make has no PO for its documents, so they were not uploaded.
+      const stranded = describeStrandedDocuments(
+        (poDraftBuild ?? []).filter((built) => !poByDraft.has(built.sourceDraftId)),
+        draftGroups,
+      );
+      if (stranded) warnings.push(stranded);
       if (attachFailures.length > 0) {
         const noun = attachFailures.length === 1 ? 'document' : 'documents';
         warnings.push(

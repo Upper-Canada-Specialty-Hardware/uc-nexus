@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildPoDrafts, describeDraftShortfalls, toPoDraftInput } from '../poDrafts';
+import {
+  buildPoDrafts,
+  describeDraftShortfalls,
+  describeStrandedDocuments,
+  poIdByDraft,
+  toPoDraftInput,
+} from '../poDrafts';
 import type { DraftGroup, AggregatedHardwareItem } from '../types';
 
 function hw(
@@ -225,5 +231,46 @@ describe('describeDraftShortfalls (#1883)', () => {
 
   it('reads nothing from a finalize that sent no outcomes', () => {
     expect(describeDraftShortfalls(built, [], label)).toBeNull();
+  });
+});
+
+describe('poIdByDraft / describeStrandedDocuments (#1884)', () => {
+  const groups = new Map([
+    ['HG|HINGE', [hw('A01', 'HG', 4)]],
+    ['LK|LOCK', [hw('A01', 'LK', 2, { category: 'LOCK' })]],
+  ]);
+  const withDocs = (g: DraftGroup, names: string[]): DraftGroup => ({
+    ...g,
+    attachments: names.map((n) => ({ id: n, file: new File(['x'], n), documentType: 'PO_DOCUMENT' as const })),
+  });
+  const draftGroups = [
+    withDocs(draft('Hager', { 'HG|HINGE': 4 }), ['quote-hager.pdf']),
+    withDocs(draft('Schlage', { 'LK|LOCK': 2 }), ['quote-schlage.pdf', 'spec.pdf']),
+  ];
+  const built = buildPoDrafts(draftGroups, groups, new Map());
+
+  it('maps each made PO to the draft it came from when an earlier draft was skipped', () => {
+    // The backend skipped Hager (it claimed nothing), so Schlage's PO is purchaseOrders[0] - which the
+    // old positional map handed Hager's documents.
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: null, requestedQuantity: 4, claimedQuantity: 0 },
+      { draftIndex: 1, purchaseOrderId: 'po-schlage', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    const map = poIdByDraft(built, outcomes);
+    expect([...map.entries()]).toEqual([['Schlage', 'po-schlage']]);
+    expect(describeStrandedDocuments(built.filter((b) => !map.has(b.sourceDraftId)), draftGroups)).toBe(
+      "1 document on 'Hager' was not attached.",
+    );
+  });
+
+  it('names nothing when every draft with documents made a PO', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: 'po-hager', requestedQuantity: 4, claimedQuantity: 4 },
+      { draftIndex: 1, purchaseOrderId: 'po-schlage', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    const map = poIdByDraft(built, outcomes);
+    expect(map.get('Hager')).toBe('po-hager');
+    expect(map.get('Schlage')).toBe('po-schlage');
+    expect(describeStrandedDocuments(built.filter((b) => !map.has(b.sourceDraftId)), draftGroups)).toBeNull();
   });
 });
