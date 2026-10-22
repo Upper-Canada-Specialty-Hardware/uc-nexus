@@ -81,18 +81,18 @@ it('lets a stock draft with no project pick one at register time', async () => {
 });
 
 // #1949: a draft raised with no project stores every line off the job, there being none. Given its
-// project - on the PO detail, or here - the lines stayed off it and the PO registered with nothing
-// booked to the job. A line on a project PO books to the job by default, so they start ticked.
-it('ticks job cost on every line of a draft that was given its project after it was raised', async () => {
-  const gainedProject: PurchaseOrder = {
+// project on the PO detail, the save puts its lines on the job (the backend's `update_po`); given it
+// here, picking the job does. A project draft's lines are otherwise shown as the buyer set them.
+it('leaves a project draft with every line off the job as the buyer set it', async () => {
+  const allOffTheJob: PurchaseOrder = {
     ...stockDraft,
     projectId: 'p1',
     lineItems: [stockDraft.lineItems[0], { ...stockDraft.lineItems[0], id: 'li-2', productCode: 'LK-200' }],
   };
-  renderDialog({ registerPo: gainedProject }, [...baseMocks(), costCodesMock()]);
+  renderDialog({ registerPo: allOffTheJob }, [...baseMocks(), costCodesMock()]);
 
-  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
-  expect(screen.getByLabelText('Job cost line 2')).toBeChecked();
+  expect(await screen.findByLabelText('Job cost line 1')).not.toBeChecked();
+  expect(screen.getByLabelText('Job cost line 2')).not.toBeChecked();
 });
 
 it('ticks job cost on a projectless draft when its project is picked here', async () => {

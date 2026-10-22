@@ -757,11 +757,9 @@ export default function GpPurchaseOrderDialog({
       setContact('');
       setContactEdited(false);
       setComment('');
-      // #1949: a draft that gained its project after it was raised still carries the lines it was raised
-      // with, every one off the job, there being none then. A line on a project PO books to the job by
-      // default, so they start ticked rather than registering the whole PO off the job unnoticed.
-      const linesOffTheJob =
-        !!registerPo.projectId && registerPo.lineItems.length > 0 && registerPo.lineItems.every((li) => !li.jobCost);
+      // #1949: a project draft's job cost is seeded as stored. The draft that gained its project after
+      // it was raised had its lines put on the job by the save that gave it one (`update_po`), so a
+      // project PO whose lines are all off the job is one the buyer set that way, and stays so.
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -778,7 +776,7 @@ export default function GpPurchaseOrderDialog({
         // for all lines" pick above the grid then does for the rest.
         costCode: li.costCode ?? registerPo.costCode ?? '',
         uofm: li.uofm || DEFAULT_UOFM,
-        jobCost: linesOffTheJob || li.jobCost,
+        jobCost: li.jobCost,
         manufacturer: li.manufacturer ?? null,
         // #1910: a draft's custom-item line keeps its catalog link. Without it the line unlocked and
         // registering sent no custom item, so GP's line - and the stock received on it - lost the
@@ -1676,8 +1674,9 @@ export default function GpPurchaseOrderDialog({
         <ProjectPicker
           value={selectedProject}
           onChange={(p) => {
-            // #1949: the same when a projectless draft is given its project here - its lines were all
-            // off the job for want of one, so picking the job puts them on it.
+            // #1949: a projectless draft given its project here - its lines were all off the job for
+            // want of one, so picking the job puts them on it, as the backend does when a save gives
+            // a draft its project.
             if (isRegister && p && !projectId) {
               setLineItems((prev) => (prev.every((li) => !li.jobCost) ? prev.map((li) => ({ ...li, jobCost: true })) : prev));
             }
