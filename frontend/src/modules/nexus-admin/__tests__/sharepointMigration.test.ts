@@ -757,6 +757,51 @@ describe('category snap', () => {
     });
     expect(entries.map((e) => [e.hardwareCategory, e.quantity])).toEqual([['Hinge', 4]]);
   });
+
+  it('a code the schedule dropped takes the unmatched path instead of throwing (#1906)', () => {
+    // A revision dropped the product, so its only pair requires 0 (#1491). There is nothing to
+    // split against; the row keeps its own category like a code the schedule never named.
+    const dropped = buildScheduleProductsByProject([
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: '1431 CPS TB EN',
+        classification: 'SITE_HARDWARE',
+        requiredQuantity: 0,
+      },
+    ]);
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4 })]),
+      scheduleProductsByProject: dropped,
+    });
+    expect(entries.map((e) => [e.hardwareCategory, e.quantity])).toEqual([['Surface Closer', 4]]);
+  });
+
+  it('a dropped pair beside a live one leaves the live one the whole quantity (#1906)', () => {
+    const split = buildScheduleProductsByProject([
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: '1431 CPS TB EN',
+        classification: null,
+        requiredQuantity: 0,
+      },
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Lock',
+        productCode: '1431 CPS TB EN',
+        classification: null,
+        requiredQuantity: 2,
+      },
+    ]);
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 5 })]),
+      scheduleProductsByProject: split,
+    });
+    expect(entries.map((e) => [e.hardwareCategory, e.quantity])).toEqual([['Lock', 5]]);
+  });
 });
 
 describe('classification step', () => {

@@ -483,10 +483,14 @@ export function buildEntries({
       bay: resolution.bay,
       spItemId: c.item.spItemId,
     };
-    const pairs =
+    // A pair the schedule requires none of is one a revision dropped (#1491 keeps it at 0). It has
+    // no budget to split against, so it is no pair here; a code left with none takes the unmatched
+    // path below rather than splitting into nothing (#1906).
+    const pairs = (
       !isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId
         ? (scheduleProductsByProject.get(projectId)?.get(productCode) ?? [])
-        : [];
+        : []
+    ).filter((pair) => pair.requiredQuantity > 0);
     if (pairs.length > 0) {
       let remaining = c.quantity;
       const takes: { hardwareCategory: string; quantity: number }[] = [];
