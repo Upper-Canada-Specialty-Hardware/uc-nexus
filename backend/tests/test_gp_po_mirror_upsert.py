@@ -664,6 +664,26 @@ def test_a_second_miss_on_a_later_pass_cancels_and_releases_hardware(db_session,
     assert hi.po_line_item_id is None
 
 
+def test_a_po_gp_lost_keeps_the_ties_of_what_was_received(db_session, project):
+    """#1915: the units that arrived are on hand, so their ties stay, as a cancelled line's do (#1228);
+    only the units never coming go back to the schedule."""
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO606", [_line(16384, "IT1", 5, received=2)]), _project_map(db_session)
+    )
+    db_session.flush()
+    line = _get(db_session, "PO606").line_items[0]
+    _tie_schedule_rows(db_session, project, line, [5])
+
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO606"], PASS1)
+    db_session.flush()
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO606"], PASS2)
+    db_session.flush()
+
+    assert noted == {"marked": [], "cancelled": ["PO606"]}
+    assert _get(db_session, "PO606").status == POStatus.CANCELLED
+    assert _tied_and_available(db_session, project, line.id) == (2, 3)
+
+
 def test_two_misses_inside_the_same_pass_do_not_cancel(db_session, project):
     """The stamp is a PASS, not a count: the same pass reporting a number twice is still one pass."""
     _open_mirrored(db_session, "PO602")

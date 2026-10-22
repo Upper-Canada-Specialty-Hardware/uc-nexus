@@ -24,7 +24,7 @@ from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.currency import normalize_currency
-from app.models.enums import HardwareItemState, POOrigin, POStatus
+from app.models.enums import POOrigin, POStatus
 from app.models.gp_outbox import GpWriteOutbox
 from app.models.gp_po_sync_state import GpPoSyncState
 from app.models.gp_write import GpWriteIdempotency
@@ -367,16 +367,27 @@ def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
     """Release the schedule hardware a PO's lines claimed back to AVAILABLE - cancel_po's rule and what
     the repair migration 073 encodes. A cancelled PO must not keep HardwareItem rows IN_PO against it, or
     required_quantity rollups double-count and the items can never be recreated as AVAILABLE by a later
-    import."""
+    import.
+
+    Except the units a line already received (#1915), which are on hand and stay tied to it, the rule a
+    line GP cancels keeps (#1228). Releasing them too put arrived hardware back on the schedule as still
+    to purchase. A PO nothing was received on releases every tie, as before."""
     from app.models.hardware import HardwareItem
+    from app.repositories.po_repository import _release_line_ties_beyond
 
     line_ids = [li.id for li in po.line_items]
-    if line_ids:
-        session.execute(
-            update(HardwareItem)
-            .where(HardwareItem.po_line_item_id.in_(line_ids))
-            .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
-        )
+    if not line_ids:
+        return
+    # One read for which lines hold ties at all, so a PO with none - every PO GP reports as cancelled on
+    # arrival - costs one query, not one per line.
+    tied = set(
+        session.scalars(
+            select(HardwareItem.po_line_item_id).where(HardwareItem.po_line_item_id.in_(line_ids)).distinct()
+        ).all()
+    )
+    for li in po.line_items:
+        if li.id in tied:
+            _release_line_ties_beyond(session, li.id, keep=li.received_quantity)
 
 
 def _apply_stage(session: Session, row: PurchaseOrder, stage: POStatus, now: datetime) -> None:
@@ -791,8 +802,9 @@ def note_missing_from_gp(
     first miss only stamps `gp_missing_since` with the pass's start time. A LATER pass that misses the
     same PO again - a stamp older than this pass's start - cancels it through the same routine a
     mirrored GP void goes through (status CANCELLED, soft-deleted, linked hardware released back to
-    AVAILABLE), so a deleted PO stops showing in the register as outstanding, stops double-counting
-    required_quantity, and stops being re-read by number on every pass forever.
+    AVAILABLE but for what each line already received, #1915), so a deleted PO stops showing in the
+    register as outstanding, stops double-counting required_quantity, and stops being re-read by number
+    on every pass forever.
 
     A PO that comes back from GP in between clears its stamp in upsert_mirrored_po, so it starts over
     at the first miss and is never cancelled on the strength of one bad pass. Numbers with no open,
