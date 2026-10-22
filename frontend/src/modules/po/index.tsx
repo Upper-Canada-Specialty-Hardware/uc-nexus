@@ -362,11 +362,21 @@ interface POTableRowProps {
   onOpen: () => void;
   // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
+  // #1948: that write failed after GP took it, or may have, and waits for its Retry.
+  gpWriteHeld?: boolean;
   // #851: one of the POs the import wizard just created; tinted for a moment on arrival.
   highlighted?: boolean;
 }
 
-function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, highlighted = false }: POTableRowProps) {
+function POTableRow({
+  po,
+  projectNumber,
+  projectName,
+  onOpen,
+  gpWriteQueued,
+  gpWriteHeld = false,
+  highlighted = false,
+}: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   // #701: where a PO raised in GP carries no vendor, or no document date, the cell says so in plain
   // words. A bare dash left the reader unable to tell an empty field in GP from Nexus failing to
@@ -434,10 +444,19 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
       <TableCell sx={hugSx}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
           <Chip label={formatPoStatus(po.status)} color={poStatusChipColor(po.status)} size="small" />
-          {gpWriteQueued && (
-            <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
-              <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+          {gpWriteHeld ? (
+            <Tooltip
+              title="GP took this registration, or may have, but it was not recorded here. Finish it with Retry under Held PO registrations."
+              arrow
+            >
+              <Chip label="GP registration held" color="error" size="small" variant="outlined" />
             </Tooltip>
+          ) : (
+            gpWriteQueued && (
+              <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
+                <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+              </Tooltip>
+            )
           )}
         </Box>
       </TableCell>
@@ -546,21 +565,27 @@ function POListPage() {
   // server to registrations still waiting (#1223): the newest 200 of every kind used to push an older
   // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
   // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
-  const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
-    GET_GP_OUTBOX,
-    {
-      variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 },
-      fetchPolicy: 'cache-and-network',
-      pollInterval: 15_000,
-    },
-  );
-  const queuedPoIds = useMemo(() => {
-    const ids = new Set<string>();
+  // #1948: a FAILED registration GP took, or may have, holds its draft as well (holdsDraft says which), so
+  // it is asked for too and lights the same hold - otherwise the draft was free to cancel or register again.
+  const { data: outboxData } = useQuery<{
+    gpOutbox: { id: string; entityKey: string; status: string; holdsDraft?: boolean | null }[];
+  }>(GET_GP_OUTBOX, {
+    variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'], limit: 200 },
+    fetchPolicy: 'cache-and-network',
+    pollInterval: 15_000,
+  });
+  const { queuedPoIds, heldPoIds } = useMemo(() => {
+    const queued = new Set<string>();
+    const held = new Set<string>();
     for (const entry of outboxData?.gpOutbox ?? []) {
-      if (entry.status !== 'PENDING' && entry.status !== 'IN_FLIGHT') continue;
-      if (entry.entityKey?.startsWith('po:')) ids.add(entry.entityKey.slice(3));
+      if (!entry.entityKey?.startsWith('po:')) continue;
+      const poId = entry.entityKey.slice(3);
+      if (entry.status === 'PENDING' || entry.status === 'IN_FLIGHT') queued.add(poId);
+      else if (entry.status === 'FAILED' && entry.holdsDraft) held.add(poId);
     }
-    return ids;
+    // A held draft is held for everything a queued one is; only the chip's words differ.
+    for (const poId of held) queued.add(poId);
+    return { queuedPoIds: queued, heldPoIds: held };
   }, [outboxData]);
 
   // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
@@ -1063,6 +1088,7 @@ function POListPage() {
                 projectName={projectNameOf(po)}
                 onOpen={() => handleOpenPO(po.id)}
                 gpWriteQueued={queuedPoIds.has(po.id)}
+                gpWriteHeld={heldPoIds.has(po.id)}
                 highlighted={highlightIds.has(po.id)}
               />
             ))}

@@ -383,9 +383,13 @@ def _prepare_register_po(
         # above passes a second attempt. Its fresh key would queue a second write and GP would end up
         # with two POs, the second never recorded. The same attempt's key is let through: its resubmit
         # is the no-op enqueue already makes it.
-        if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+        # #1948: a failed one GP took, or may have, holds the draft the same way.
+        held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key)
+        if held is not None:
             raise InvalidStateTransitionError(
-                "This PO's registration is already queued and will post to GP when the relay is back"
+                gp_outbox_repository.queued_registration_refusal(
+                    held, "This PO's registration is already queued and will post to GP when the relay is back"
+                )
             )
 
         # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
@@ -1191,7 +1195,7 @@ class POMutations:
                     # the claim to go stale rather than letting another window push a second PO.
                     release = False
                     gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-                except (RelayUnavailableError, RelayTimeoutError):
+                except (RelayUnavailableError, RelayTimeoutError) as e:
                     # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
                     # the user it will post itself. All three ways that can happen are queued now - the
                     # relay is not there, the socket died with the job on the wire, or the relay did not
@@ -1199,6 +1203,9 @@ class POMutations:
                     # reserved a second PO number in GP; the relay recognises the attempt's key now and
                     # answers with the PO it already made, so asking again cannot double-order.
                     project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
+                    # #1948: the last two may have left the PO in GP, so the row says so - however it ends,
+                    # it then keeps holding the draft rather than freeing it to be cancelled or registered again.
+                    may_be_in_gp = isinstance(e, RelayTimeoutError) or e.dispatched
                     entry_id = await asyncio.to_thread(
                         gp_outbox_enqueue.enqueue,
                         idempotency_key=key,
@@ -1211,6 +1218,7 @@ class POMutations:
                         label=label,
                         project_id=project_id,
                         requested_by=auth["user_id"],
+                        maybe_in_gp=may_be_in_gp,
                     )
                     # The PO is still DRAFT; the list shows it as queued until the worker drains it.
                     # The queued row guards the draft from here on.

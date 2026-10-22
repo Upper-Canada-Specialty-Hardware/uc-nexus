@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from app.errors import ConflictError
 from app.models.gp_outbox import GpWriteOutbox
 
 # Backoff for a retryable failure. Capped at 30 minutes so a long outage does not push the next
@@ -78,10 +79,64 @@ def enqueue(
     return row
 
 
+# #1948: what a draft held by a failed registration is refused with - the held write's Retry finishes it.
+HELD_REGISTRATION_REFUSAL = (
+    "GP took this PO's registration, or may have, but it was not recorded here, so the draft is held. "
+    "Finish it with Retry on the held GP writes panel."
+)
+
+
+def _registration_holds_draft(row: GpWriteOutbox, ledger) -> bool:
+    """Whether a registration row still holds its draft, given its key's ledger row (or None).
+
+    A waiting one does. So, since #1948, does a FAILED one GP took - the ledger holds the relay's answer
+    and no record (a persist that failed after GP made the PO) - or may have: maybe_in_gp, unless GP
+    refused it, which the relay only does after looking the key up and finding no PO under it. Freed, such
+    a draft was cancelled (a GP PO Nexus has no row for) or registered again (a second GP PO)."""
+    if row.status in ("PENDING", "IN_FLIGHT"):
+        return True
+    if row.status != "FAILED":
+        return False
+    if ledger is not None and ledger.result_id is not None:
+        return False  # registered: the draft is gone
+    if ledger is not None and ledger.relay_result is not None:
+        return True
+    return bool(row.maybe_in_gp) and row.failure_kind != "gp_rejected"
+
+
+def registration_holds_draft(session: Session, row: GpWriteOutbox) -> bool:
+    from app.models.gp_write import GpWriteIdempotency
+
+    if row.op != "register_po_in_gp":
+        return False
+    if row.status != "FAILED":
+        return _registration_holds_draft(row, None)
+    return _registration_holds_draft(row, session.get(GpWriteIdempotency, row.idempotency_key))
+
+
+def registrations_holding_drafts(session: Session, rows: list[GpWriteOutbox]) -> set[uuid.UUID]:
+    """The ids of `rows` that are registrations holding their draft, with one ledger read for the lot."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    registrations = [r for r in rows if r.op == "register_po_in_gp"]
+    keys = [r.idempotency_key for r in registrations if r.status == "FAILED"]
+    ledgers = (
+        {
+            row.key: row
+            for row in session.scalars(select(GpWriteIdempotency).where(GpWriteIdempotency.key.in_(keys))).all()
+        }
+        if keys
+        else {}
+    )
+    return {r.id for r in registrations if _registration_holds_draft(r, ledgers.get(r.idempotency_key))}
+
+
 def queued_po_registration(
     session: Session, po_id: uuid.UUID, *, exclude_key: str | None = None
 ) -> GpWriteOutbox | None:
-    """The PO's registration that is still waiting for GP (PENDING or IN_FLIGHT), if there is one.
+    """The PO's registration that still holds its draft, if there is one: waiting for GP (PENDING or
+    IN_FLIGHT), or FAILED after GP took it or may have (#1948, see `_registration_holds_draft`). A FAILED
+    one comes back FAILED, so a caller can say to finish it with Retry rather than wait for it.
 
     While it waits the PO is still a Draft, so the Draft check alone let a second registration through
     under a fresh key (a second GP PO on drain) and let a cancel drop a PO the queue then created in GP.
@@ -90,11 +145,18 @@ def queued_po_registration(
     stmt = select(GpWriteOutbox).where(
         GpWriteOutbox.entity_key == f"po:{po_id}",
         GpWriteOutbox.op == "register_po_in_gp",
-        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT", "FAILED")),
     )
     if exclude_key is not None:
         stmt = stmt.where(GpWriteOutbox.idempotency_key != exclude_key)
-    return session.scalars(stmt.limit(1)).first()
+    # A waiting row first, so a caller's "queued" wording is the one a waiting registration gets.
+    rows = session.scalars(stmt.order_by((GpWriteOutbox.status == "FAILED").asc(), GpWriteOutbox.created_at)).all()
+    return next((row for row in rows if registration_holds_draft(session, row)), None)
+
+
+def queued_registration_refusal(row: GpWriteOutbox, waiting_message: str) -> str:
+    """The words a guard refuses a held draft with: its own for a waiting registration, Retry for a failed one."""
+    return HELD_REGISTRATION_REFUSAL if row.status == "FAILED" else waiting_message
 
 
 def claim_next(session: Session, company: str) -> GpWriteOutbox | None:
@@ -352,6 +414,7 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: put a FAILED row back on the queue immediately, with a fresh attempt budget.
 
     Locked and re-read (#1193), so the status checked is the one the worker's own locked finish sees."""
+    _refuse_while_registration_claimed(session, get_entry(session, entry_id))
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
@@ -376,6 +439,30 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     session.flush()
     _release_receive_draft(session, row)
     return row
+
+
+def _refuse_while_registration_claimed(session: Session, row: GpWriteOutbox | None) -> None:
+    """#1948: a registration is not put back while a window is registering its PO online. That attempt may
+    be finishing this very write from the ledger (#1950), and the queue would save it a second time. The
+    PO's row lock is the one the online claim is taken under, taken before the outbox row's, the order
+    the queueing takes them in."""
+    if row is None or row.op != "register_po_in_gp":
+        return
+    from app.models.purchase_order import PurchaseOrder
+    from app.repositories.po_repository import _registration_claim_is_live
+
+    try:
+        po_id = uuid.UUID(row.entity_key.removeprefix("po:"))
+    except ValueError:
+        return
+    po = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if po is not None and _registration_claim_is_live(po, datetime.utcnow()):
+        raise ConflictError("This PO is being registered in GP from a window right now. Retry this once that finishes.")
 
 
 def _release_receive_draft(session: Session, row: GpWriteOutbox) -> None:

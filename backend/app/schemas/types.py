@@ -2353,6 +2353,9 @@ class GpOutboxEntry:
     entity_key: str
     last_error: str | None = None
     failure_kind: str | None = None
+    # #1948: a PO registration that still holds its draft - waiting, or FAILED after GP took it or may
+    # have. The PO list holds Register, Cancel and edits on it, as it does for a waiting one.
+    holds_draft: bool = False
 
 
 @strawberry.type

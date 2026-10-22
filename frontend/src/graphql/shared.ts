@@ -142,6 +142,8 @@ export const GET_GP_OUTBOX = gql`
       failureKind
       entityKey
       createdAt
+      # #1948: a PO registration that still holds its draft, FAILED ones included.
+      holdsDraft
     }
   }
 `;

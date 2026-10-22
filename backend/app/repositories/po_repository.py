@@ -1583,8 +1583,10 @@ def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> No
     reaches GP and is overwritten. Called under the PO row lock, the order cancel and the queue take."""
     from app.repositories import gp_outbox_repository
 
-    if po.status == POStatus.DRAFT and gp_outbox_repository.queued_po_registration(session, po.id) is not None:
-        raise ConflictError(QUEUED_REGISTRATION_EDIT_REFUSAL)
+    held = gp_outbox_repository.queued_po_registration(session, po.id) if po.status == POStatus.DRAFT else None
+    if held is not None:
+        # #1948: and one that failed after GP took it, or may have - its Retry saves that snapshot too.
+        raise ConflictError(gp_outbox_repository.queued_registration_refusal(held, QUEUED_REGISTRATION_EDIT_REFUSAL))
     # #1903: a registration waiting on GP right now is the same - its save writes back the project and
     # lines it sent, and a project chosen meanwhile on a draft with none won over the one GP was given.
     # So is one GP answered that was never recorded here. A refused or failed attempt lets its claim go.
@@ -1836,10 +1838,16 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     # relay returns. Cancelling now would drop a PO GP is about to hold, the phantom this guard exists for.
     from app.repositories import gp_outbox_repository
 
-    if gp_outbox_repository.queued_po_registration(session, po_id) is not None:
+    held = gp_outbox_repository.queued_po_registration(session, po_id)
+    if held is not None:
+        # #1948: a registration that failed after GP took it, or may have, holds the draft as well -
+        # cancelled, GP keeps a PO that Nexus has no row for and the mirror passes over.
         raise InvalidStateTransitionError(
-            "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
-            "Once it is in GP, cancel it there."
+            gp_outbox_repository.queued_registration_refusal(
+                held,
+                "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
+                "Once it is in GP, cancel it there.",
+            )
         )
     # #1274: the same goes for a registration on its way to GP right now, or one GP already took
     # that was never recorded here.
@@ -1925,9 +1933,13 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
         raise InvalidStateTransitionError(
             f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
         )
-    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key) is not None:
+    held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key)
+    if held is not None:
+        # #1948: so does a failed one GP took or may have; a second key would make a second GP PO.
         raise InvalidStateTransitionError(
-            "This PO's registration is already queued and will post to GP when the relay is back"
+            gp_outbox_repository.queued_registration_refusal(
+                held, "This PO's registration is already queued and will post to GP when the relay is back"
+            )
         )
     now = datetime.utcnow()
     # A claim whose attempt GP already answered never goes stale (#1274 review). Another window is not

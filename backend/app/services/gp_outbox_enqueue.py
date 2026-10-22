@@ -48,9 +48,12 @@ def _guard_registration(session, persist_context: dict, idempotency_key: str) ->
     ).first()
     if po is None or po.deleted_at is not None or po.status != POStatus.DRAFT:
         raise InvalidStateTransitionError("This PO is no longer a Draft, so its registration was not queued")
-    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+    held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key)
+    if held is not None:
         raise InvalidStateTransitionError(
-            "This PO's registration is already queued and will post to GP when the relay is back"
+            gp_outbox_repository.queued_registration_refusal(
+                held, "This PO's registration is already queued and will post to GP when the relay is back"
+            )
         )
 
 

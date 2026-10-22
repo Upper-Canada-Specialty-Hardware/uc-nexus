@@ -438,8 +438,42 @@ it('marks a PO whose registration is waiting, asking only for waiting registrati
 
   expect(await screen.findByText('GP registration queued')).toBeInTheDocument();
   await waitFor(() =>
-    expect(outboxAsked).toContainEqual({ ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 }),
+    expect(outboxAsked).toContainEqual({
+      ops: ['create_po'],
+      statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'],
+      limit: 200,
+    }),
   );
+});
+
+// #1948: a failed registration GP took, or may have, still holds its draft, and the row says to Retry it.
+// One that failed with nothing in GP frees the draft, and the row carries no chip.
+it.each([
+  [true, 'GP registration held'],
+  [false, null],
+])('marks a PO whose failed registration holds its draft (holdsDraft %s)', async (holdsDraft, chip) => {
+  renderRegister([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'failed-1',
+      label: 'PO registration PO-REQ-001',
+      op: 'create_po',
+      company: 'TUBC',
+      status: 'FAILED',
+      attempts: 1,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: 'the save failed',
+      failureKind: 'persist_failed',
+      entityKey: 'po:po-draft',
+      createdAt: '2026-07-01T12:00:00Z',
+      holdsDraft,
+    },
+  ]);
+
+  expect(await screen.findByText('Held PO registrations')).toBeInTheDocument();
+  if (chip) expect(await screen.findByText(chip)).toBeInTheDocument();
+  else expect(screen.queryByText('GP registration held')).toBeNull();
+  expect(screen.queryByText('GP registration queued')).toBeNull();
 });
 
 // The normal state: nothing is held, and the table looks exactly as it did.

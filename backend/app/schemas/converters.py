@@ -1274,9 +1274,10 @@ def deficient_item_row_to_type(row: dict, labels: dict | None = None) -> Deficie
     )
 
 
-def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
+def gp_outbox_entry_to_type(row, *, holds_draft: bool = False) -> GpOutboxEntry:
     """Reads only the row's own scalar columns - no relationships, so nothing here can trigger a
-    lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md)."""
+    lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md). `holds_draft` is worked out by the
+    caller, over the whole list in one read (#1948)."""
     return GpOutboxEntry(
         id=strawberry.ID(str(row.id)),
         label=row.label,
@@ -1290,6 +1291,7 @@ def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
         entity_key=row.entity_key,
         last_error=row.last_error,
         failure_kind=row.failure_kind,
+        holds_draft=holds_draft,
     )
 
 

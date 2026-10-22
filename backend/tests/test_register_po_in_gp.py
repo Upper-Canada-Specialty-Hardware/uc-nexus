@@ -935,7 +935,14 @@ def _queued_write(key):
         row = session.scalars(sa_select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key)).first()
         if row is None:
             return None
-        return {"op": row.op, "relay_op": row.relay_op, "payload": row.payload, "status": row.status}
+        return {
+            "op": row.op,
+            "relay_op": row.relay_op,
+            "payload": row.payload,
+            "status": row.status,
+            "maybe_in_gp": row.maybe_in_gp,
+            "persist_context": row.persist_context,
+        }
 
 
 def _delete_queued_write(key) -> None:
@@ -980,6 +987,8 @@ def test_a_registration_the_relay_never_answered_is_queued(monkeypatch, db_sessi
         assert queued["payload"]["idempotency_key"] == key
         # Nothing was registered: the PO is still a draft until the worker drains the row.
         assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
+        # #1948: the attempt may have reached GP, so however the row ends it keeps holding the draft.
+        assert queued["maybe_in_gp"] is True
     finally:
         _delete_queued_write(key)
 
@@ -1002,6 +1011,8 @@ def test_a_registration_with_no_relay_connected_at_all_is_still_queued(monkeypat
 
         assert result.queued is True
         assert _queued_write(key)["relay_op"] == "create_po"
+        # #1948: nothing left the backend, so nothing can be in GP.
+        assert _queued_write(key)["maybe_in_gp"] is False
     finally:
         _delete_queued_write(key)
 
