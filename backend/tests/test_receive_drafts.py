@@ -491,9 +491,11 @@ def test_deleting_a_draft_withdraws_its_waiting_for_approval_notice(db_session):
     """#1898: the notice stayed in every manager's bell, sending them to a queue the draft had left. A
     draft still waiting keeps its own."""
     project = _make_project(db_session)
+    # One pending draft per PO (#641), so each on its own.
     po, li = _make_po(db_session, project.id)
+    other_po, other_li = _make_po(db_session, project.id)
     kept = _draft(db_session, po, li, 1)
-    doomed = _draft(db_session, po, li, 2)
+    doomed = _draft(db_session, other_po, other_li, 2)
 
     submitted = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_SUBMITTED)
     assert {n.receive_draft_id for n in submitted} == {kept.id, doomed.id}
