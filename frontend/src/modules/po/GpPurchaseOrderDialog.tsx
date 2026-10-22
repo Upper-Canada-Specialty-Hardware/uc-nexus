@@ -775,6 +775,10 @@ export default function GpPurchaseOrderDialog({
         uofm: li.uofm || DEFAULT_UOFM,
         jobCost: li.jobCost,
         manufacturer: li.manufacturer ?? null,
+        // #1910: a draft's custom-item line keeps its catalog link. Without it the line unlocked and
+        // registering sent no custom item, so GP's line - and the stock received on it - lost the
+        // catalog entry that describes it.
+        catalogItemId: li.customInventoryItemId ?? undefined,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey((rows.length || 1) + 1);

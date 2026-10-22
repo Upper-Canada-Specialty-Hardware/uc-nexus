@@ -401,6 +401,44 @@ describe('GpPurchaseOrderDialog', () => {
     expect(calls[0]).toMatchObject({ input: { taxScheduleId: null } });
   });
 
+  it('keeps a draft custom-item line locked to its catalog entry and registers it with the link (#1910)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const mocksNoTax = baseMocks().map((m) =>
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES ? { ...m, result: { data: { gpPurchaseTaxSchedules: [] } } } : m,
+    );
+    const catalogDraft = {
+      ...stockDraft,
+      lineItems: [
+        {
+          ...stockDraft.lineItems[0],
+          hardwareCategory: 'FRAME',
+          productCode: 'HMF-3070',
+          orderAs: null,
+          customInventoryItemId: 'cat-1',
+        },
+      ],
+    };
+    const { onRegistered } = renderDialog({ registerPo: catalogDraft }, [...mocksNoTax, registerMock]);
+    await waitForVendorPreselect();
+
+    // The catalog's pair is the one the warehouse receives the stock under, so it stays read-only.
+    expect(screen.getByLabelText('Item number line 1')).toBeDisabled();
+    expect(screen.getByText('From catalog')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({
+      input: { lineItems: [{ hardwareCategory: 'FRAME', productCode: 'HMF-3070', customInventoryItemId: 'cat-1' }] },
+    });
+  });
+
   it('auto-switches to manual tax-schedule entry when the relay is out of date (issue #315)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
