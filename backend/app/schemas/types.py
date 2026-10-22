@@ -2367,6 +2367,9 @@ class GpOutboxEntry:
     # and cancelling it is refused. `maybe_in_gp`: an attempt may have reached GP with no answer back.
     gp_took: bool = False
     maybe_in_gp: bool = False
+    # #1948: a registration GP took whose GP PO is already a live Nexus PO (the mirror's copy), by that PO
+    # number. Its save can never land; cancelling it abandons nothing in GP, and cancels its draft.
+    already_in_nexus_as: str | None = None
 
 
 @strawberry.type

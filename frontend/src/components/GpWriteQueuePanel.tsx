@@ -50,6 +50,12 @@ const MAYBE_IN_GP_CANCEL_WARNING =
   'GP may already hold this PO - an attempt reached GP and no answer came back. Check GP first: if the PO is ' +
   'there, cancelling leaves a PO in GP with nothing here for it, and registering the draft again makes a second one.';
 
+// #1948: a registration GP took whose PO the mirror already copied: its save can never land, and cancelling
+// it abandons nothing in GP. The draft is cancelled with it, so it is never registered a second time.
+const alreadyInNexusCancelWarning = (poNumber: string) =>
+  `GP's PO ${poNumber} is already in Nexus as a GP PO, so this registration can't be saved. Cancelling lets it ` +
+  `go and cancels its draft - nothing in GP is abandoned. Work from PO ${poNumber} from here.`;
+
 // #1216: who may retry or cancel a held write, by the GP-side op it is waiting to make - the same map
 // as `_ROLES_BY_RELAY_OP` in backend/app/schemas/gp_outbox.py, which refuses everyone else. Anything
 // not listed is a tenant owner's. Mirrored here so a person never confirms an action only to be told
@@ -210,9 +216,11 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         open={cancelTarget !== null}
         title={`Cancel "${cancelTarget?.label ?? ''}"?`}
         message={
-          cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
-            ? MAYBE_IN_GP_CANCEL_WARNING
-            : NORMAL_CANCEL_WARNING
+          cancelTarget?.alreadyInNexusAs
+            ? alreadyInNexusCancelWarning(cancelTarget.alreadyInNexusAs)
+            : cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
+              ? MAYBE_IN_GP_CANCEL_WARNING
+              : NORMAL_CANCEL_WARNING
         }
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"

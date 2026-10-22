@@ -293,6 +293,36 @@ def _adopt_mirrored_copy(session: Session, po: PurchaseOrder, po_number: str, co
         session.flush()
 
 
+def _mirrored_copy_of(session: Session, po: PurchaseOrder, po_number: str, company: str) -> PurchaseOrder | None:
+    """The GP sync's live copy of `po_number` in the company, other than `po` itself (#1948)."""
+    return session.scalars(
+        select(PurchaseOrder).where(
+            PurchaseOrder.po_number == po_number,
+            PurchaseOrder.id != po.id,
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.origin == POOrigin.GP,
+            or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+        )
+    ).first()
+
+
+def live_po_numbered(session: Session, po_number: str, company: str, *, exclude_po_id: uuid.UUID) -> bool:
+    """Whether a live Nexus PO in the company already carries `po_number` (#1948)."""
+    return (
+        session.scalar(
+            select(PurchaseOrder.id)
+            .where(
+                PurchaseOrder.po_number == po_number,
+                PurchaseOrder.id != exclude_po_id,
+                PurchaseOrder.deleted_at.is_(None),
+                or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 # The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
 _MAX_ORDER_COST = Decimal("10000000000")
 
@@ -646,6 +676,14 @@ def register_po_in_gp(
     # #1492: the sync may have mirrored this very PO a moment before this persist; its bare copy gives
     # way. Anything more than a copy is a real duplicate and is refused below.
     _adopt_mirrored_copy(session, po, cleaned_po_number, cleaned_company)
+    # #1948: a copy that could not give way - it has a receipt or a document by now - is GP's PO already in
+    # Nexus. No retry gets past it, so the refusal says what does: let the held registration go.
+    if _mirrored_copy_of(session, po, cleaned_po_number, cleaned_company) is not None:
+        raise ValidationError(
+            f"GP's PO {cleaned_po_number} is already in Nexus as a GP PO; cancel this held registration and "
+            "work from that PO",
+            field="po_number",
+        )
     # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
     _assert_po_number_available(
         session, cleaned_po_number, company=po.company, project_id=po.project_id, exclude_po_id=po.id
@@ -1829,8 +1867,6 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     can still receive against it on the GP side. A registered PO is GP's record now, so unwinding one
     starts there and syncs back, rather than being something Nexus can decide on its own.
     """
-    from app.models.hardware import HardwareItem
-
     # The PO's row lock, the one a queued registration is taken under (gp_outbox_enqueue), so a cancel
     # and a registration cannot both pass their checks at once (#1166). Taken before the read below,
     # which then sees the status the lock holder left.
@@ -1873,6 +1909,13 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             "This PO is being registered in GP right now, so it cannot be cancelled. Once it is in GP, cancel it there."
         )
 
+    _cancel_draft(session, po)
+    return po
+
+
+def _cancel_draft(session: Session, po: PurchaseOrder) -> None:
+    from app.models.hardware import HardwareItem
+
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()
 
@@ -1889,7 +1932,19 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
         )
 
-    return po
+
+def cancel_draft_gp_po_already_in_nexus(session: Session, po_id: uuid.UUID) -> None:
+    """Cancel the draft of a held registration let go because its GP PO is already in Nexus (#1948).
+
+    Cancelled as any draft is, ties released, rather than left a draft: Register on it would push a second
+    GP PO for an order GP already holds under the mirrored copy. The buyer works from that PO instead.
+    The caller holds the PO's row lock."""
+    po = session.get(PurchaseOrder, po_id, populate_existing=True)
+    if po is None or po.deleted_at is not None or po.status != POStatus.DRAFT:
+        return
+    po.registering_key = None
+    po.registering_since = None
+    _cancel_draft(session, po)
 
 
 # #1274: how long a registration attempt holds its draft. The attempt makes two relay round trips at

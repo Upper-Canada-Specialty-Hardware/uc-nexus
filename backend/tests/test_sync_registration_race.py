@@ -150,3 +150,15 @@ def test_a_copy_that_already_has_a_receipt_is_still_refused(db_session):
     with pytest.raises(ValidationError):
         _register(db_session, draft, po_number)
     assert copy.id in [r.id for r in _rows_for(db_session, po_number)]
+
+
+def test_a_copy_that_cannot_give_way_is_named_as_gps_po_already_in_nexus(db_session):
+    """#1948: the refusal says what gets past it - Retry never will - rather than a bare duplicate number."""
+    po_number = f"PO{uuid.uuid4().hex[:8].upper()}"
+    draft = _draft(db_session)
+    assert sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po_number), {}) == "created"
+    _rows_for(db_session, po_number)[0].line_items[0].received_quantity = 1
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match=f"GP's PO {po_number} is already in Nexus as a GP PO; cancel this held"):
+        _register(db_session, draft, po_number)

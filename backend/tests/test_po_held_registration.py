@@ -155,3 +155,58 @@ def test_retry_is_refused_while_a_window_is_registering_the_po(db_session):
     po.registering_since = datetime.utcnow() - timedelta(seconds=po_repository.REGISTRATION_CLAIM_SECONDS + 1)
     db_session.flush()
     assert gp_outbox_repository.retry_entry(db_session, row.id).status == "PENDING"
+
+
+# --- #1948: a held registration whose GP PO the mirror already copied ---
+
+
+def _mirrored_copy(session, po_number, *, company="TUBC"):
+    from app.models.enums import POOrigin
+    from app.models.purchase_order import PurchaseOrder
+
+    copy = PurchaseOrder(
+        id=uuid.uuid4(),
+        po_number=po_number,
+        gp_company=company,
+        company=company,
+        origin=POOrigin.GP,
+        status=POStatus.GP_REGISTERED,
+    )
+    session.add(copy)
+    session.flush()
+    return copy
+
+
+def test_a_held_registration_whose_po_is_already_in_nexus_can_be_let_go_and_its_draft_goes(db_session):
+    """GP took it, its save is refused for good (the mirror's copy has a receipt by now), and Retry always
+    fails. GP's PO is in Nexus, so cancelling abandons nothing in GP: the row is let go and its draft is
+    cancelled with it, so it can never be registered into a second GP PO."""
+    po_number = f"P{uuid.uuid4().hex[:8].upper()}"
+    po = _po(db_session)
+    row = _failed_registration(db_session, po.id, relay_result={"po_number": po_number, "company": "TUBC"})
+    _mirrored_copy(db_session, po_number)
+
+    rows = [row]
+    ledgers = gp_outbox_repository.ledgers_for(db_session, rows)
+    assert gp_outbox_repository.registrations_already_in_nexus(db_session, rows, ledgers) == {row.id: po_number}
+
+    assert gp_outbox_repository.cancel_entry(db_session, row.id).status == "CANCELLED"
+    db_session.refresh(po)
+    assert po.status == POStatus.CANCELLED
+    assert po.deleted_at is not None
+    assert gp_outbox_repository.queued_po_registration(db_session, po.id) is None
+
+
+@pytest.mark.parametrize("where", ["another-company", "cancelled"])
+def test_a_held_registration_gp_took_with_no_live_copy_in_its_company_stays_uncancellable(db_session, where):
+    po_number = f"P{uuid.uuid4().hex[:8].upper()}"
+    po = _po(db_session)
+    row = _failed_registration(db_session, po.id, relay_result={"po_number": po_number, "company": "TUBC"})
+    copy = _mirrored_copy(db_session, po_number, company="OTHER" if where == "another-company" else "TUBC")
+    if where == "cancelled":
+        copy.deleted_at = datetime.utcnow()
+        db_session.flush()
+
+    with pytest.raises(ConflictError, match="GP already took this write"):
+        gp_outbox_repository.cancel_entry(db_session, row.id)
+    assert po.status == POStatus.DRAFT

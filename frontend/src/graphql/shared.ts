@@ -153,6 +153,8 @@ export const GET_GP_OUTBOX = gql`
       # #1948: GP took the write (no Cancel), or may have (Cancel warns to check GP first).
       gpTook
       maybeInGp
+      # #1948: a registration GP took whose GP PO the mirror already copied into Nexus - let go with Cancel.
+      alreadyInNexusAs
     }
   }
 `;

@@ -20,6 +20,8 @@ export interface OutboxEntry {
   gpTook?: boolean | null;
   /** #1948: an attempt may have reached GP with no answer back. */
   maybeInGp?: boolean | null;
+  /** #1948: a registration GP took whose GP PO is already a Nexus PO, by that number - Cancel lets it go. */
+  alreadyInNexusAs?: string | null;
 }
 
 // #1948: why Cancel is off on a write GP took - the backend refuses it, as cancelling abandons what GP holds.

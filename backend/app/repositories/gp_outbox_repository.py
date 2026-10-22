@@ -154,6 +154,32 @@ def write_gp_took(session: Session, row: GpWriteOutbox) -> bool:
     return _gp_took(session.get(GpWriteIdempotency, row.idempotency_key))
 
 
+def _draft_id_of(row: GpWriteOutbox) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(row.entity_key.removeprefix("po:"))
+    except ValueError:
+        return None
+
+
+def registrations_already_in_nexus(session: Session, rows: list[GpWriteOutbox], ledgers: dict) -> dict:
+    """The registrations GP took whose GP PO is already a live Nexus PO in their company, by row id, with
+    that PO number (#1948). Its save can never land - the mirror copied the PO and something hangs off the
+    copy now, so it cannot give way - and Retry fails for good. GP's PO is represented in Nexus, so
+    cancelling the row abandons nothing in GP: it is let go, and its draft with it (see `cancel_entry`)."""
+    from app.repositories.po_repository import live_po_numbered
+
+    found = {}
+    for row in rows:
+        ledger = ledgers.get(row.idempotency_key)
+        if row.op != "register_po_in_gp" or not _gp_took(ledger):
+            continue
+        number = str((ledger.relay_result or {}).get("po_number") or "").strip()
+        draft_id = _draft_id_of(row)
+        if number and draft_id is not None and live_po_numbered(session, number, row.company, exclude_po_id=draft_id):
+            found[row.id] = number
+    return found
+
+
 def list_registrations_holding_drafts(
     session: Session, *, company: str | None = None, limit: int = 500
 ) -> list[GpWriteOutbox]:
@@ -500,17 +526,37 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: abandon a queued write. Only a row that is not currently on the wire may be cancelled -
     cancelling an IN_FLIGHT row would leave the worker writing to a row a human believes is dead.
     Locked and re-read (#1193): a plain read let a cancel overwrite a claim that landed in between."""
+    _lock_registration_draft(session, get_entry(session, entry_id))
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("PENDING", "FAILED"):
         return None
     # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
     # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
+    # Except a registration whose GP PO the mirror already copied into Nexus: nothing is abandoned.
+    in_nexus = None
     if write_gp_took(session, row):
-        raise ConflictError(GP_TOOK_CANCEL_REFUSAL)
+        in_nexus = registrations_already_in_nexus(session, [row], ledgers_for(session, [row])).get(row.id)
+        if in_nexus is None:
+            raise ConflictError(GP_TOOK_CANCEL_REFUSAL)
     row.status = "CANCELLED"
     session.flush()
+    if in_nexus is not None:
+        # Its draft goes too, cancelled as any draft is: left a draft, Register would push a second GP PO
+        # for the order GP holds as the mirrored copy.
+        from app.repositories.po_repository import cancel_draft_gp_po_already_in_nexus
+
+        cancel_draft_gp_po_already_in_nexus(session, _draft_id_of(row))
     _release_receive_draft(session, row)
     return row
+
+
+def _lock_registration_draft(session: Session, row: GpWriteOutbox | None) -> None:
+    """A registration's PO row lock, taken before its outbox row's - the order the queueing takes them in."""
+    if row is None or row.op != "register_po_in_gp" or _draft_id_of(row) is None:
+        return
+    from app.models.purchase_order import PurchaseOrder
+
+    session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == _draft_id_of(row)).with_for_update())
 
 
 def _refuse_while_registration_claimed(session: Session, row: GpWriteOutbox | None) -> None:

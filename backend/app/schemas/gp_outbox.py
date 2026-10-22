@@ -132,7 +132,17 @@ class GpOutboxQueries:
             ledgers = gp_outbox_repository.ledgers_for(session, rows)
             holding = gp_outbox_repository.registrations_holding_drafts(session, rows, ledgers)
             took = gp_outbox_repository.writes_gp_took(rows, ledgers)
-            return [gp_outbox_entry_to_type(r, holds_draft=r.id in holding, gp_took=r.id in took) for r in rows]
+            # A registration GP took whose PO is already in Nexus can be let go, so Cancel is offered on it.
+            in_nexus = gp_outbox_repository.registrations_already_in_nexus(session, rows, ledgers)
+            return [
+                gp_outbox_entry_to_type(
+                    r,
+                    holds_draft=r.id in holding,
+                    gp_took=r.id in took and r.id not in in_nexus,
+                    already_in_nexus_as=in_nexus.get(r.id),
+                )
+                for r in rows
+            ]
 
 
 @strawberry.type

@@ -221,6 +221,19 @@ it('warns before cancelling a registration GP may hold to check GP first', async
   expect(screen.getByText(/Check GP first/)).toBeInTheDocument();
 });
 
+// #1948: GP took it, but its PO is already in Nexus as the mirror's copy - so it can be let go.
+it('offers cancel on a registration whose po is already in nexus, and says the draft goes with it', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [
+    entry({ status: 'FAILED', failureKind: 'persist_failed', maybeInGp: true, gpTook: false, alreadyInNexusAs: '0001948' }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP's PO 0001948 is already in Nexus as a GP PO/)).toBeInTheDocument();
+  expect(screen.getByText(/cancels its draft/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this PO/)).toBeNull();
+});
+
 it('keeps the plain cancel words for a write nothing says reached GP', async () => {
   renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', maybeInGp: false })]);
 

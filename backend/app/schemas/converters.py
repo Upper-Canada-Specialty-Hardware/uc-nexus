@@ -1274,7 +1274,9 @@ def deficient_item_row_to_type(row: dict, labels: dict | None = None) -> Deficie
     )
 
 
-def gp_outbox_entry_to_type(row, *, holds_draft: bool = False, gp_took: bool = False) -> GpOutboxEntry:
+def gp_outbox_entry_to_type(
+    row, *, holds_draft: bool = False, gp_took: bool = False, already_in_nexus_as: str | None = None
+) -> GpOutboxEntry:
     """Reads only the row's own scalar columns - no relationships, so nothing here can trigger a
     lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md). `holds_draft` and `gp_took` are worked
     out by the caller, over the whole list in one read (#1948)."""
@@ -1294,6 +1296,7 @@ def gp_outbox_entry_to_type(row, *, holds_draft: bool = False, gp_took: bool = F
         holds_draft=holds_draft,
         gp_took=gp_took,
         maybe_in_gp=bool(row.maybe_in_gp),
+        already_in_nexus_as=already_in_nexus_as,
     )
 
 
