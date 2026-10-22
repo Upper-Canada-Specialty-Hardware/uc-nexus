@@ -16,6 +16,8 @@ from app.auth import (
 )
 from app.database import SessionLocal
 from app.errors import (
+    AppError,
+    ConflictError,
     RelayCallError,
     RelayOpUnsupportedError,
     RelayTimeoutError,
@@ -377,6 +379,23 @@ def _json_line_items(line_items_data: list[dict]) -> list[dict]:
         }
         for li in line_items_data
     ]
+
+
+# The code a refusal carries when the draft stays claimed because GP may hold its receipt (#1945), so the
+# review modal never words it as "nothing was posted".
+RECEIPT_MAY_BE_IN_GP = "RECEIPT_MAY_BE_IN_GP"
+
+
+def _receipt_may_be_in_gp(e: Exception) -> ConflictError:
+    """A refusal on a resumed approval, raised with the claim held (#1945): the reason, and why the draft
+    is not back in the queue. Worded the way the ambiguous outbox case is."""
+    reason = e.message if isinstance(e, AppError) else "The approval could not be checked again."
+    return ConflictError(
+        f"{reason.rstrip('.')}. An earlier attempt at this approval may already have posted the receipt to "
+        "GP, so the draft stays claimed: check GP before going on - retry once the cause is fixed, or have "
+        "the receipt reconciled.",
+        code=RECEIPT_MAY_BE_IN_GP,
+    )
 
 
 def _release_draft_claim(draft_id, key) -> None:
@@ -1198,7 +1217,9 @@ class WarehouseMutations:
           receipt? Everything that answers "no" - validation, an eConnect refusal, a relay too old
           for the op - releases, because a draft parked where nobody can act on it is worse than the
           error itself. Everything ambiguous - a dispatched disconnect, a timeout - never releases,
-          because releasing it invites a second receipt for hardware GP may already have booked.
+          because releasing it invites a second receipt for hardware GP may already have booked. A
+          same-key resume of a claim (#1945) is ambiguous by itself: the attempt before it may have
+          sent the receipt, so a refusal raised before the relay has looked the key up keeps the claim.
         - Since #1389 an ambiguous failure is QUEUED rather than surfaced: the receipt carries the
           approval's key into GP, and the relay answers a repeat of the key with the receipt it already
           posted, so the outbox asking again cannot post twice. A relay too old to read the key is
@@ -1259,7 +1280,13 @@ class WarehouseMutations:
                     warehouse_id=ctx.warehouse_id,
                     idempotency_key=key,
                 )
-            except Exception:
+            except Exception as e:
+                if ctx.resumed:
+                    # #1945: this key already held the claim, so an earlier attempt may have sent the
+                    # receipt and died before its answer was recorded. Released, the draft would be
+                    # approved again under a fresh key and GP would take a second receipt. It stays
+                    # claimed; the retry under this key is what the relay answers with the receipt.
+                    raise _receipt_may_be_in_gp(e) from e
                 # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
                 # to the reviewer.
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
@@ -1306,15 +1333,20 @@ class WarehouseMutations:
                 # #1389: a relay that would ignore the key is never sent a receipt, because the safety of
                 # every retry below rests on it. Nothing has left the backend, so the receipt waits on
                 # the queue for the workstation to update - and when no relay is connected at all, this
-                # is the same queue the undispatched failure below would have reached.
-                return await _queue()
+                # is the same queue the undispatched failure below would have reached. #1945: nothing
+                # left it THIS time; a resumed approval's earlier attempt may have.
+                return await _queue(maybe_in_gp=ctx.resumed)
 
             try:
                 relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
             except (RelayCallError, RelayOpUnsupportedError) as e:
                 # The relay answered: eConnect refused it, or this build cannot run the op. Either
                 # way GP did not commit, so the draft goes back in the queue for whoever fixes the
-                # cause - the #425 quarantine being the usual one.
+                # cause - the #425 quarantine being the usual one. #1945: a refusal is safe to release
+                # on a resume too, because the relay looks the key up before anything else; a build
+                # that cannot run the op never looked, so a resume keeps its claim.
+                if ctx.resumed and isinstance(e, RelayOpUnsupportedError):
+                    raise _receipt_may_be_in_gp(e) from e
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 if isinstance(e, RelayCallError):
                     # #730: GP found the job inactive, closed or gone at the moment of writing. Worded
@@ -1333,7 +1365,7 @@ class WarehouseMutations:
                 # the draft from a second approval, as the claim did. #1849: those two are queued as
                 # maybe in GP, so a row that later runs out or is cancelled never hands the draft back.
                 dispatched = isinstance(e, RelayTimeoutError) or e.dispatched
-                return await _queue(maybe_in_gp=dispatched)
+                return await _queue(maybe_in_gp=dispatched or ctx.resumed)
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
         record = await asyncio.to_thread(

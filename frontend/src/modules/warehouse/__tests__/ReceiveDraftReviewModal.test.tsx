@@ -432,6 +432,46 @@ describe('ReceiveDraftReviewModal', () => {
     expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
   });
 
+  describe('a resumed approval refused with its claim held (#1945)', () => {
+    const MAY_BE_IN_GP =
+      'PO-3001 is closed in GP. An earlier attempt at this approval may already have posted the receipt to GP, ' +
+      'so the draft stays claimed: check GP before going on - retry once the cause is fixed, or have the receipt reconciled.';
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: { errors: [new GraphQLError(MAY_BE_IN_GP, { extensions: { code: 'RECEIPT_MAY_BE_IN_GP' } })] },
+    };
+    function rereadMock(status: string): MockedResponse {
+      return {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: {
+          data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status, approvalIdempotencyKey: 'k-1' } },
+        },
+      };
+    }
+
+    it('says GP may hold the receipt and offers only the retry', async () => {
+      await openModal([approveMock, rereadMock('APPROVING')]);
+
+      await approveViaConfirm();
+
+      expect(await screen.findByRole('button', { name: 'Retry posting' }, { timeout: 15_000 })).toBeInTheDocument();
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/may already have posted the receipt/), SLOW);
+      expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+      expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+    });
+
+    it('never says nothing was posted, whatever the re-read finds', async () => {
+      await openModal([approveMock, rereadMock('PENDING_APPROVAL')]);
+
+      await approveViaConfirm();
+
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/may already have posted the receipt/), {
+        timeout: 15_000,
+      });
+      expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+    });
+  });
+
   it('says another manager finished it, not "fix or reject", when the re-read is approved (#1582)', async () => {
     const approveMock: MockedResponse = {
       request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },

@@ -607,6 +607,7 @@ def test_claiming_a_draft_blocks_a_second_approver_but_lets_a_retry_resume(db_se
 
     ctx = warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-a")
     assert ctx.author_name == AUTHOR_NAME, "the GP receipt is posted in the counter's name, not the approver's"
+    assert ctx.resumed is False
     assert draft.status == ReceiveDraftStatus.APPROVING
 
     with pytest.raises(AppError) as excinfo:
@@ -617,6 +618,7 @@ def test_claiming_a_draft_blocks_a_second_approver_but_lets_a_retry_resume(db_se
     # The same key is the same approval, resuming after a dropped connection.
     resumed = warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-a")
     assert resumed.po_id == po.id
+    assert resumed.resumed is True, "#1945: the resolver must know an earlier attempt may have reached GP"
 
 
 @pytest.mark.parametrize("change", ["deactivated", "moved"])
@@ -1211,6 +1213,102 @@ def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_r
     assert result.receive_record is not None
     assert result.receive_record.receipt_number == "RCT000123"
     assert result.draft.status.value == "APPROVED"
+
+
+def _claim_as_an_attempt_that_died(draft_id, key) -> None:
+    """The claim an earlier approval committed before it sent its keyed receipt and died before the
+    relay's answer was recorded: the draft APPROVING under the key, and nothing in the ledger."""
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        warehouse_repository.claim_for_approval(session, draft_id, MANAGER, MANAGER_NAME, key)
+        session.commit()
+
+
+def _set_po_status(po_id, status) -> None:
+    from app.database import SessionLocal
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        session.get(POModel, po_id).status = status
+        session.commit()
+
+
+def test_a_resumed_approval_refused_before_gp_keeps_its_claim(committed, monkeypatch, approve_env):
+    """#1945: GP may hold the receipt the dead attempt sent. Releasing the claim on the re-check's refusal
+    put the draft back pending with its key cleared, and the next approval posted a second receipt under a
+    fresh key. The claim is kept, the refusal says GP may hold it, and the retry under the key goes on once
+    the cause is fixed."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert "may already have posted the receipt to GP" in excinfo.value.message
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING
+    assert parked.approval_idempotency_key == key
+    assert relay.calls == []
+
+    _set_po_status(f.po_id, POStatus.GP_REGISTERED)
+    result = _approve(f.draft_id, key=key)
+
+    ((_, _, payload),) = relay.calls
+    assert payload["idempotency_key"] == key, "the retry asks GP under the key the dead attempt used"
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_a_fresh_approval_refused_before_gp_still_releases(committed, monkeypatch, approve_env):
+    """#1945 holds only a resumed claim: a first attempt refused before the relay call sent nothing."""
+    f = committed()
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id)
+
+    assert excinfo.value.code != warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_resumed_approval_that_queues_is_queued_as_maybe_in_gp(committed, monkeypatch, approve_env):
+    """#1945: nothing left the backend on the resume, but the dead attempt's receipt may have, so the
+    queued row never hands the draft back if it later runs out or is cancelled (#1849)."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayUnavailableError("no relay", dispatched=False))
+    )
+
+    result = _approve(f.draft_id, key=key)
+
+    assert result.queued is True
+    assert _queued_row(result).maybe_in_gp is True
+
+
+def test_a_resumed_approval_gp_refuses_after_its_key_lookup_is_released(committed, monkeypatch, approve_env):
+    """#1945: the relay looks the key up before anything else, so its refusal says GP holds no receipt
+    under it - the draft may go back in the queue."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    relay = _StubRelay(fail_with=RelayCallError("eConnect 4612 Invalid Account Index", detail={"error": "x"}))
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    assert len(relay.calls) == 1
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
 
 
 def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):

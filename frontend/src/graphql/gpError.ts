@@ -66,6 +66,10 @@ export function isRelayOpUnsupported(err: unknown): boolean {
 // or missing in GP. Its message already names the job and the state, so screens show it as it comes.
 export const GP_JOB_NOT_OPEN = 'GP_JOB_NOT_OPEN';
 
+// Backend code (#1945) for a resumed receive approval refused with its claim held: an earlier attempt
+// may already have posted the receipt to GP, so nothing on screen may say it wasn't.
+export const RECEIPT_MAY_BE_IN_GP = 'RECEIPT_MAY_BE_IN_GP';
+
 /** Plain-text rendering of a GpError, for the "Copy details" button (a paste-able alternative to a screenshot). */
 export function formatGpErrorText(e: GpError): string {
   const ctx = e.relay?.context ?? {};

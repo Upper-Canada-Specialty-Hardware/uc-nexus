@@ -59,14 +59,17 @@ class ApprovalContext:
     re-opening a session in the middle of an async resolver just to read attributes.
     """
 
-    __slots__ = ("draft_id", "po_id", "warehouse_id", "author_name", "line_items_data")
+    __slots__ = ("draft_id", "po_id", "warehouse_id", "author_name", "line_items_data", "resumed")
 
-    def __init__(self, draft_id, po_id, warehouse_id, author_name, line_items_data):
+    def __init__(self, draft_id, po_id, warehouse_id, author_name, line_items_data, resumed=False):
         self.draft_id = draft_id
         self.po_id = po_id
         self.warehouse_id = warehouse_id
         self.author_name = author_name
         self.line_items_data = line_items_data
+        # #1945: the draft was already APPROVING under this key, so an earlier attempt may have sent its
+        # receipt to GP. The resolver must not let go of the claim on a refusal it raises itself.
+        self.resumed = resumed
 
 
 def _line_items_data(draft: ReceiveDraftModel) -> list[dict]:
@@ -748,10 +751,11 @@ def claim_for_approval(
     ).rowcount
 
     draft = _get_draft(session, draft_id)
+    resumed = False
     if rowcount == 0:
         if draft.status == ReceiveDraftStatus.APPROVING and draft.approval_idempotency_key == idempotency_key:
             # Our own interrupted approval, resuming. Fall through and hand back the context.
-            pass
+            resumed = True
         elif draft.status == ReceiveDraftStatus.APPROVING:
             raise ConflictError(f"{draft.reviewed_by_name or 'Another reviewer'} is approving this draft right now")
         elif draft.status == ReceiveDraftStatus.APPROVED:
@@ -778,6 +782,7 @@ def claim_for_approval(
         warehouse_id=draft.warehouse_id,
         author_name=draft.created_by_name,
         line_items_data=_line_items_data(draft),
+        resumed=resumed,
     )
 
 

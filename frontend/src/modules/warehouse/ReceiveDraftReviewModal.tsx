@@ -33,7 +33,13 @@ import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import GpCompanyTag from '../../components/GpCompanyTag';
-import { extractGpError, GP_JOB_NOT_OPEN, NETWORK_ERROR, type GpError } from '../../graphql/gpError';
+import {
+  extractGpError,
+  GP_JOB_NOT_OPEN,
+  NETWORK_ERROR,
+  RECEIPT_MAY_BE_IN_GP,
+  type GpError,
+} from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import { isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
@@ -316,9 +322,12 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       const gpSays = extractGpError(err);
       const captured = gpSays?.code === NETWORK_ERROR ? null : gpSays;
       const serverSays = captured ? userMessage(captured) : err instanceof Error ? userMessage(err) : '';
+      // #1945: a resumed approval refused with its claim held - GP may hold the receipt an earlier attempt
+      // sent, so whatever the re-read says, it is never worded as nothing posted.
+      const mayBeInGp = captured?.code === RECEIPT_MAY_BE_IN_GP;
       if (approveSent) {
         const fresh = await reload().catch(() => undefined);
-        if (fresh && fresh.status !== 'APPROVING') {
+        if (fresh && fresh.status !== 'APPROVING' && !mayBeInGp) {
           delete idempotencyKeyRef.current[draft.id];
           // Pending again: nothing reached GP and the reviewer decides. Approved or rejected: another
           // manager finished it meanwhile - there is nothing here to fix or reject.
@@ -344,9 +353,9 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
         });
         return;
       }
-      if (captured?.code === GP_JOB_NOT_OPEN) {
+      if (captured && (captured.code === GP_JOB_NOT_OPEN || mayBeInGp)) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
-        // nothing a retry would change.
+        // nothing a retry would change. #1945: the may-be-in-GP refusal says itself what to do next.
         setApproveNotice({ on: draftProp, message: userMessage(captured), gpError: null });
         return;
       }
