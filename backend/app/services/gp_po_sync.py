@@ -987,20 +987,34 @@ def _log_pass(result: dict) -> None:
         )
 
 
-async def _backfill_tick(draining: list[str], stalled: set[str]) -> bool:
+def _drainable(draining: list[str], stalled: dict[str, float]) -> list[str]:
+    """The draining companies not held out by a stall, dropping every stall POLL_SECONDS old first.
+
+    A stall used to last until the next incremental tick, and while no company has finished its
+    backfill there is no incremental tick at all, so one transient failure idled the company until a
+    restart (#1914). On a timer it is tried again; a PO that fails every time still holds the cursor
+    where it is, re-read once per interval rather than in a tight loop."""
+    now = time.monotonic()
+    for company in [c for c, at in stalled.items() if now - at >= POLL_SECONDS]:
+        del stalled[company]
+    return [c for c in draining if c not in stalled]
+
+
+async def _backfill_tick(draining: list[str], stalled: dict[str, float]) -> bool:
     """One backfill batch for the next company still draining. True if one ran.
 
     No deadline of its own any more: the read budget is the pace, so the backfill simply takes whatever
-    the incremental schedule is not using. A company whose cursor could not advance is held out until
-    the next incremental tick clears the set - the old anti-hot-spin rule, per company."""
-    drainable = [c for c in draining if c not in stalled]
+    the incremental schedule is not using. A company whose cursor could not advance is held out for
+    POLL_SECONDS, or until the next incremental tick clears the map - the old anti-hot-spin rule, per
+    company. `stalled` maps each held company to the monotonic instant it stalled."""
+    drainable = _drainable(draining, stalled)
     if not drainable:
         return False
     company = _next_company(drainable, key="backfill")
     result = await _run_backfill(company, max_pages=BACKFILL_MAX_PAGES_PER_PASS)
     _log_pass(result)
     if result.get("stalled"):
-        stalled.add(company)
+        stalled[company] = time.monotonic()
     return True
 
 
@@ -1106,7 +1120,8 @@ async def run_forever() -> None:
     _activity = None
     _last_open_pass.clear()
     _last_new_po_check_result.clear()
-    stalled: set[str] = set()
+    # Company -> monotonic instant its backfill cursor stalled (see _drainable).
+    stalled: dict[str, float] = {}
     # Whether the "backfill is waiting for its window" line has already been logged. One line per
     # transition, not one per check.
     backfill_asleep = False
@@ -1138,7 +1153,7 @@ async def run_forever() -> None:
                     draining, mirrored = await asyncio.to_thread(_backfill_phase, relay_gateway.companies)
                     now_utc = datetime.utcnow()
                     window_open = BACKFILL_WINDOW.allows(now_utc)
-                    drainable = [c for c in draining if c not in stalled]
+                    drainable = _drainable(draining, stalled)
                     ran = False
 
                     # INSIDE the window the backfill goes FIRST, and keeps going while anything is

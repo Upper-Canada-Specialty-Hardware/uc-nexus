@@ -454,6 +454,31 @@ def test_a_stalled_company_leaves_the_backfill_rotation(monkeypatch):
     assert "A" not in backfills[1:]
 
 
+def test_a_stall_is_tried_again_after_the_poll_interval(monkeypatch):
+    """#1914: with no company past its backfill there is no incremental tick to clear a stall, so the
+    stall runs out on its own after POLL_SECONDS - and not a moment sooner."""
+    events = _run_scheduler(monkeypatch, companies=["A"], draining={"A"}, stalls={"A"}, max_turns=12)
+
+    backfills = [i for i, e in enumerate(events) if e == ("backfill", "A")]
+    assert len(backfills) >= 2
+    assert sum(s for kind, s in events[backfills[0] : backfills[1]] if kind == "sleep") >= 900.0
+
+
+def test_a_stall_holds_a_company_out_until_it_is_poll_seconds_old(monkeypatch):
+    now = {"t": 1000.0}
+    monkeypatch.setattr(gp_po_sync.time, "monotonic", lambda: now["t"])
+    monkeypatch.setattr(gp_po_sync, "POLL_SECONDS", 900.0)
+    stalled = {"A": 1000.0, "B": 500.0}
+
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["C"]
+    now["t"] = 1500.0  # B stalled 1000s ago, A only 500s ago
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["B", "C"]
+    assert stalled == {"A": 1000.0}
+    now["t"] = 1900.0
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["A", "B", "C"]
+    assert stalled == {}
+
+
 def test_there_is_no_all_companies_sweep_at_startup(monkeypatch):
     """Sweeping every company is what re-issued two unbounded open-book reads minutes after the first
     had already pinned GP's CPU. Startup resumes the rotation; it does not sweep."""
