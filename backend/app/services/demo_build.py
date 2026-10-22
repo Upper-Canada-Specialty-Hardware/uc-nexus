@@ -33,7 +33,7 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.demo import DEMO_COMPANY, demo_reset_running
-from app.errors import ConflictError
+from app.errors import AppError, ConflictError
 from app.models.project import Project
 from app.repositories import demo_mirror_state_repository as state
 from app.services import demo_gp, demo_mirror, demo_reset
@@ -189,7 +189,11 @@ async def ensure_built(started_by: str) -> None:
             _record(state.BUILD, {"running": False})
     except Exception as e:
         _record(state.BUILD, {"finished_at": _now(), "running": False, "error": str(e) or type(e).__name__})
-        raise
+        if isinstance(e, AppError):
+            raise
+        # #1937: anything else reached the person switching demo mode on as the masked server error, with
+        # nothing to say demo mode stayed off because the build failed - nor why.
+        raise AppError(f"The demo couldn't be built: {str(e) or type(e).__name__}", "DEMO_BUILD_FAILED") from e
 
 
 # --- the nightly sync ---------------------------------------------------------------------------------
