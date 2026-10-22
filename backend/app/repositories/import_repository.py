@@ -1360,12 +1360,16 @@ def finalize_import_session(
     for product, classification in whole_product.items():
         products_by_value.setdefault(classification, []).append(product)
     for classification, products in products_by_value.items():
-        pairs = select(
+        unnested = (
             func.unnest(
                 bindparam("categories", [c for c, _ in products], type_=ARRAY(String)),
                 bindparam("codes", [p for _, p in products], type_=ARRAY(String)),
-            ).table_valued("hardware_category", "product_code")
+            )
+            .table_valued("hardware_category", "product_code")
+            # AS anon(hardware_category, product_code): without the column list Postgres names neither.
+            .render_derived()
         )
+        pairs = select(unnested.c.hardware_category, unnested.c.product_code)
         session.execute(
             update(HardwareItemModel)
             .where(
