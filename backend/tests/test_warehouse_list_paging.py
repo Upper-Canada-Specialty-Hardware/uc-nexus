@@ -118,6 +118,81 @@ def test_pages_interleave_drafts_and_records_newest_first(db_session):
     assert [r["id"] for page in pages for r in page] == newest_first
 
 
+def _queued_approval(session, po, outbox_status, minutes) -> ReceiveDraft:
+    """A draft approved onto the GP outbox: APPROVED, linked to the row, no receive record yet."""
+    from app.repositories import gp_outbox_repository
+
+    draft = _draft(session, po, ReceiveDraftStatus.APPROVED, minutes=minutes)
+    row = gp_outbox_repository.enqueue(
+        session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company="TUBC",
+        payload={},
+        persist_context={},
+        entity_key=f"po:{po.id}",
+        label="Receipt",
+    )
+    row.status = outbox_status
+    draft.approved_outbox_entry_id = row.id
+    session.flush()
+    return draft
+
+
+@pytest.mark.parametrize(
+    ("outbox_status", "state"),
+    [
+        ("PENDING", "WAITING_ON_GP"),
+        ("IN_FLIGHT", "WAITING_ON_GP"),
+        ("FAILED", "GP_WRITE_FAILED"),
+        ("CANCELLED", "GP_WRITE_FAILED"),
+    ],
+)
+def test_an_approval_still_on_the_outbox_says_what_gp_is_doing(db_session, outbox_status, state):
+    """#1947: an approved draft with no record read as plain Approved, as if it were booked, while its
+    receipt waited on GP or GP had refused it."""
+    project = _project(db_session)
+    po = _po(db_session, project)
+    queued = _queued_approval(db_session, po, outbox_status, minutes=0)
+    pending = _draft(db_session, po, ReceiveDraftStatus.PENDING_APPROVAL, minutes=1)
+    record = _record(db_session, po, minutes=2)
+
+    rows = {r["id"]: r for r in warehouse_repository.get_all_receives(db_session, limit=10, project_id=project.id)}
+
+    assert rows[queued.id]["status"] == "APPROVED"
+    assert rows[queued.id]["gp_write_state"] == state
+    assert rows[pending.id]["gp_write_state"] is None
+    assert rows[record.id]["gp_write_state"] is None
+    assert all("_outbox_entry_id" not in r for r in rows.values())
+
+
+def test_the_outbox_rows_for_a_page_are_read_once(db_session):
+    """One grouped read for the page, however many queued approvals it holds."""
+    from sqlalchemy import event
+
+    project = _project(db_session)
+    po = _po(db_session, project)
+    for i in range(3):
+        _queued_approval(db_session, po, "PENDING", minutes=i)
+
+    outbox_reads: list[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "gp_write_outbox" in statement:
+            outbox_reads.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        rows = warehouse_repository.get_all_receives(db_session, limit=10, project_id=project.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    assert [r["gp_write_state"] for r in rows] == ["WAITING_ON_GP"] * 3
+    assert len(outbox_reads) == 1
+
+
 def test_an_unknown_status_is_a_field_error(db_session):
     with pytest.raises(ValidationError) as e:
         warehouse_repository.get_all_receives(db_session, limit=5, status="NOPE")

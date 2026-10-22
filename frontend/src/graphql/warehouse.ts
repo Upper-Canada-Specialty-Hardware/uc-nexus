@@ -854,6 +854,7 @@ export const GET_RECEIVES = gql`
       rejectionReason
       receiptNumber
       batchNumber
+      gpWriteState
     }
   }
 `;

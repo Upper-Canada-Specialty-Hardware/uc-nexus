@@ -553,6 +553,7 @@ class WarehouseQueries:
                     rejection_reason=r["rejection_reason"],
                     receipt_number=r["receipt_number"],
                     batch_number=r["batch_number"],
+                    gp_write_state=r["gp_write_state"],
                 )
                 for r in warehouse_repository.get_all_receives(
                     session,

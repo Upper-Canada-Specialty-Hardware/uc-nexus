@@ -1776,6 +1776,9 @@ class ReceiveRow:
     rejection_reason: str | None
     receipt_number: str | None
     batch_number: str | None
+    # #1947: on an APPROVED draft whose receipt is still on the GP outbox, what that write is doing -
+    # WAITING_ON_GP or GP_WRITE_FAILED. Null on every other row.
+    gp_write_state: str | None = None
 
 
 @strawberry.type

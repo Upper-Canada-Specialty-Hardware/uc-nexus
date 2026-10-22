@@ -32,6 +32,7 @@ function makeRows(start: number, count: number) {
       rejectionReason: null,
       receiptNumber: null,
       batchNumber: null,
+      gpWriteState: null,
       __typename: 'ReceiveRow',
     };
   });
@@ -100,4 +101,56 @@ it('says the receives could not be read instead of "no receives match"', async (
 
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
   expect(screen.queryByText('No receives match these filters.')).not.toBeInTheDocument();
+});
+
+// #1947: an approved draft whose receipt is still on the GP outbox read as plain "Approved", as if booked.
+describe('an approval still on the GP outbox', () => {
+  // jsdom reports every element as 0x0, and the grid lays its columns out at zero width from a measured
+  // container - so no cell reaches the tree. Real dimensions for these tests only, as GpWriteQueuePanel's take.
+  const sized = ['clientWidth', 'clientHeight', 'offsetWidth', 'offsetHeight'] as const;
+  const original = new Map<string, PropertyDescriptor | undefined>();
+  beforeAll(() => {
+    for (const prop of sized) {
+      original.set(prop, Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop));
+      Object.defineProperty(HTMLElement.prototype, prop, {
+        configurable: true,
+        value: prop.endsWith('Width') ? 1600 : 800,
+      });
+    }
+  });
+  afterAll(() => {
+    for (const prop of sized) {
+      const descriptor = original.get(prop);
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, prop, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[prop];
+    }
+  });
+
+  it('says it is waiting on GP, or that GP refused it, and never shows it as booked', async () => {
+    const [booked] = makeRows(1, 1);
+    const waiting = { ...booked, kind: 'DRAFT', id: 'd-1', poNumber: 'PO-WAIT', gpWriteState: 'WAITING_ON_GP' };
+    const refused = { ...booked, kind: 'DRAFT', id: 'd-2', poNumber: 'PO-FAIL', gpWriteState: 'GP_WRITE_FAILED' };
+    const mocks: MockedResponse[] = [
+      projectsMock,
+      {
+        request: { query: GET_RECEIVES, variables: { limit: 200, offset: 0 } },
+        result: { data: { receives: [waiting, refused, booked] } },
+      },
+    ];
+
+    render(
+      <MockedProvider mocks={mocks}>
+        <MemoryRouter>
+          <ReceivesPage />
+        </MemoryRouter>
+      </MockedProvider>,
+    );
+
+    const waitingChip = await screen.findByText('Approved - waiting on GP');
+    const refusedChip = screen.getByText('Approved - GP write failed');
+    expect(waitingChip.closest('.MuiChip-root')).not.toHaveClass('MuiChip-colorSuccess');
+    expect(refusedChip.closest('.MuiChip-root')).toHaveClass('MuiChip-colorError');
+    // Only the booked record reads as plain Approved.
+    expect(screen.getAllByText('Approved')).toHaveLength(1);
+  });
 });

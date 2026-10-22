@@ -51,6 +51,8 @@ interface ReceiveRow {
   rejectionReason: string | null;
   receiptNumber: string | null;
   batchNumber: string | null;
+  // #1947: set on an approved draft whose receipt is still on the GP outbox.
+  gpWriteState?: 'WAITING_ON_GP' | 'GP_WRITE_FAILED' | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -58,6 +60,9 @@ const STATUS_LABEL: Record<string, string> = {
   APPROVING: 'Approving',
   REJECTED: 'Rejected',
   APPROVED: 'Approved',
+  // #1947: plain "Approved" read as booked while the receipt waited on GP, or after GP refused it.
+  WAITING_ON_GP: 'Approved - waiting on GP',
+  GP_WRITE_FAILED: 'Approved - GP write failed',
 };
 
 const STATUS_COLOR: Record<string, 'default' | 'warning' | 'info' | 'error' | 'success'> = {
@@ -65,6 +70,8 @@ const STATUS_COLOR: Record<string, 'default' | 'warning' | 'info' | 'error' | 's
   APPROVING: 'info',
   REJECTED: 'error',
   APPROVED: 'success',
+  WAITING_ON_GP: 'info',
+  GP_WRITE_FAILED: 'error',
 };
 
 const STATUS_FILTERS = ['', 'PENDING_APPROVAL', 'APPROVING', 'REJECTED', 'APPROVED'];
@@ -132,15 +139,13 @@ export default function ReceivesPage() {
       {
         field: 'status',
         headerName: 'Status',
-        width: 160,
-        minWidth: 130,
-        renderCell: (params) => (
-          <Chip
-            size="small"
-            label={STATUS_LABEL[params.value as string] ?? (params.value as string)}
-            color={STATUS_COLOR[params.value as string] ?? 'default'}
-          />
-        ),
+        // Wide enough for the longest label whole (#1947).
+        width: 200,
+        minWidth: 190,
+        renderCell: (params) => {
+          const shown = params.row.gpWriteState ?? (params.value as string);
+          return <Chip size="small" label={STATUS_LABEL[shown] ?? shown} color={STATUS_COLOR[shown] ?? 'default'} />;
+        },
       },
       {
         field: 'poNumber',

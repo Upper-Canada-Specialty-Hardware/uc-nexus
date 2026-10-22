@@ -653,6 +653,16 @@ def get_recent_receive_records(session: Session, limit: int = 10, *, company: st
     return list(session.execute(stmt.limit(limit)).unique().all())
 
 
+# #1947: what an approved draft's queued GP receipt is doing, by its outbox row's status. SUCCEEDED is
+# absent: that persist links the record, and the record is the row shown.
+_GP_WRITE_STATE = {
+    "PENDING": "WAITING_ON_GP",
+    "IN_FLIGHT": "WAITING_ON_GP",
+    "FAILED": "GP_WRITE_FAILED",
+    "CANCELLED": "GP_WRITE_FAILED",
+}
+
+
 def get_all_receives(
     session: Session,
     *,
@@ -683,6 +693,7 @@ def get_all_receives(
     A status narrows drafts to that status; APPROVED also brings in the booked records, which is how an
     approved delivery shows.
     """
+    from app.models.enums import ReceiveDraftStatus
     from app.models.project import Project as ProjectModel
     from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
 
@@ -712,8 +723,6 @@ def get_all_receives(
         .limit(window)
     )
     if status is not None:
-        from app.models.enums import ReceiveDraftStatus
-
         try:
             draft_status = ReceiveDraftStatus(status)
         except ValueError as exc:
@@ -752,8 +761,28 @@ def get_all_receives(
                 "rejection_reason": draft.rejection_reason,
                 "receipt_number": None,
                 "batch_number": None,
+                "gp_write_state": None,
+                "_outbox_entry_id": (
+                    draft.approved_outbox_entry_id
+                    if draft.status == ReceiveDraftStatus.APPROVED and draft.receive_record_id is None
+                    else None
+                ),
             }
         )
+
+    # #1947: an approved draft with no record yet is a receipt still on the outbox, and plain "Approved"
+    # read as booked. Its row says whether GP is still to take it or failed to - one grouped read.
+    entry_ids = {r["_outbox_entry_id"] for r in rows if r["_outbox_entry_id"] is not None}
+    if entry_ids:
+        from app.models.gp_outbox import GpWriteOutbox
+
+        outbox_status = dict(
+            session.execute(select(GpWriteOutbox.id, GpWriteOutbox.status).where(GpWriteOutbox.id.in_(entry_ids))).all()
+        )
+        for r in rows:
+            r["gp_write_state"] = _GP_WRITE_STATE.get(outbox_status.get(r["_outbox_entry_id"]))
+    for r in rows:
+        del r["_outbox_entry_id"]
 
     record_rows = session.execute(record_stmt).unique().all() if want_records else []
     for record, po in record_rows:
@@ -774,6 +803,7 @@ def get_all_receives(
                 "rejection_reason": None,
                 "receipt_number": record.receipt_number,
                 "batch_number": record.batch_number,
+                "gp_write_state": None,
             }
         )
 
