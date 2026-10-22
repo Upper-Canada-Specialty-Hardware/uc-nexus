@@ -1149,6 +1149,10 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
+    # #1957: the status below is decided under the PO's row lock, read fresh - the mirror cancels or closes
+    # a PO holding that lock, and an unlocked read let ties land on a PO it had just cancelled. The PO row
+    # before the project and the lines, the order every PO writer takes.
+    _lock_po_row(session, po)
     if po.origin != POOrigin.GP:
         raise InvalidStateTransitionError(
             "This purchase order was raised in Nexus - its lines already carry their schedule identity"
