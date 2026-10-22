@@ -50,7 +50,7 @@ import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { userMessage } from '../../graphql/userMessage';
-import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
+import { extractGpError, isRelayOpUnsupported, NETWORK_ERROR, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
 import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
 import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './SpreadsheetPastePanel';
@@ -1303,8 +1303,10 @@ export default function GpPurchaseOrderDialog({
       setGpError(gpErr ?? { message: isRegister ? 'Failed to push PO to GP' : 'Failed to create the draft PO' });
       // The no-duplicate promise holds when GP rejected the PO (the relay rolls the whole PO back) and
       // when the relay is too old to serve the call (nothing was sent at all). It does not hold for a
-      // timeout or a dropped connection, where GP may be holding the PO, so it is not made for those.
-      const mayHoldInGp = gpErr?.code === 'RELAY_TIMEOUT' || gpErr?.code === 'RELAY_UNAVAILABLE';
+      // timeout or a dropped connection, where GP may be holding the PO, so it is not made for those -
+      // nor when this browser lost its own connection to Nexus mid-write (#1933).
+      const mayHoldInGp =
+        gpErr?.code === 'RELAY_TIMEOUT' || gpErr?.code === 'RELAY_UNAVAILABLE' || gpErr?.code === NETWORK_ERROR;
       const registerFailureText = mayHoldInGp
         ? 'Could not complete the PO in GP - see the error detail below.'
         : "Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate.";

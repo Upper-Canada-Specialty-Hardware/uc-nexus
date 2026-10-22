@@ -33,7 +33,7 @@ import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import GpCompanyTag from '../../components/GpCompanyTag';
-import { extractGpError, GP_JOB_NOT_OPEN, type GpError } from '../../graphql/gpError';
+import { extractGpError, GP_JOB_NOT_OPEN, NETWORK_ERROR, type GpError } from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import { isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
@@ -310,7 +310,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       // the receipt down - releases the claim and the draft is pending again: nothing was posted, a retry
       // is refused the same way, and the reviewer needs the count and Reject back. Only a draft still
       // APPROVING (an answer that never came back) is the retry case.
-      const captured = extractGpError(err);
+      //
+      // #1933: a dropped connection is not GP's detail - it is worded from the error itself, so it reads
+      // as the connection rather than fetch's own "Failed to fetch".
+      const gpSays = extractGpError(err);
+      const captured = gpSays?.code === NETWORK_ERROR ? null : gpSays;
       const serverSays = captured ? userMessage(captured) : err instanceof Error ? userMessage(err) : '';
       if (approveSent) {
         const fresh = await reload().catch(() => undefined);

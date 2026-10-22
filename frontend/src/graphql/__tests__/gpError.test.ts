@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { CombinedGraphQLErrors } from '@apollo/client/errors';
-import { extractGpError, formatGpErrorText } from '../gpError';
+import { CombinedGraphQLErrors, ServerError } from '@apollo/client/errors';
+import { extractGpError, formatGpErrorText, NETWORK_ERROR } from '../gpError';
+import { NETWORK_MESSAGE } from '../userMessage';
 
 describe('extractGpError', () => {
   it('pulls message + code + relayError detail from a CombinedGraphQLErrors', () => {
@@ -30,8 +31,22 @@ describe('extractGpError', () => {
     expect(gp?.relay).toBeUndefined();
   });
 
-  it('falls back to a plain Error message (e.g. a network error)', () => {
-    expect(extractGpError(new Error('Failed to fetch'))?.message).toBe('Failed to fetch');
+  it('falls back to a plain Error message', () => {
+    expect(extractGpError(new Error('Something else broke'))?.message).toBe('Something else broke');
+  });
+
+  it('words a request that never got an answer as the connection, coded NETWORK (#1933)', () => {
+    const dropped = extractGpError(new TypeError('Failed to fetch'));
+    expect(dropped?.message).toBe(NETWORK_MESSAGE);
+    expect(dropped?.code).toBe(NETWORK_ERROR);
+    const badGateway = extractGpError(
+      new ServerError('Response not successful: Received status code 502', {
+        response: new Response(null, { status: 502 }),
+        bodyText: '',
+      }),
+    );
+    expect(badGateway?.message).toBe(NETWORK_MESSAGE);
+    expect(badGateway?.code).toBe(NETWORK_ERROR);
   });
 
   it('returns null when there is nothing to show', () => {

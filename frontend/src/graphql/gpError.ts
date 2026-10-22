@@ -1,4 +1,5 @@
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
+import { isNetworkError, userMessage } from './userMessage';
 
 // The relay's own error body, forwarded by the backend under extensions.relayError (see backend
 // main.py ErrorHandlerExtension / issue #187). For an eConnect failure `context` carries the GP proc,
@@ -16,7 +17,7 @@ export interface RelayErrorDetail {
 
 export interface GpError {
   message: string; // the human-readable top-level message (already the eConnect description when GP fails)
-  code?: string; // extensions.code, e.g. RELAY_CALL_FAILED / RELAY_UNAVAILABLE / RELAY_TIMEOUT
+  code?: string; // extensions.code, e.g. RELAY_CALL_FAILED / RELAY_UNAVAILABLE / RELAY_TIMEOUT, or NETWORK
   relay?: RelayErrorDetail; // extensions.relayError, present when the failure came from the relay/GP
 }
 
@@ -36,11 +37,20 @@ export function extractGpError(err: unknown): GpError | null {
       relay: (ext.relayError as RelayErrorDetail | undefined) ?? undefined,
     };
   }
+  // #1933: a request that never got an answer read as fetch's own "Failed to fetch", and with no code the
+  // register dialog promised a retry won't duplicate - but the write may have reached GP before the
+  // connection dropped. It reads as the connection, and the code lets callers treat it as maybe-written.
+  if (isNetworkError(err)) {
+    return { message: userMessage(err), code: NETWORK_ERROR };
+  }
   if (err instanceof Error && err.message) {
     return { message: err.message };
   }
   return null;
 }
+
+// Not a backend code: the request never got an answer (#1933), so whether it was written is unknown.
+export const NETWORK_ERROR = 'NETWORK';
 
 // Backend code (app/errors.py RelayOpUnsupportedError) for a call the connected relay build is too old
 // to serve (issue #315). The dialogs special-case it: show an 'update the relay' banner and fall back

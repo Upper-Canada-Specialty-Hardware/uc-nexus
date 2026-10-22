@@ -789,6 +789,27 @@ describe('GpPurchaseOrderDialog', () => {
     expect(onSubmitted).not.toHaveBeenCalled();
   });
 
+  it('makes no no-duplicate promise and names the connection when it drops mid-register (#1933)', async () => {
+    // The write may have reached GP before the answer was lost, so a retry is not promised to be safe,
+    // and the detail reads as the connection rather than fetch's own "Failed to fetch".
+    const droppedMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      error: new TypeError('Failed to fetch'),
+    };
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), droppedMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(
+      await screen.findByText('Could not complete the PO in GP - see the error detail below.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/A retry won't create a duplicate/)).toBeNull();
+    expect(screen.getByText(/Couldn't reach Nexus/)).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch')).toBeNull();
+    expect(onSubmitted).not.toHaveBeenCalled();
+  });
+
   it('keeps the idempotency key when the registration is queued on the GP outbox', async () => {
     // #353 PR E: a queued registration is accepted, not failed - but the outbox row now owns the
     // idempotency key. Clearing it would make a resubmit mint a new key and queue the PO twice, so
