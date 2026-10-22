@@ -128,6 +128,8 @@ updating to a new build
 - update artifacts in the install dir (`%LOCALAPPDATA%\UCNexusRelay`):
   - `update.log` - the helper's step-by-step log (wait -> kill -> repoint -> relaunch); read this first if
     an update misbehaves.
+  - `app.log` - the desktop app's own log: the update poller's decisions, staging, and the post-update
+    self-check and any rollback it does (#1931). relay.log is serve's, and the Logs tab shows that one.
   - `update-state.json` - the attempt ledger the Updates tab surfaces ("installed build N" / "update to
     build N failed: <reason>"). status is one of staging/applying/success/failed/cancelled/rolled_back,
     plus a `self_check` verdict once the post-update check has run.

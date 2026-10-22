@@ -9,7 +9,7 @@ the active one. An update extracts the new version alongside, repoints the junct
 rename or copy of a running folder. Repointing a junction is safe while the old relay runs: its open .pyd
 handles resolved the old real path at launch and are unaffected by swapping the reparse point.
 
-Data (config.toml, relay.log, relay.pid, app.lock, update-state.json, update.log) lives in the data dir
+Data (config.toml, relay.log, app.log, relay.pid, app.lock, update-state.json, update.log) lives in the data dir
 itself, NOT in a version folder, so it survives updates. config._default_config_path is LOCALAPPDATA-based
 (not exe-relative), so config resolves to the data dir regardless of which version is current.
 """
