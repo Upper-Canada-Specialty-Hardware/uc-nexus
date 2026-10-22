@@ -359,9 +359,18 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await asyncio.to_thread(_finish, row_id, "mark_succeeded")
         return
 
-    if op == "create_receive" and not row.maybe_in_gp and (state is None or state.relay_result is None):
-        # #1946: no attempt can have left this receipt in GP, so it is checked again before it is sent.
-        # A refusal is failed like GP's own: nothing was sent, so its draft goes back for review.
+    if (
+        op == "create_receive"
+        and row.attempts == 0
+        and not row.maybe_in_gp
+        and (state is None or state.relay_result is None)
+    ):
+        # #1946: a receipt never sent cannot be in GP, so it is checked again before it is sent. A refusal
+        # is failed like GP's own: nothing was sent, so its draft goes back for review. Never sent is no
+        # attempt counted - a relay that is simply not there counts none - as well as not maybe in GP: a
+        # keyed sql_error is retried with maybe_in_gp left False, though its commit may have landed, and
+        # a refusal of it here would send back the draft of a receipt GP may hold. A row that counted an
+        # attempt without sending (a relay too old for the op) is sent as before, unchecked.
         try:
             await asyncio.to_thread(_recheck_queued_receipt, context)
         except AppError as e:

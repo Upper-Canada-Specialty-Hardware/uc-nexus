@@ -626,6 +626,52 @@ def test_a_queued_receipt_that_may_be_in_gp_is_sent_without_the_recheck(_migrate
         _delete(row_id)
 
 
+def _set_attempts(row_id: uuid.UUID, attempts: int) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        gp_outbox_repository.get_entry(session, row_id).attempts = attempts
+        session.commit()
+
+
+def test_a_queued_receipt_already_sent_once_is_sent_again_without_the_recheck(_migrate_database, monkeypatch):
+    """#1946 review: a keyed sql_error is retried with maybe_in_gp left False, though its commit may have
+    landed. The row counted the attempt, so it is not re-checked: a refusal would send back the draft of a
+    receipt GP may hold."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _set_attempts(row_id, 1)
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+        _stub_persist(monkeypatch)
+
+        def _must_not_run(context):
+            raise AssertionError("a receipt already sent once is not re-checked")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _must_not_run)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert len(calls) == 1
+        assert _read(row_id)["status"] == "SUCCEEDED"
+    finally:
+        _delete(row_id)
+
+
+def test_a_relay_that_is_not_there_counts_no_attempt_so_the_recheck_still_runs(_migrate_database, monkeypatch):
+    """What the gate rests on: a receipt waiting on a relay that is not connected is never sent, and that
+    wait counts no attempt, so its first real send is still re-checked."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayUnavailableError("relay not connected", dispatched=False))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 0, False)
+    finally:
+        _delete(row_id)
+
+
 def test_a_recheck_that_raises_unexpectedly_is_retried_and_nothing_is_sent(_migrate_database, monkeypatch):
     row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
     try:
