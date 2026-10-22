@@ -18,13 +18,24 @@ export default function CompanyWordmark() {
   const name = data?.companyLetterhead.name ?? company ?? null;
   return (
     <Box component="span" sx={{ display: 'inline-flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.15 }}>
-      <span>UC Nexus</span>
+      {/* Cut short rather than push the account menu off a phone's bar (#1835). */}
+      <Box component="span" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        UC Nexus
+      </Box>
       {name && (
+        // Dropped on a phone, as the company chip's name is: the chip still says which company it is.
         <Typography
           component="span"
           variant="caption"
           data-testid="company-wordmark-name"
-          sx={{ opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}
+          sx={{
+            display: { xs: 'none', sm: 'block' },
+            opacity: 0.8,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: 240,
+          }}
           title={name}
         >
           {name}

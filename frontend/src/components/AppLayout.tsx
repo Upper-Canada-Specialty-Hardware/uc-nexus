@@ -80,16 +80,20 @@ export default function AppLayout() {
           </Tooltip>
           {/* A real link, not a heading with an onClick: the home shortcut now answers the keyboard
               and the middle-click/new-tab a person expects of a wordmark. color inherit keeps it in
-              the app bar's paper text rather than defaulting to link blue. */}
+              the app bar's paper text rather than defaulting to link blue. minWidth 0 lets it give
+              way on a phone, where it is the only thing on the bar that can, so the account menu
+              is never clipped off the end (#1835). */}
           <Typography
             component={RouterLink}
             to="/app"
             variant="h6"
             sx={{
-              mr: 3,
+              mr: { xs: 1, sm: 3 },
               display: 'inline-flex',
               alignItems: 'center',
               gap: 1.25,
+              minWidth: 0,
+              overflow: 'hidden',
               letterSpacing: '0.01em',
               color: 'inherit',
               textDecoration: 'none',
@@ -100,7 +104,12 @@ export default function AppLayout() {
           >
             {/* The company logo. Its white keyline ring is what carries it on the ink bar. alt is
                 empty because the wordmark beside it already names the link. */}
-            <Box component="img" src={companyLogo} alt="" sx={{ height: { xs: 28, sm: 32 }, display: 'block' }} />
+            <Box
+              component="img"
+              src={companyLogo}
+              alt=""
+              sx={{ height: { xs: 28, sm: 32 }, display: 'block', flexShrink: 0 }}
+            />
             <CompanyWordmark />
           </Typography>
 
