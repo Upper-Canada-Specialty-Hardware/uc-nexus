@@ -257,6 +257,13 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
         # than an argument (#427). A receive against one of those POs later asks them whether the
         # shipment stays in the project's inventory or ships straight out.
         "created_by_user_id": created_by_user_id,
+        # #1918: only when sent - a caller that omits it is not checked, while null is a real answer
+        # ("no schedule yet").
+        **(
+            {"expected_schedule_revision": input.expected_schedule_revision}
+            if input.expected_schedule_revision is not strawberry.UNSET
+            else {}
+        ),
     }
 
 

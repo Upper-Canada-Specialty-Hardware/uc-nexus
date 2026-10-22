@@ -726,6 +726,7 @@ def project_hardware_schedule_to_type(data: dict) -> ProjectHardwareSchedule:
             ProjectProductClassification(hardware_category=category, product_code=code, classification=classification)
             for (category, code), classification in sorted(data["product_classifications"].items())
         ],
+        revision=data["project"].schedule_revision,
     )
 
 

@@ -6,7 +6,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import ValidationError
+from app.errors import ConflictError, ValidationError
 from app.models.enums import (
     Classification,
     HardwareItemState,
@@ -702,6 +702,62 @@ def test_replace_schedule_with_no_openings_leaves_the_schedule_alone(db_session)
         ("A01", "HG-100", HardwareItemState.AVAILABLE): 1,
         ("A02", "HG-200", HardwareItemState.AVAILABLE): 1,
     }
+
+
+def test_a_finalize_from_an_older_schedule_revision_is_refused(db_session):
+    """#1918: a tab working from the schedule it loaded, finalized after someone else replaced it, put
+    its stale rows back and recreated the openings the newer revision dropped. It names the revision it
+    started from, and a moved one is refused with nothing written."""
+    project = _make_project(db_session)
+    db_session.commit()
+    assert project.schedule_revision == 0
+
+    # A first import expects no schedule yet.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A02")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+            "expected_schedule_revision": None,
+        },
+    )
+    db_session.flush()
+    assert project.schedule_revision == 1
+
+    # Someone replaces it from revision 1: A02 goes.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+            "replace_schedule": True,
+            "expected_schedule_revision": 1,
+        },
+    )
+    db_session.flush()
+    assert project.schedule_revision == 2
+
+    # The stale tab still holds revision 1, and a tab opened before the first import holds none.
+    stale = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01"), _opening_input("A02")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+    }
+    for expected in (1, None):
+        with pytest.raises(ConflictError, match="The schedule changed since you opened this"):
+            import_repository.finalize_import_session(db_session, {**stale, "expected_schedule_revision": expected})
+
+    openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
+    assert {o.opening_number for o in openings} == {"A01"}
+    assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.AVAILABLE): 4}
+    assert project.schedule_revision == 2
+
+    # A caller that doesn't name one (the demo build) is not checked.
+    import_repository.finalize_import_session(db_session, stale)
+    db_session.flush()
+    assert project.schedule_revision == 3
 
 
 def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):

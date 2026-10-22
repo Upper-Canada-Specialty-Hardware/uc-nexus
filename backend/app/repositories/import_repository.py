@@ -928,6 +928,19 @@ def finalize_import_session(
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
 
+    # #1918: the lock serializes finalizes but never noticed the schedule changed between them, so a tab
+    # finalizing the schedule it loaded after someone replaced it put its stale rows back and recreated the
+    # openings the newer revision dropped. The wizard sends the revision it started from (None: it expected
+    # no schedule yet, revision 0); read under the lock, a moved count is refused. Omitted = not checked.
+    if "expected_schedule_revision" in input_data:
+        expected_revision = input_data["expected_schedule_revision"] or 0
+        if expected_revision != project.schedule_revision:
+            raise ConflictError(
+                "The schedule changed since you opened this. Reload it and start again.",
+                field="expected_schedule_revision",
+            )
+    project.schedule_revision += 1
+
     # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
     # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
     # against it. A project whose GP job cannot be received against must not accumulate any of that:

@@ -229,6 +229,28 @@ def test_excluded_items_keep_null_apart_from_an_explicit_empty_list():
     assert empty["excluded_items"] == []
 
 
+def test_the_expected_schedule_revision_is_sent_only_when_given():
+    # #1918: omitted means "not checked" (a caller that never loaded the schedule, the demo build), and
+    # null is a real answer - "no schedule yet" - so the two must not collapse into one.
+    omitted = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()]),
+        created_by_user_id="u",
+    )
+    assert "expected_schedule_revision" not in omitted
+
+    none_yet = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()], expected_schedule_revision=None),
+        created_by_user_id="u",
+    )
+    assert none_yet["expected_schedule_revision"] is None
+
+    loaded = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()], expected_schedule_revision=4),
+        created_by_user_id="u",
+    )
+    assert loaded["expected_schedule_revision"] == 4
+
+
 class _StopAfterFinalize(Exception):
     pass
 

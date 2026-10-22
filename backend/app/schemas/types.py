@@ -968,6 +968,8 @@ class ProjectHardwareSchedule:
     openings: list[Opening]
     hardware_items: list[ProjectScheduleHardwareItem]
     product_classifications: list[ProjectProductClassification]
+    # #1918: which revision of the schedule this is; the wizard sends it back on finalize.
+    revision: int
 
 
 @strawberry.type

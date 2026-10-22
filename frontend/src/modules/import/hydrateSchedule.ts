@@ -83,6 +83,8 @@ export interface ProjectHardwareScheduleResponse {
   openings: ProjectHardwareScheduleOpeningResponse[];
   hardwareItems: ProjectHardwareScheduleHardwareItemResponse[];
   productClassifications: ProjectProductClassificationResponse[];
+  /** #1918: which revision of the schedule this is; finalize is sent it back. */
+  revision: number;
 }
 
 function mapProject(p: ProjectHardwareScheduleProjectResponse): ParsedProject {

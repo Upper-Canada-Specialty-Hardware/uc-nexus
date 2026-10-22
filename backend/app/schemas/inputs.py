@@ -409,6 +409,10 @@ class FinalizeImportSessionInput:
     # (initial import, re-import from a new file, schedule replace). A hydrate-from-persisted finalize
     # sends None, and the repository leaves the stored name in place so it survives.
     schedule_filename: str | None = None
+    # #1918: the schedule revision the wizard loaded (projectHardwareSchedule.revision); null = it
+    # expects no schedule yet. A mismatch is refused, so a stale tab can't revert a newer schedule.
+    # Omitted = no check, for a caller that doesn't load the schedule first.
+    expected_schedule_revision: int | None = strawberry.UNSET
 
 
 @strawberry.input

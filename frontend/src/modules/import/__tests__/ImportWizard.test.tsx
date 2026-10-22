@@ -6,6 +6,7 @@ import { WizardProvider } from '../../../contexts/WizardContext';
 import { ToastProvider } from '../../../components/Toast';
 import ImportWizard from '../ImportWizard';
 import {
+  FINALIZE_IMPORT_SESSION,
   GET_PROJECT_EXCLUDED_ITEMS,
   GET_PROJECT_HARDWARE_SCHEDULE,
   RECONCILE_SCHEDULE,
@@ -581,6 +582,7 @@ describe('ImportWizard schedule purpose', () => {
             productClassifications: [
               { hardwareCategory: 'Hinges', productCode: 'HNG-100', classification: 'SITE_HARDWARE' },
             ],
+            revision: 1,
           },
         },
       },
@@ -1049,6 +1051,7 @@ describe('ImportWizard deep link', () => {
             },
           ],
           productClassifications: [],
+          revision: 7,
         },
       },
     },
@@ -1083,6 +1086,62 @@ describe('ImportWizard deep link', () => {
     await flushApollo();
 
     expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  // #1918: finalize names the schedule revision the run started from, and the server's refusal of a
+  // stale one is said as it is.
+  it('sends the revision it loaded, and says so when the schedule has changed since', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const staleFinalize: MockedResponse = {
+      request: {
+        query: FINALIZE_IMPORT_SESSION,
+        variables: (vars: Record<string, unknown>) => {
+          sent.push(vars.input as Record<string, unknown>);
+          return true;
+        },
+      },
+      error: new Error('The schedule changed since you opened this. Reload it and start again.'),
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [availabilityMock, scheduleWithItems, requestCoverageMock, staleFinalize],
+      purpose: 'assembly',
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace Schedule' }));
+    await flushApollo();
+
+    expect(sent.at(-1)?.expectedScheduleRevision).toBe(7);
+    expect(screen.getByText(/The schedule changed since you opened this/)).toBeInTheDocument();
+  });
+
+  it('a first import says it expects no schedule yet', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const finalize: MockedResponse = {
+      request: {
+        query: FINALIZE_IMPORT_SESSION,
+        variables: (vars: Record<string, unknown>) => {
+          sent.push(vars.input as Record<string, unknown>);
+          return true;
+        },
+      },
+      error: new Error('refused'),
+    };
+    renderWizard({ mocks: [availabilityMock, requestCoverageMock, finalize], purpose: 'assembly' });
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Finalize' }));
+    await flushApollo();
+
+    expect(sent.at(-1)).toHaveProperty('expectedScheduleRevision', null);
   });
 
   it('falls back to the upload step when the project has no persisted schedule', async () => {

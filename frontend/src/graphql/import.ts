@@ -67,6 +67,8 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         productCode
         classification
       }
+      # #1918: sent back on finalize, which refuses it if the schedule has changed since.
+      revision
     }
   }
 `;

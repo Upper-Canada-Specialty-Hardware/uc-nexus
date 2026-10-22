@@ -358,6 +358,11 @@ export default function ImportWizard({
   const canStartFromLatest = isReimport && persistedHardwareItemCount > 0;
   const [hydratedFromPersisted, setHydratedFromPersisted] = useState(false);
   const replaceSchedule = sendsScheduleReplace(isReimport, hydratedFromPersisted);
+  // #1918: the schedule revision this run started from, which finalize refuses once it has moved - a tab
+  // left open across someone else's replace used to put its stale rows back. A first import expects no
+  // schedule (null); a re-import sends what the read on open loaded, and goes unchecked (omitted) only
+  // when that read never answered, as #1562 lets it finalize then.
+  const startedFromRevision = isReimport ? scheduleData?.projectHardwareSchedule?.revision : null;
 
   const [finalizeImport] = useMutation<{
     finalizeImportSession: {
@@ -1359,11 +1364,12 @@ export default function ImportWizard({
       // #627: the source file name, sent only when the schedule came from a fresh parse. A hydrate
       // run leaves this null, so the backend keeps the stored name.
       scheduleFilename: uploadedFileName,
+      expectedScheduleRevision: startedFromRevision,
       // The exact lines the wizard gated on (#342), not a second derivation of them - carrying both
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, replaceSchedule, uploadedFileName]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, replaceSchedule, uploadedFileName, startedFromRevision]);
 
   const handleFinalize = useCallback(async () => {
     // #1313: one finalize per click. The confirm closes on this call but its button still takes clicks
