@@ -56,8 +56,10 @@ export default function LoadPicker({ projectId, value, onChange, disabled, slipI
   }, [data, currentLoad]);
 
   // Moving a slip that is alone on its load to a new one would only renumber its truck (#1723), and the
-  // server refuses it; so for that slip the choice is not offered.
-  const aloneOnCurrent = !!currentLoad && currentLoad.slips.every((s) => s.id === slipId);
+  // server refuses it; so for that slip the choice is not offered. A cancelled slip left on the load rides
+  // nothing, so it does not count as company (#1820).
+  const aloneOnCurrent =
+    !!currentLoad && currentLoad.slips.every((s) => s.id === slipId || s.status === 'CANCELLED');
 
   // A value the list no longer offers (in the confirm dialog: a truck picked up meanwhile) has to be
   // replaced, not shown as something it is not: the select falls back to a new load and says so upward,

@@ -205,6 +205,18 @@ def test_a_slip_alone_on_its_load_is_not_moved_to_a_new_one(db_session):
     assert first.load.load_number == number
 
 
+def test_a_cancelled_slip_on_the_load_is_no_company(db_session):
+    # #1820: it stays on the load as the record of it, but the live slip still rides alone.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead)
+    cancelled = _ship(db_session, other, load_id=first.load_id)
+    cancelled.status = ShipmentStatus.CANCELLED
+    db_session.flush()
+    with pytest.raises(ValidationError, match="load of its own"):
+        shipment_loads.move_slip_to_load(db_session, first, None, "tester")
+
+
 def test_moving_onto_its_own_load_is_refused(db_session):
     project = _project(db_session)
     first = _ship(db_session, project)

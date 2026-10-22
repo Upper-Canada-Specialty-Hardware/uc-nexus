@@ -144,7 +144,12 @@ def move_slip_to_load(session: Session, slip: PackingSlip, load_id: uuid.UUID | 
         raise ValidationError("The shipment is already on that load.", field="load_id")
     if load_id is None and slip.load_id is not None:
         others = session.scalar(
-            select(func.count(PackingSlip.id)).where(PackingSlip.load_id == slip.load_id, PackingSlip.id != slip.id)
+            select(func.count(PackingSlip.id)).where(
+                PackingSlip.load_id == slip.load_id,
+                PackingSlip.id != slip.id,
+                # A cancelled slip stays on its load as the record of it, but rides nothing (#1820).
+                PackingSlip.status != ShipmentStatus.CANCELLED,
+            )
         )
         if not others:
             # A new load would only be this one under a new number - and a number already given to the

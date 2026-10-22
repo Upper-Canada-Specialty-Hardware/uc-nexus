@@ -125,3 +125,26 @@ it('keeps showing the edited slip on its own load when that load can take no mor
   // Not in the joinable list (a slip on it was picked up), yet it is where the slip is: shown, not "New load".
   expect(await screen.findByText(`23001-10142026 · ${fmtShipDate('2026-10-14')}`)).toBeInTheDocument();
 });
+
+it('offers no new load to a slip whose only company on its load is a cancelled one (#1820)', async () => {
+  const currentLoad = {
+    id: 'load-1',
+    loadNumber: '22713-10152026',
+    shipDate: '2026-10-15',
+    slips: [
+      { id: 'ps-9', packingSlipNumber: 'PS-00409', projectNumber: '22713', projectDescription: null, status: 'SCHEDULED' as const },
+      { id: 'ps-8', packingSlipNumber: 'PS-00408', projectNumber: '22713', projectDescription: null, status: 'CANCELLED' as const },
+    ],
+  };
+  function Editing() {
+    const [value, setValue] = useState('load-1');
+    return <LoadPicker projectId="proj-1" value={value} onChange={setValue} slipId="ps-9" currentLoad={currentLoad} />;
+  }
+  render(
+    <MockedProvider mocks={[loadsMock]}>
+      <Editing />
+    </MockedProvider>,
+  );
+  const menu = await openMenu();
+  expect(within(menu).queryByText('New load')).not.toBeInTheDocument();
+});
