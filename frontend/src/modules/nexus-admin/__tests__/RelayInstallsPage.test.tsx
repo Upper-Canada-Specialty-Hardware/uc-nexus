@@ -10,6 +10,7 @@ import {
   RELAY_EVENTS,
   ARM_RELAY_ADOPT,
   DELETE_RELAY_INSTALL,
+  DISARM_RELAY_ADOPT,
   PROVISION_RELAY_INSTALL,
 } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
@@ -211,6 +212,44 @@ it('shows no armed banner when no window is open', async () => {
   renderPage([statusMock, installsMock, windowMock(null)]);
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByText(/adopt window open/i)).toBeNull();
+});
+
+// #1869: the window read's error was never read, so a failed read looked exactly like no window - and
+// the re-poll only ran while a window was showing, so it never retried.
+it('says the adopt window state is unknown when its read fails, and offers to cancel it', async () => {
+  let disarmed = false;
+  const disarmMock: MockedResponse = {
+    request: { query: DISARM_RELAY_ADOPT },
+    result: () => {
+      disarmed = true;
+      return { data: { disarmRelayAdopt: false } };
+    },
+  };
+  renderPage([
+    statusMock,
+    installsMock,
+    { request: { query: RELAY_ADOPT_WINDOW }, error: new Error('backend down'), maxUsageCount: Number.POSITIVE_INFINITY },
+    disarmMock,
+  ]);
+
+  expect(await screen.findByText(/the adopt window could not be read/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.queryByText(/adopt window open/i)).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: /cancel window/i }));
+  await waitFor(() => expect(disarmed).toBe(true), GRID_TIMEOUT);
+});
+
+it('keeps re-reading a failed adopt window read until it answers', async () => {
+  renderPage([
+    statusMock,
+    installsMock,
+    { request: { query: RELAY_ADOPT_WINDOW }, error: new Error('backend down') },
+    windowMock(null),
+  ]);
+
+  expect(await screen.findByText(/the adopt window could not be read/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  // The 5s re-poll runs while the read is failing, so the next answer clears the warning.
+  await waitFor(() => expect(screen.queryByText(/the adopt window could not be read/i)).toBeNull(), GRID_TIMEOUT);
 });
 
 // --- removing an install (#366) ---------------------------------------------------------------------
