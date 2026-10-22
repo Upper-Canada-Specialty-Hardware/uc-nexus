@@ -119,6 +119,13 @@ export const FINALIZE_IMPORT_SESSION = gql`
         requestNumber
         status
       }
+      # #1883: per draft sent, the PO it made (null when skipped) and the units it got of those asked.
+      poDraftOutcomes {
+        draftIndex
+        purchaseOrderId
+        requestedQuantity
+        claimedQuantity
+      }
     }
   }
 `;

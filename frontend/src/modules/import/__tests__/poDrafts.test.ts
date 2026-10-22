@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPoDrafts, toPoDraftInput } from '../poDrafts';
+import { buildPoDrafts, describeDraftShortfalls, toPoDraftInput } from '../poDrafts';
 import type { DraftGroup, AggregatedHardwareItem } from '../types';
 
 function hw(
@@ -189,5 +189,41 @@ describe('vendorName off the draft label (#632)', () => {
       lineItemAliases: [],
     });
     expect('sourceDraftId' in input).toBe(false);
+  });
+});
+
+describe('describeDraftShortfalls (#1883)', () => {
+  const groups = new Map([
+    ['HG|HINGE', [hw('A01', 'HG', 4)]],
+    ['LK|LOCK', [hw('A01', 'LK', 2, { category: 'LOCK' })]],
+  ]);
+  const built = buildPoDrafts(
+    [draft('Hager', { 'HG|HINGE': 4 }), draft('Schlage', { 'LK|LOCK': 2 })],
+    groups,
+    new Map(),
+  );
+  const label = (id: string) => `${id} PO`;
+
+  it('says nothing when every draft got what its lines asked for', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: 'po-1', requestedQuantity: 4, claimedQuantity: 4 },
+      { draftIndex: 1, purchaseOrderId: 'po-2', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    expect(describeDraftShortfalls(built, outcomes, label)).toBeNull();
+  });
+
+  it('names a buy-again draft that made no PO and one that came back short', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: null, requestedQuantity: 4, claimedQuantity: 0 },
+      { draftIndex: 1, purchaseOrderId: 'po-2', requestedQuantity: 2, claimedQuantity: 1 },
+    ];
+    expect(describeDraftShortfalls(built, outcomes, label)).toBe(
+      "'Hager PO' was not made: its 4 units are already on a purchase order. " +
+        "'Schlage PO' got 1 of the 2 it asked for: the other 1 unit is already on a purchase order.",
+    );
+  });
+
+  it('reads nothing from a finalize that sent no outcomes', () => {
+    expect(describeDraftShortfalls(built, [], label)).toBeNull();
   });
 });

@@ -1459,6 +1459,18 @@ class Notification:
 
 
 @strawberry.type
+class PODraftOutcome:
+    """What finalize made of one PO draft it was sent (#1883), in the order the drafts were sent."""
+
+    draft_index: int
+    # The PO the draft became, or null when it claimed nothing and was skipped (#640).
+    purchase_order_id: strawberry.ID | None
+    # Units the draft's lines asked for, against the units still unordered that it got (#1186).
+    requested_quantity: int
+    claimed_quantity: int
+
+
+@strawberry.type
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
@@ -1466,6 +1478,7 @@ class FinalizeImportResult:
     # accepts them downstream, which mints the warehouse PullRequest.
     shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
+    po_draft_outcomes: list[PODraftOutcome] = strawberry.field(default_factory=list)
 
 
 @strawberry.type

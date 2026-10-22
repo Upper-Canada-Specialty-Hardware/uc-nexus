@@ -19,7 +19,7 @@ from app.models.hardware import HardwareItem
 from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository
-from app.repositories.import_repository import plan_po_claims
+from app.repositories.import_repository import draft_claim_counts, plan_po_claims
 from app.repositories.po_repository import generate_next_request_number
 
 # ---------------------------------------------------------------------------
@@ -150,6 +150,31 @@ def test_already_ordered_is_taken_per_leaf():
     claims, remaining = plan_po_claims(rows, [_draft(_ref("A01", "HG-100", 2))], ordered)
     assert claims == [[(1, 2)]]
     assert remaining == {0: 0, 1: 1}
+
+
+# --- #1883: per draft, what its lines asked for against what it got -------------------------------
+
+
+def test_a_whole_combo_ref_on_a_covered_product_asks_for_units_and_gets_none():
+    # A buy-again line (#814): every unit is on a PO already, so the whole-combo ref resolves to nothing.
+    rows = [_hw("A01", "HG-100", 3)]
+    drafts = [_draft(_ref("A01", "HG-100"))]
+    claims, _ = plan_po_claims(rows, drafts, {("A01", "HG-100", "HINGE", None): 3})
+    assert draft_claim_counts(rows, drafts, claims) == [(3, 0)]
+
+
+def test_a_partly_covered_whole_combo_ref_comes_back_short():
+    rows = [_hw("A01", "HG-100", 5)]
+    drafts = [_draft(_ref("A01", "HG-100"))]
+    claims, _ = plan_po_claims(rows, drafts, {("A01", "HG-100", "HINGE", None): 2})
+    assert draft_claim_counts(rows, drafts, claims) == [(5, 3)]
+
+
+def test_claim_counts_are_per_draft_and_sum_across_leaves():
+    rows = [_hw("PR1", "HG-100", 2, leaf=1), _hw("PR1", "HG-100", 2, leaf=2), _hw("A02", "HG-200", 1)]
+    drafts = [_draft(_ref("PR1", "HG-100", 3)), _draft(_ref("PR1", "HG-100", 1), _ref("A02", "HG-200")), _draft()]
+    claims, _ = plan_po_claims(rows, drafts)
+    assert draft_claim_counts(rows, drafts, claims) == [(3, 3), (2, 2), (0, 0)]
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +579,30 @@ def test_a_skipped_empty_draft_does_not_burn_a_request_number(db_session):
     )
 
     assert [po.request_number for po in pos] == [expected]
+
+
+def test_finalize_reports_each_draft_it_was_sent_and_the_po_it_made(db_session):
+    """#1883: one outcome per draft sent, a skipped one with no PO, so the wizard can name it."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=2)],
+            "po_drafts": [_po_draft([], po_number="PO-EMPTY"), _po_draft(_one_ref(), po_number="PO-REAL")],
+        },
+    )
+
+    outcomes = result["po_draft_outcomes"]
+    assert [(o["draft_index"], o["requested_quantity"], o["claimed_quantity"]) for o in outcomes] == [
+        (0, 0, 0),
+        (1, 2, 2),
+    ]
+    assert outcomes[0]["purchase_order"] is None
+    assert outcomes[1]["purchase_order"].po_number == "PO-REAL"
 
 
 def test_reload_pos_returns_the_pos_in_the_order_asked_in_one_read(db_session):

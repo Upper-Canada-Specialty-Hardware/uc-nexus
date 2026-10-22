@@ -27,6 +27,7 @@ from .converters import (
 from .inputs import FinalizeImportSessionInput, ReconciliationItemInput
 from .types import (
     FinalizeImportResult,
+    PODraftOutcome,
     ProjectExcludedItem,
     ProjectHardwareSchedule,
     ProjectOpeningRow,
@@ -308,4 +309,15 @@ class ImportMutations:
                 purchase_orders=[po_to_type(po, projects={project.id: project}) for po in pos],
                 shipping_out_requests=[shipping_out_request_to_type(req) for req in shipping_requests],
                 shop_assembly_request=sar_type,
+                po_draft_outcomes=[
+                    PODraftOutcome(
+                        draft_index=o["draft_index"],
+                        purchase_order_id=(
+                            strawberry.ID(str(o["purchase_order"].id)) if o["purchase_order"] is not None else None
+                        ),
+                        requested_quantity=o["requested_quantity"],
+                        claimed_quantity=o["claimed_quantity"],
+                    )
+                    for o in result["po_draft_outcomes"]
+                ],
             )

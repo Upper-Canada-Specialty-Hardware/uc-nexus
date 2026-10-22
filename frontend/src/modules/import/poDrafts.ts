@@ -151,3 +151,41 @@ export function buildPoDrafts(
 
   return drafts;
 }
+
+/** #1883: what finalize made of one draft it was sent - poDraftOutcomes, in the order the drafts went. */
+export interface PODraftOutcomeData {
+  draftIndex: number;
+  // The PO the draft became; null when it claimed nothing and the backend skipped it (#640).
+  purchaseOrderId: string | null;
+  requestedQuantity: number;
+  claimedQuantity: number;
+}
+
+/**
+ * #1883: the drafts that came back short or were not made, as one sentence, or null when every draft
+ * got what its lines asked for. A whole-opening line resolves to what is not yet on a PO (#1186), so a
+ * buy-again line (#814) on a covered product can get fewer units than it showed, or none and no PO -
+ * which a plain "finalized successfully" hid. `labelOf` names a draft by its sourceDraftId.
+ */
+export function describeDraftShortfalls(
+  drafts: PODraftPayload[],
+  outcomes: PODraftOutcomeData[],
+  labelOf: (draftId: string) => string,
+): string | null {
+  const parts: string[] = [];
+  for (const o of outcomes) {
+    const draft = drafts[o.draftIndex];
+    if (!draft) continue;
+    const name = `'${labelOf(draft.sourceDraftId)}'`;
+    const units = (n: number) => `${n} ${n === 1 ? 'unit is' : 'units are'}`;
+    if (o.purchaseOrderId === null) {
+      parts.push(`${name} was not made: its ${units(o.requestedQuantity)} already on a purchase order`);
+    } else if (o.claimedQuantity < o.requestedQuantity) {
+      const rest = o.requestedQuantity - o.claimedQuantity;
+      parts.push(
+        `${name} got ${o.claimedQuantity} of the ${o.requestedQuantity} it asked for: the other ${units(rest)} already on a purchase order`,
+      );
+    }
+  }
+  return parts.length === 0 ? null : `${parts.join('. ')}.`;
+}

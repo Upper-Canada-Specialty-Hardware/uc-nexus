@@ -791,6 +791,32 @@ def plan_po_claims(
     return per_draft_claims, remaining_by_idx
 
 
+def draft_claim_counts(
+    hardware_items_input: list[dict],
+    po_drafts: list[dict],
+    per_draft_claims: list[list[tuple[int, int]]],
+) -> list[tuple[int, int]]:
+    """Per draft, (units its lines asked for, units plan_po_claims gave it) - #1883.
+
+    A ref with quantity=None asks for the whole combo as the schedule holds it, before what is already
+    on a PO comes off: that is what the wizard means by "the whole opening". A combo already ordered
+    resolves to its unordered remainder (#1186), so a buy-again line on a covered product asks for units
+    and gets none; finalize reports the gap rather than calling the import a plain success.
+    """
+    combo_gross: dict[tuple[str, str, str], int] = defaultdict(int)
+    for hi in hardware_items_input:
+        combo_gross[(hi["opening_number"], hi["product_code"], hi["hardware_category"])] += hi["item_quantity"]
+    counts: list[tuple[int, int]] = []
+    for po_draft, claims in zip(po_drafts, per_draft_claims, strict=True):
+        requested = 0
+        for ref in po_draft.get("hardware_item_refs", []):
+            want = ref.get("quantity")
+            combo = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
+            requested += combo_gross.get(combo, 0) if want is None else want
+        counts.append((requested, sum(take for _, take in claims)))
+    return counts
+
+
 def restate_beyond_schedule(
     session: Session,
     project_id: uuid.UUID,
@@ -1095,6 +1121,12 @@ def finalize_import_session(
 
     # 4. PO creation
     created_pos: list[POModel] = []
+    # #1883: one outcome per draft sent, in po_drafts order - the PO it made (None when skipped) and the
+    # units it asked for against the units it got - so the wizard can say which came back short.
+    draft_outcomes: list[dict] = [
+        {"draft_index": i, "purchase_order": None, "requested_quantity": requested, "claimed_quantity": claimed}
+        for i, (requested, claimed) in enumerate(draft_claim_counts(hardware_items_input, po_drafts, per_draft_claims))
+    ]
     if po_drafts:
         # Generate request_number sequence for new POs
         from app.repositories.po_repository import generate_next_request_number, request_number_prefix
@@ -1256,6 +1288,7 @@ def finalize_import_session(
                     hi.po_line_item_id = poli.id
 
             created_pos.append(po)
+            draft_outcomes[draft_idx]["purchase_order"] = po
 
     # 5. Persist the unclaimed remainder of every hardware item as AVAILABLE. #570: a combo the PO
     #    block took in full leaves nothing here; a partially-claimed combo persists what plan_po_claims
@@ -1435,6 +1468,7 @@ def finalize_import_session(
     return {
         "project": project,
         "purchase_orders": created_pos,
+        "po_draft_outcomes": draft_outcomes,
         "shipping_out_requests": created_shipping_requests,
         "shop_assembly_request": sar,
     }

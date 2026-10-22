@@ -65,7 +65,7 @@ import {
   type DraftGroup,
   type DraftInfoField,
 } from './types';
-import { buildPoDrafts, toPoDraftInput } from './poDrafts';
+import { buildPoDrafts, describeDraftShortfalls, toPoDraftInput, type PODraftOutcomeData } from './poDrafts';
 import * as draftOps from './draftOps';
 import { carryDraftEdits, describeUnattached, mergeAddedProducts, unattachedDocuments } from './draftOps';
 import type { Project } from '../../types/project';
@@ -358,6 +358,7 @@ export default function ImportWizard({
       purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
       shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
       shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+      poDraftOutcomes: PODraftOutcomeData[];
     };
   }>(FINALIZE_IMPORT_SESSION, {
     // The request this creates RESERVES inventory (#342), so the availability the wizard gates on
@@ -1238,6 +1239,7 @@ export default function ImportWizard({
     purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
     shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
     shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+    poDraftOutcomes: PODraftOutcomeData[];
   }
 
   // #570/#588: the PO drafts to create, built once. Carries sourceDraftId (stripped before the
@@ -1415,12 +1417,25 @@ export default function ImportWizard({
       setFinalizeResult(data);
       setFinalizeLoading(false);
 
+      // #1883: a draft can come back with fewer units than its lines showed, or not be made at all -
+      // the backend claims only what is not yet on a PO (#1186). Said by name, not as a plain success.
+      const shortfall = poDraftBuild
+        ? describeDraftShortfalls(
+            poDraftBuild,
+            data.poDraftOutcomes ?? [],
+            (id) => draftGroups.find((g) => g.id === id)?.label || 'Untitled draft',
+          )
+        : null;
+      const warnings: string[] = [];
+      if (shortfall) warnings.push(shortfall);
       if (attachFailures.length > 0) {
         const noun = attachFailures.length === 1 ? 'document' : 'documents';
-        showToast(
-          `Request created, but ${attachFailures.length} ${noun} could not be attached (${attachFailures.join(', ')}). Re-upload on the PO.`,
-          'warning',
+        warnings.push(
+          `${attachFailures.length} ${noun} could not be attached (${attachFailures.join(', ')}). Re-upload on the PO.`,
         );
+      }
+      if (warnings.length > 0) {
+        showToast(`Request created, but ${warnings.join(' ')}`, 'warning');
       } else {
         showToast('Import session finalized successfully!', 'success');
       }

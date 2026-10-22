@@ -364,6 +364,46 @@ def test_refinalize_whole_combo_ref_orders_only_the_unordered_remainder(db_sessi
     assert ordered == [1, 3]
 
 
+def test_refinalize_a_buy_again_line_on_a_covered_product_says_it_got_nothing(db_session):
+    """#1883: a whole-combo ref on a product every unit of which is on a PO claims nothing (#1186), so
+    no PO is made - and finalize says so, the units asked for against none got, for the wizard to warn."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]})
+    db_session.flush()
+    result = import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]}
+    )
+
+    assert result["purchase_orders"] == []
+    [outcome] = result["po_draft_outcomes"]
+    assert (outcome["purchase_order"], outcome["requested_quantity"], outcome["claimed_quantity"]) == (None, 4, 0)
+
+
+def test_refinalize_a_partly_covered_whole_combo_ref_says_it_came_back_short(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 1))]})
+    db_session.flush()
+    result = import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]}
+    )
+
+    [outcome] = result["po_draft_outcomes"]
+    assert outcome["purchase_order"] is result["purchase_orders"][0]
+    assert (outcome["requested_quantity"], outcome["claimed_quantity"]) == (4, 3)
+
+
 def _classes(session, project_id) -> dict[tuple[str, HardwareItemState], set]:
     rows = session.scalars(select(HardwareItem).where(HardwareItem.project_id == project_id)).all()
     out: dict[tuple[str, HardwareItemState], set] = {}
