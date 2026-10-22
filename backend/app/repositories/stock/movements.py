@@ -230,6 +230,10 @@ def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, co
     fact. Checked here, in the one write every caller goes through (the dialog, the legacy migration),
     with the inventory view's own rule: a non-schedule type code is exempt, any other pair must be one
     the project's schedule has.
+
+    A pair the latest schedule dropped is off it too (#1825): a revision keeps the rows already ordered
+    with every unit past the schedule (#1491, ruled on #1527), so the pair must still be asked units of.
+    Whether the project has a schedule at all is still decided by any row, dropped or not.
     """
     if category in _non_schedule_type_codes(session, project.company):
         return
@@ -240,7 +244,7 @@ def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, co
         # inventory - on the project, tied to no schedule line item, so nothing claims them until they
         # are tied to one. Do not refuse it, and do not report it as a gap in later audits.
         return
-    if (category, code) not in scheduled:
+    if (category, code) not in get_scheduled_pairs(session, project.id, still_scheduled=True):
         raise ValidationError(
             f"{category} / {code} is not on this project's hardware schedule. Pick one of the schedule's products.",
             field="target_product_code",
@@ -303,7 +307,8 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
     still needs: required, less what the project holds sound, what is on order and not yet received,
     what has already shipped out, and what a pick took off the shelf that has not shipped yet - staged,
     at the shop, or on a pull still in progress (#1814). Grouped reads that already exist plus two
-    more, joined in Python by pair.
+    more, joined in Python by pair. A pair the latest schedule dropped (required 0, every unit past it)
+    is not offered (#1825), but its rows still mean the project has a schedule.
     """
     from app.models.project import Project as ProjectModel
 
@@ -321,8 +326,11 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
     # #1814: units picked for the project and not yet on a slip are in neither on hand nor shipped out,
     # so without them a job whose hardware sits staged for a truck read as still needing all of it.
     picked = _picked_not_shipped(session, project_id)
+    progress = get_project_progress_by_product(session, project_id)
     pairs = []
-    for row in get_project_progress_by_product(session, project_id):
+    for row in progress:
+        if row["required_quantity"] <= 0:
+            continue
         pair = (row["hardware_category"], row["product_code"])
         covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"] + picked.get(pair, 0)
         pairs.append(
@@ -335,7 +343,7 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
         )
     return {
         "schedule_hardware": si.hardware_category not in _non_schedule_type_codes(session, project.company),
-        "has_schedule": bool(pairs),
+        "has_schedule": bool(progress),
         "pairs": pairs,
     }
 

@@ -465,18 +465,28 @@ def override_inventory_quantity(
     return il
 
 
-def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[str, str]]:
+def get_scheduled_pairs(
+    session: Session, project_id: uuid.UUID, *, still_scheduled: bool = False
+) -> set[tuple[str, str]]:
     """Every (hardware_category, product_code) the project's imported schedule knows about.
+
+    `still_scheduled` keeps only the pairs the latest schedule still asks units of (#1825): a pair a
+    revision dropped keeps its ordered rows with every unit past the schedule (#1491, ruled on #1527),
+    and the stock pool's allocation check must not take it as on the schedule. The inventory view's
+    chip leaves it off - the rows are still the schedule's, as surplus.
 
     One grouped query, no relationship walking - this is called once per flat-inventory request and
     its result is checked in Python against rows already in memory, so it never becomes an N+1 (see
     the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
     """
-    rows = session.execute(
+    stmt = (
         select(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
         .where(HardwareItemModel.project_id == project_id)
         .distinct()
-    ).all()
+    )
+    if still_scheduled:
+        stmt = stmt.where(HardwareItemModel.item_quantity > HardwareItemModel.beyond_schedule_quantity)
+    rows = session.execute(stmt).all()
     return {(cat, code) for cat, code in rows}
 
 

@@ -29,16 +29,21 @@ from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.repositories import stock as stock_repository
+from app.repositories.warehouse import get_scheduled_pairs
 
 from .inventory_fixtures import make_project, make_stock_item, wh_id
 
 
-def _schedule(session, project, *pairs: tuple[str, str, int]) -> None:
-    """A schedule of one opening holding each (category, code, quantity)."""
+def _schedule(session, project, *pairs: tuple) -> None:
+    """A schedule of one opening holding each (category, code, quantity[, beyond]).
+
+    `beyond` is how many of the row's units a revision left past the schedule (#1491): an ordered row,
+    so IN_PO, as `restate_beyond_schedule` leaves one.
+    """
     opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"O-{uuid.uuid4().hex[:4]}")
     session.add(opening)
     session.flush()
-    for category, code, quantity in pairs:
+    for category, code, quantity, *beyond in pairs:
         session.add(
             HardwareItem(
                 id=uuid.uuid4(),
@@ -47,7 +52,8 @@ def _schedule(session, project, *pairs: tuple[str, str, int]) -> None:
                 hardware_category=category,
                 product_code=code,
                 item_quantity=quantity,
-                state=HardwareItemState.AVAILABLE,
+                beyond_schedule_quantity=beyond[0] if beyond else 0,
+                state=HardwareItemState.IN_PO if beyond else HardwareItemState.AVAILABLE,
             )
         )
     session.flush()
@@ -141,6 +147,50 @@ def test_a_project_with_no_schedule_takes_floating_inventory(db_session):
     assert row.quantity == 2
 
 
+def test_a_pair_the_latest_schedule_dropped_is_refused(db_session):
+    """#1825: a revision dropped HG-OLD after it was ordered; its rows stay, every unit past the schedule."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4), ("HINGE", "HG-OLD", 3, 3))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-OLD")
+
+    with pytest.raises(ValidationError) as exc:
+        _allocate(db_session, si, project, "HINGE", "HG-OLD")
+
+    assert exc.value.field == "target_product_code"
+    db_session.refresh(si)
+    assert si.quantity == 10
+
+
+def test_the_inventory_chip_still_counts_a_dropped_pair(db_session):
+    """Only the allocation check leaves a dropped pair out; the chip's read is unchanged (#1825)."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4), ("HINGE", "HG-OLD", 3, 3))
+
+    assert get_scheduled_pairs(db_session, project.id) == {("HINGE", "HG-100"), ("HINGE", "HG-OLD")}
+    assert get_scheduled_pairs(db_session, project.id, still_scheduled=True) == {("HINGE", "HG-100")}
+
+
+def test_a_pair_the_schedule_still_asks_units_of_is_allocated(db_session):
+    """Lowered, not dropped: one of HG-100's rows is past the schedule, the other still scheduled."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 2, 2), ("HINGE", "HG-100", 3, 1))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
+
+    row = _allocate(db_session, si, project, "HINGE", "HG-100")
+
+    assert (row.product_code, row.quantity) == ("HG-100", 2)
+
+
+def test_a_schedule_that_dropped_every_pair_is_still_a_schedule(db_session):
+    """Only surplus rows left is not "no schedule imported yet" (#1756): the allocation is refused."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-OLD", 3, 3))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-OLD")
+
+    with pytest.raises(ValidationError):
+        _allocate(db_session, si, project, "HINGE", "HG-OLD")
+
+
 # --- the targets the dialog picks from ---------------------------------------------------------
 
 
@@ -199,6 +249,29 @@ def test_targets_say_what_each_pair_still_needs(db_session):
     assert targets["has_schedule"] is True
     needed = {(p["hardware_category"], p["product_code"]): p["still_needed_quantity"] for p in targets["pairs"]}
     assert needed == {("HINGE", "HG-100"): 10 - 3 - 5, ("LOCK", "HG-100"): 3, ("CLOSER", "CL-1"): 0}
+
+
+def test_targets_leave_out_a_pair_the_latest_schedule_dropped(db_session):
+    """#1825: HG-OLD is only surplus now; offering it as "0 still needed" invites the allocation #1647 stops."""
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-100", 4), ("HINGE", "HG-OLD", 3, 3), ("LOCK", "LK-1", 2, 1))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-OLD")
+
+    targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
+
+    assert targets["has_schedule"] is True
+    required = {(p["hardware_category"], p["product_code"]): p["required_quantity"] for p in targets["pairs"]}
+    assert required == {("HINGE", "HG-100"): 4, ("LOCK", "LK-1"): 1}
+
+
+def test_targets_when_the_schedule_dropped_every_pair(db_session):
+    project = make_project(db_session)
+    _schedule(db_session, project, ("HINGE", "HG-OLD", 3, 3))
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-OLD")
+
+    targets = stock_repository.get_allocation_targets(db_session, stock_item_id=si.id, project_id=project.id)
+
+    assert (targets["has_schedule"], targets["pairs"]) == (True, [])
 
 
 def test_targets_on_a_project_with_no_schedule(db_session):
