@@ -581,6 +581,7 @@ export const POSTGRES_ADMINS = gql`
       displayName
       email
       clerkMissing
+      lostAdminRole
       active
       createdAt
       lastRotatedAt

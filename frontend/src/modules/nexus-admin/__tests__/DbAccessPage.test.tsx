@@ -6,6 +6,8 @@ import DbAccessPage from '../DbAccessPage';
 import { POSTGRES_ACCESS_AUDIT, POSTGRES_ADMINS } from '../../../graphql/admin';
 import theme from '../../../theme';
 
+const admins = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[] }));
+
 // #1503: the audit history's failed read used to read as "No activity yet." - a clean record, when
 // nothing had been read at all.
 vi.mock('@apollo/client/react', () => ({
@@ -15,7 +17,7 @@ vi.mock('@apollo/client/react', () => ({
       return { data: undefined, loading: false, error: new Error('Network down'), refetch: vi.fn() };
     }
     if (query === POSTGRES_ADMINS) {
-      return { data: { postgresAdmins: [] }, loading: false, error: undefined, refetch: vi.fn() };
+      return { data: { postgresAdmins: admins.rows }, loading: false, error: undefined, refetch: vi.fn() };
     }
     return { data: undefined, loading: false, error: undefined, refetch: vi.fn() };
   },
@@ -36,7 +38,20 @@ beforeEach(() => {
   );
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  admins.rows = [];
+});
+
+function renderPage() {
+  return render(
+    <ThemeProvider theme={theme}>
+      <MemoryRouter>
+        <DbAccessPage />
+      </MemoryRouter>
+    </ThemeProvider>,
+  );
+}
 
 it('says the audit history failed to load rather than "no activity yet" (#1503)', () => {
   render(
@@ -51,4 +66,26 @@ it('says the audit history failed to load rather than "no activity yet" (#1503)'
 
   expect(screen.getByText(/couldn.t load the audit history/i)).toBeInTheDocument();
   expect(screen.queryByText('No activity yet.')).not.toBeInTheDocument();
+});
+
+it('flags a login whose holder lost UC Nexus Admin and will not rotate it (#1866)', () => {
+  const login = {
+    clerkUserId: 'user_x',
+    displayName: 'Pat Lost',
+    email: 'pat@example.com',
+    clerkMissing: false,
+    active: true,
+    createdAt: '2026-01-01T00:00:00',
+    lastRotatedAt: null,
+  };
+  admins.rows = [
+    { ...login, dbRole: 'user_lost', lostAdminRole: true },
+    { ...login, dbRole: 'user_still', clerkUserId: 'user_y', displayName: 'Sam Still', lostAdminRole: false },
+  ];
+  renderPage();
+
+  expect(screen.getAllByText('no longer an admin')).toHaveLength(1);
+  const [lost, still] = screen.getAllByRole('button', { name: 'Rotate' });
+  expect(lost).toBeDisabled();
+  expect(still).toBeEnabled();
 });

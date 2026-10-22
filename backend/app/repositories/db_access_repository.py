@@ -29,6 +29,7 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
 from app import config
+from app.auth import NEXUS_ADMIN_ROLE
 from app.database import SessionLocal
 from app.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.models.pg_direct_access import PgDirectAccess, PgDirectAccessAudit
@@ -394,12 +395,29 @@ def list_admins(roster: list[dict]) -> list[dict]:
                     "display_name": _display_name(u),
                     "email": u.get("email") if u else None,
                     "clerk_missing": u is None,
+                    # #1866: the login outlives its holder losing UC Nexus Admin, the role it was granted
+                    # for (#729). Flagged, not revoked - whether it goes on its own awaits a ruling. A user
+                    # gone from Clerk is already flagged by clerk_missing.
+                    "lost_admin_role": u is not None and NEXUS_ADMIN_ROLE not in (u.get("roles") or []),
                     "active": r.db_role in live_roles,
                     "created_at": r.created_at,
                     "last_rotated_at": r.last_rotated_at,
                 }
             )
         return result
+
+
+def live_holder(db_role: str) -> str | None:
+    """The Clerk user a live login belongs to, or None when the registry has no live row for it."""
+    _require_enabled()
+    _assert_manageable(db_role)
+    with SessionLocal() as session:
+        return session.scalar(
+            select(PgDirectAccess.clerk_user_id).where(
+                PgDirectAccess.db_role == db_role,
+                PgDirectAccess.revoked_at.is_(None),
+            )
+        )
 
 
 def rotate(db_role: str, *, actor_clerk_id: str) -> dict:

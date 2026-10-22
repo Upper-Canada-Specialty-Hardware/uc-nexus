@@ -259,3 +259,80 @@ def test_a_mint_sweeps_before_the_group_is_granted(monkeypatch):
         repo.mint("user_2abc", actor_clerk_id="user_actor")
 
     assert calls == ["sweep", "grant"]
+
+
+# --- a holder who lost UC Nexus Admin (#1866) ----------------------------------------------------
+
+
+def test_the_grid_flags_a_login_whose_holder_lost_the_admin_role(monkeypatch):
+    """Mint grants only to a UC Nexus Admin (#729), but nothing followed the holder losing the role: the
+    login lived on unmarked. Flagged, not revoked - that awaits a ruling."""
+    from datetime import datetime as _dt
+
+    from app.auth import NEXUS_ADMIN_ROLE
+    from app.models.pg_direct_access import PgDirectAccess
+
+    rows = [
+        PgDirectAccess(db_role=r, clerk_user_id=r, created_by="a", created_at=_dt(2026, 1, 1))
+        for r in ("user_still", "user_lost", "user_gone")
+    ]
+    monkeypatch.setattr(config, "db_direct_access_enabled", lambda: True)
+    monkeypatch.setattr(repo, "SessionLocal", lambda: _FakeSession(listed=rows))
+    monkeypatch.setattr(repo, "_live_member_roles", lambda conn: {"user_still", "user_lost", "user_gone"})
+    roster = [
+        {"id": "user_still", "roles": [NEXUS_ADMIN_ROLE]},
+        {"id": "user_lost", "roles": ["Purchasing"]},
+    ]
+
+    by_role = {d["db_role"]: d for d in repo.list_admins(roster)}
+
+    assert by_role["user_still"]["lost_admin_role"] is False
+    assert by_role["user_lost"]["lost_admin_role"] is True
+    # Gone from Clerk is its own flag, not this one.
+    assert by_role["user_gone"]["lost_admin_role"] is False
+    assert by_role["user_gone"]["clerk_missing"] is True
+
+
+def _rotate(monkeypatch, roster):
+    from app.auth import NEXUS_ADMIN_ROLE
+    from app.schemas.db_access import DbAccessMutations
+
+    monkeypatch.setattr(config, "db_direct_access_enabled", lambda: True)
+    monkeypatch.setattr(repo, "live_holder", lambda db_role: "user_holder")
+    rotated = []
+
+    def fake_rotate(db_role, *, actor_clerk_id):
+        rotated.append(db_role)
+        return {
+            "db_role": db_role,
+            "clerk_user_id": "user_holder",
+            "adodb_connection_string": "a",
+            "access_connection_string": "b",
+        }
+
+    monkeypatch.setattr(repo, "rotate", fake_rotate)
+    monkeypatch.setattr("app.schemas.db_access.current_user", lambda info: {"user_id": "user_actor"})
+
+    class Info:
+        context = {"request": None, "_auth_roles": ["DB Admin", NEXUS_ADMIN_ROLE], "_auth_user_roster": roster}
+
+    return rotated, lambda: DbAccessMutations().rotate_postgres_admin(Info(), db_role="user_holder")
+
+
+@pytest.mark.parametrize("roster", [[{"id": "user_holder", "roles": ["Purchasing"]}], []], ids=["demoted", "gone"])
+def test_rotate_refuses_a_login_whose_holder_no_longer_holds_the_admin_role(monkeypatch, roster):
+    """A fresh password would hand the access back to someone no longer trusted with it (#1866)."""
+    rotated, call = _rotate(monkeypatch, roster)
+
+    with pytest.raises(ValidationError, match="no longer holds"):
+        call()
+    assert rotated == []
+
+
+def test_rotate_still_rotates_an_admins_login(monkeypatch):
+    from app.auth import NEXUS_ADMIN_ROLE
+
+    rotated, call = _rotate(monkeypatch, [{"id": "user_holder", "roles": [NEXUS_ADMIN_ROLE]}])
+
+    assert call().db_role == "user_holder"
+    assert rotated == ["user_holder"]
