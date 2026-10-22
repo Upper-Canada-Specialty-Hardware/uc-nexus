@@ -7,6 +7,14 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+# What an idempotency key may be made of (#1860): the backend's keys are UUIDs, or a short prefix and a
+# UUID, so letters, digits and hyphens cover every one. The key is matched inside GP's note text with
+# LIKE, where `%`, `_` and `[` are pattern syntax; refusing them here keeps a key meaning only itself.
+# Empty stays allowed and means "no key", as an absent one does. PAIRED EDIT: backend/app/services/
+# gp_idempotency.py's validate_key.
+IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9-]*$"
+
+
 class NextNumberRequest(BaseModel):
     company: str
 
@@ -123,7 +131,7 @@ class CreatePoRequest(BaseModel):
     # registered a second time. The relay stamps it on the PO's record note in GP and looks it up
     # before reserving a number - see econnect.find_po_by_registration_note. Absent is exactly the
     # behaviour a relay had before this field existed: no note is written and no lookup is run.
-    idempotency_key: str | None = Field(default=None, max_length=64)
+    idempotency_key: str | None = Field(default=None, max_length=64, pattern=IDEMPOTENCY_KEY_PATTERN)
 
     @model_validator(mode="after")
     def normalize_po_number(self):
@@ -178,7 +186,7 @@ class ReceiptRequest(BaseModel):
     # second time (#1389). The relay stamps it on the receipt's record note in GP and looks it up before
     # anything else - see econnect.find_receipt_by_note. Absent is exactly the behaviour a relay had
     # before this field existed: no note is written and no lookup is run.
-    idempotency_key: str | None = Field(default=None, max_length=64)
+    idempotency_key: str | None = Field(default=None, max_length=64, pattern=IDEMPOTENCY_KEY_PATTERN)
 
 
 class ReceiptResponse(BaseModel):

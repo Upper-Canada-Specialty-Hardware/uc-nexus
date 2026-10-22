@@ -230,6 +230,24 @@ def test_the_lookup_is_pinned_to_the_buyer_and_the_week_before_the_po(stubbed):
     assert params == ("mira", date(2026, 9, 9), f"%{_KEY}%")
 
 
+@pytest.mark.parametrize("bad", ["%", "_", "[0-9]", "8b1f%", "key with space", "k\\1"])
+def test_a_key_carrying_like_syntax_is_refused_by_the_model(bad):
+    # #1860: the key is matched inside GP's note text with LIKE, where these characters are pattern syntax.
+    with pytest.raises(ValueError):
+        _request(idempotency_key=bad)
+
+
+def test_the_registration_lookup_escapes_its_pattern():
+    # the model already refuses these; the lookup escapes them anyway, so such a key matches only itself.
+    conn = _FakeConn()
+
+    econnect.find_po_by_registration_note(conn, key="a%b_c[d\\e", buyer_id="mira", doc_date=date(2026, 9, 16))
+
+    sql, params = conn.note_lookups()[0]
+    assert "LIKE ? ESCAPE '\\'" in sql
+    assert params[2] == "%a\\%b\\_c\\[d\\\\e%"
+
+
 # --- a key GP already holds: the PO the earlier attempt made, and no second one ---
 
 

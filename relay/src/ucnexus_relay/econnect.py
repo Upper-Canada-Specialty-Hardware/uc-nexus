@@ -102,6 +102,21 @@ _REGISTRATION_NOTE_DAYS = 7
 _RECEIPT_NOTE_COLUMNS = tuple(f"RCPTNOTE_{i}" for i in range(1, 9))
 
 
+# The one escape character both key lookups declare on their LIKE (#1860). The models already hold a
+# key to letters, digits and hyphens, so nothing in one should ever need it; escaping anyway means a key
+# that somehow carried a wildcard would match only itself rather than whatever the pattern spelled.
+_LIKE_ESCAPE = "\\"
+
+
+def _like_containing(key: str) -> str:
+    """A LIKE pattern matching `key` anywhere in the text, with every character LIKE reads as syntax -
+    the escape itself, `%`, `_` and `[` - escaped, for use with ESCAPE _LIKE_ESCAPE."""
+    escaped = key
+    for char in (_LIKE_ESCAPE, "%", "_", "["):
+        escaped = escaped.replace(char, _LIKE_ESCAPE + char)
+    return f"%{escaped}%"
+
+
 def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: date) -> str | None:
     """Read-only: the PO carrying this registration key on its record note, or None.
 
@@ -117,9 +132,11 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
     headers and reads only their notes.
 
     Matching on a substring is safe because the key is a UUID: it cannot appear in a note somebody
-    typed, and it cannot collide with another attempt's key. Table, note column and note table are
+    typed, and it cannot collide with another attempt's key. The model holds it to letters, digits and
+    hyphens and the pattern is escaped besides (#1860), so a key never reads as a wildcard that matches
+    some other PO's note. Table, note column and note table are
     compile-time constants; only the buyer, the date and the key are bound."""
-    like = f"%{key}%"
+    like = _like_containing(key)
     since = doc_date - timedelta(days=_REGISTRATION_NOTE_DAYS)
     for table in ("POP10100", "POP30100"):
         row = (
@@ -127,7 +144,8 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
             .execute(
                 f"SELECT TOP 1 h.PONUMBER FROM dbo.{table} h "
                 f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX = h.{_PO_NOTE_INDEX_COLUMN} "
-                f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ? "
+                f"ESCAPE '{_LIKE_ESCAPE}'",
                 buyer_id,
                 since,
                 like,
@@ -151,7 +169,7 @@ def find_receipt_by_note(conn, *, key: str, po_number: str) -> tuple[str, str] |
     it is where GP leaves orphan notes no document can reach (see _note_fields) - a slot holding 0 is an
     empty slot, never a match. Table and column names are compile-time constants; only the PO number
     and the key are bound."""
-    like = f"%{key}%"
+    like = _like_containing(key)
     slots = ", ".join(f"h.{column}" for column in _RECEIPT_NOTE_COLUMNS)
     for table in ("POP10300", "POP30300"):
         row = (
@@ -159,7 +177,8 @@ def find_receipt_by_note(conn, *, key: str, po_number: str) -> tuple[str, str] |
             .execute(
                 f"SELECT TOP 1 h.POPRCTNM, h.BACHNUMB FROM dbo.{table} h "
                 f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX IN ({slots}) "
-                f"WHERE h.VNDDOCNM = ? AND n.NOTEINDX <> 0 AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                f"WHERE h.VNDDOCNM = ? AND n.NOTEINDX <> 0 AND CAST(n.TXTFIELD AS varchar(max)) LIKE ? "
+                f"ESCAPE '{_LIKE_ESCAPE}'",
                 po_number,
                 like,
             )

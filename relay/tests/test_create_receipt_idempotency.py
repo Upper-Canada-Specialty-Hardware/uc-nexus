@@ -233,6 +233,28 @@ def test_an_overlong_key_is_refused_by_the_model():
         _request(idempotency_key="k" * 65)
 
 
+@pytest.mark.parametrize("bad", ["%", "_", "[a-z]", "ab%cd", "key with space", "key'quote", "k\\1"])
+def test_a_key_carrying_like_syntax_is_refused_by_the_model(bad):
+    # #1860: the key is matched inside GP's note text with LIKE, where these characters are pattern syntax.
+    with pytest.raises(ValueError):
+        _request(idempotency_key=bad)
+
+
+@pytest.mark.parametrize("good", [_KEY, "demo-seed-approve-3c9e1f7a-52b4-4d0e-8a61-0f2b7d9c4e18", "k-1", ""])
+def test_the_keys_the_backend_mints_are_accepted(good):
+    assert _request(idempotency_key=good).idempotency_key == good
+
+
+def test_the_receipt_lookup_escapes_its_pattern():
+    conn = _FakeConn()
+
+    econnect.find_receipt_by_note(conn, key="a%b_c[d", po_number="PO0000143")
+
+    sql, params = conn.note_lookups()[0]
+    assert "LIKE ? ESCAPE '\\'" in sql
+    assert params == ("PO0000143", "%a\\%b\\_c\\[d%")
+
+
 # --- what the relay says about it, and how it serialises ---
 
 
