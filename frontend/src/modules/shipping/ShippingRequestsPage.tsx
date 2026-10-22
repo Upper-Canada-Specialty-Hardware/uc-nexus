@@ -272,8 +272,9 @@ export default function ShippingRequestsPage() {
         onChanged={refetch}
         renderExtraActions={(req) =>
           // Editing is only meaningful while the request is still pending; the workspace itself refuses
-          // an accepted one. It reads the request's own project, so no picked project is needed here.
-          view === 'PENDING' ? (
+          // an accepted one. It reads the request's own project, so no picked project is needed here. By
+          // the row, not the view: the open view lists pending requests too (#1821).
+          req.status === 'PENDING' ? (
             <Button
               variant="outlined"
               color="primary"
