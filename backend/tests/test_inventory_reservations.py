@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.errors import ConflictError, InventoryShortfallError, ValidationError
 from app.models.enums import (
+    NotificationType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -26,6 +27,7 @@ from app.models.enums import (
 )
 from app.models.inventory import InventoryLocation
 from app.models.inventory_reservation import InventoryReservation
+from app.models.notification import Notification
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shipping_out_request import ShippingOutRequest
@@ -38,6 +40,7 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from app.repositories import warehouse as warehouse_repository
+from app.services import notification_service
 from tests.pick_helpers import pick_pull
 from tests.shop_assembly_helpers import batch_pull, batch_request, schedule_for, shop_classifications, with_schedule
 
@@ -580,6 +583,72 @@ def test_reupload_closes_out_a_part_batched_request_that_lost_the_rest(db_sessio
     assert sar.status == ShopAssemblyRequestStatus.APPROVED
     assert [(o.opening_number, o.status) for o in sar.openings] == [("A01", ShopAssemblyOpeningStatus.BATCHED)]
     assert _reserved_total(db_session, project.id) == 3
+
+
+def _shop_rejections(session, project) -> list[Notification]:
+    return list(
+        session.scalars(
+            select(Notification).where(
+                Notification.project_id == project.id,
+                Notification.type == NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED,
+            )
+        )
+    )
+
+
+def test_reupload_that_rejects_a_request_names_the_openings_and_tells_the_shop(db_session):
+    """#1955: the auto-reject said nothing to anybody, and the dropped openings were gone from the request
+    with nothing naming them. Now its note names them, and the shop is told as a manager's reject tells it."""
+    project = _make_project(db_session)
+    sar = _finalize_sar(
+        db_session,
+        project,
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1},
+        ],
+    )["shop_assembly_request"]
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.REJECTED
+    assert "removed openings A01, A02" in sar.integrity_note
+    assert "rejected" in sar.integrity_note
+    (notice,) = _shop_rejections(db_session, project)
+    assert notice.recipient_role == notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE
+    assert notice.message == (
+        f"Hardware Schedule Import rejected shop assembly request {sar.request_number} - {sar.rejection_reason}"
+    )
+
+
+def test_reupload_that_closes_out_a_request_names_the_openings_it_dropped(db_session):
+    """#1955: the close-out skipped the note, so the request read Done with no word of the opening that
+    never went. No notice: a close-out is the ordinary end of a worked request."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _finalize_sar(
+        db_session,
+        project,
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
+        ],
+    )["shop_assembly_request"]
+    db_session.flush()
+    batch_request(db_session, sar.id, openings=["A01"])
+    db_session.flush()
+
+    _reupload(db_session, project, ["A01"])
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.APPROVED
+    assert "removed opening A02" in sar.integrity_note
+    assert "closed out" in sar.integrity_note
+    assert _shop_rejections(db_session, project) == []
 
 
 def test_reupload_rejects_a_request_whose_only_batch_was_cancelled(db_session):

@@ -13,6 +13,7 @@ from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
     Classification,
     HardwareItemState,
+    NotificationType,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -49,6 +50,7 @@ from app.models.shop_assembly import (
 )
 from app.repositories import project_repository
 from app.repositories import shipping_requests as _shipping_requests
+from app.services import notification_service
 
 
 def get_project_hardware_schedule(
@@ -468,6 +470,15 @@ SHOP_SCHEDULE_CHANGED_DROPPED_NOTE = (
 )
 
 
+def _removed_openings(numbers: set[str]) -> str:
+    """The openings a re-upload took off a shop request, for its note (#1955): "opening A01" or
+    "openings A01, A02"."""
+    if not numbers:
+        return "its openings"
+    names = ", ".join(sorted(numbers))
+    return f"opening {names}" if len(numbers) == 1 else f"openings {names}"
+
+
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
     """Shop-assembly requests in a project that are still in flight (#646).
 
@@ -583,7 +594,8 @@ def _handle_schedule_replacement(
       nothing, because its pending openings never held a claim (#646). A request left with nothing at
       all is auto-REJECTED (which for shipping out releases the rest by the ordinary reject path),
       because an empty request is not something anybody can work; a part-batched shop-assembly one
-      closes out instead, since some of it genuinely happened.
+      closes out instead, since some of it genuinely happened. Either way a shop-assembly request's
+      note names the openings that went, and an auto-rejected one tells the shop (#1955).
     - **Openings already dispatched or dismissed are left alone.** A batched opening is on a pull
       that is the authority on what the warehouse will hand over, and silently shrinking it
       underneath the puller would be worse than a stale bill of hardware; a dismissed one is a
@@ -628,6 +640,9 @@ def _handle_schedule_replacement(
             session.refresh(sar, attribute_names=["items", "openings"])
 
         if pending and not any(o.status == ShopAssemblyOpeningStatus.PENDING for o in sar.openings):
+            # #1955: either way the request leaves the board, so its note says which openings the
+            # re-upload took - they are gone from the request, and nothing else names them.
+            removed = _removed_openings({o.opening_number for o in lost_openings})
             if any(b.status == ShopAssemblyBatchStatus.ACTIVE for b in sar.batches):
                 # Part-worked: the batches that already went out are the record of what happened, so
                 # the request closes out rather than being rejected as though nothing had. Only a live
@@ -636,6 +651,10 @@ def _handle_schedule_replacement(
                 sar.status = ShopAssemblyRequestStatus.APPROVED
                 sar.approved_by = SCHEDULE_IMPORT_ACTOR
                 sar.approved_at = datetime.utcnow()
+                sar.integrity_note = (
+                    f"The hardware schedule was re-uploaded and removed {removed} while still waiting on "
+                    "this request, so the request closed out with the batches already sent."
+                )
             else:
                 # Nothing left to assemble and nothing ever dispatched: reject it rather than leave an
                 # empty request on the manager's board.
@@ -643,6 +662,21 @@ def _handle_schedule_replacement(
                 sar.rejected_by = SCHEDULE_IMPORT_ACTOR
                 sar.rejection_reason = "All of this request's openings were removed by a hardware schedule re-upload."
                 sar.rejected_at = datetime.utcnow()
+                sar.integrity_note = (
+                    f"The hardware schedule was re-uploaded and removed {removed}, all this request was "
+                    "waiting on; nothing had been batched, so the request was rejected."
+                )
+                # #1955: the shop is told, as a manager's reject tells it (#1242).
+                notification_service.create_notification(
+                    session,
+                    project_id=sar.project_id,
+                    recipient_role=notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE,
+                    notification_type=NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED,
+                    message=(
+                        f"{SCHEDULE_IMPORT_ACTOR} rejected shop assembly request {sar.request_number} - "
+                        f"{sar.rejection_reason}"
+                    ),
+                )
             continue
 
         sar.integrity_note = SHOP_SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SHOP_SCHEDULE_CHANGED_NOTE
