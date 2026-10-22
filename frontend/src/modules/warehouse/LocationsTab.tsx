@@ -143,8 +143,9 @@ function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
 }
 
 /** #632: the registry chips a location row carries - Empty (defined, holds nothing), Retired
- *  (deactivated), Not defined (occupied but absent from the registry, so unpickable for put-away). */
-function locationStatusChips(row: UtilRow) {
+ *  (deactivated), Not defined (occupied but absent from the registry, so unpickable for put-away).
+ *  #1845: until the registry has loaded, absent from it means unknown, not undefined - no chip. */
+function locationStatusChips(row: UtilRow, registryKnown: boolean) {
   return (
     <>
       {row.isEmpty && <Chip label="Empty" size="small" variant="outlined" />}
@@ -153,12 +154,12 @@ function locationStatusChips(row: UtilRow) {
           <Chip label="Retired" size="small" color="warning" variant="outlined" />
         </Tooltip>
       )}
-      {!row.definedId && row.variantOf && (
+      {registryKnown && !row.definedId && row.variantOf && (
         <Tooltip title={`Stored as a variant of the defined location ${row.variantOf}. Merge it on Location Cleanup.`}>
           <Chip label={`Variant of ${row.variantOf}`} size="small" color="default" variant="outlined" />
         </Tooltip>
       )}
-      {!row.definedId && !row.variantOf && (
+      {registryKnown && !row.definedId && !row.variantOf && (
         <Tooltip title="Not in the defined-locations registry, so it can't be picked for new put-aways. Define it to make it pickable.">
           <Chip label="Not defined" size="small" color="default" variant="outlined" />
         </Tooltip>
@@ -174,6 +175,7 @@ function buildUtilColumns(
   compact: boolean,
   warehouseCode: Map<string, string>,
   showWarehouse: boolean,
+  registryKnown: boolean,
   manage?: {
     onDeactivate: (row: UtilRow) => void;
     onDefine: (row: UtilRow) => void;
@@ -223,7 +225,7 @@ function buildUtilColumns(
             <MapPin size={18} strokeWidth={1.75} />
           </Box>
           <Typography sx={monoSx}>{p.value as string}</Typography>
-          {locationStatusChips(p.row)}
+          {locationStatusChips(p.row, registryKnown)}
         </Box>
       ),
     },
@@ -251,6 +253,9 @@ function buildUtilColumns(
             resizable: false,
             sortable: false,
             renderCell: ({ row }: { row: UtilRow }) => {
+              // #1845: a row the registry hasn't been read for may well be defined; offering Define
+              // on it would only be refused as already defined.
+              if (!row.definedId && !registryKnown) return null;
               if (!row.definedId && row.variantOf) {
                 // #1587: defining a variant is refused as already defined - it wants a merge, which is a
                 // Tenant Owner's (locationDuplicates / mergeLocations).
@@ -783,13 +788,20 @@ export default function LocationsTab() {
 
   // #632: the registry, everything included - deactivated rows stay manageable here, and
   // defined-but-empty locations get a row of their own in the list below.
-  const { data: registryData, refetch: refetchRegistry } = useQuery<{
+  const {
+    data: registryData,
+    error: registryError,
+    refetch: refetchRegistry,
+  } = useQuery<{
     warehouseLocations: WarehouseLocationDef[];
   }>(GET_WAREHOUSE_LOCATIONS, {
     variables: { warehouseId: warehouseFilter || null },
     fetchPolicy: 'cache-and-network',
   });
   const registry = useMemo(() => registryData?.warehouseLocations ?? [], [registryData]);
+  // #1845: a failed registry read left every occupied bin chipped "Not defined" with a Define button -
+  // the registry read as empty. Until it has loaded, nothing says a bin is or isn't defined.
+  const registryKnown = registryData !== undefined;
 
   const [createLocation, { loading: creating }] = useMutation(CREATE_WAREHOUSE_LOCATION);
   const [deactivateLocation] = useMutation(DEACTIVATE_WAREHOUSE_LOCATION);
@@ -949,9 +961,10 @@ export default function LocationsTab() {
         selected !== null,
         warehouseCode,
         !warehouseFilter,
+        registryKnown,
         canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow, canMerge: ownsTenant } : undefined,
       ),
-    [selected, warehouseCode, warehouseFilter, canManage, ownsTenant, handleDeactivate, handleDefineRow],
+    [selected, warehouseCode, warehouseFilter, registryKnown, canManage, ownsTenant, handleDeactivate, handleDefineRow],
   );
 
   // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
@@ -990,6 +1003,17 @@ export default function LocationsTab() {
   return (
     <Box>
       {utilError && <RefreshFailedNote what="the warehouse locations" error={utilError} />}
+      {registryError &&
+        (registryKnown ? (
+          <RefreshFailedNote what="the defined locations" error={registryError} />
+        ) : (
+          <LoadError
+            what="the defined locations"
+            error={registryError}
+            onRetry={() => refetchRegistry()}
+            sx={{ mb: 2 }}
+          />
+        ))}
       <PageHeader
         title="Locations"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}
@@ -1053,10 +1077,13 @@ export default function LocationsTab() {
       )}
 
       {allEmpty ? (
-        <Alert severity="info">
-          No locations defined and nothing located yet.
-          {canManage ? ' Define the first location to make put-away possible.' : ''}
-        </Alert>
+        // #1845: "no locations defined" only once the registry has said so.
+        registryKnown ? (
+          <Alert severity="info">
+            No locations defined and nothing located yet.
+            {canManage ? ' Define the first location to make put-away possible.' : ''}
+          </Alert>
+        ) : null
       ) : rows.length === 0 ? (
         productSearchError ? null : productSearchLoading ? (
           // The product-code join is still in flight - don't claim "no match" before it lands.
