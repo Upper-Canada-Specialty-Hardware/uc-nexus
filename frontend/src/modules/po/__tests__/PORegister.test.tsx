@@ -626,3 +626,26 @@ it('says the purchase orders failed to load rather than "no purchase orders matc
   expect(await screen.findByText(/couldn.t load the purchase orders/i)).toBeInTheDocument();
   expect(screen.queryByText(/no purchase orders match/i)).not.toBeInTheDocument();
 });
+
+it('shows no counts rather than 0 when the status counts fail to load (#1847)', async () => {
+  // The stats read fails; everything else answers as usual.
+  const failing = mocks().map((m) =>
+    m.request.query === GET_PO_STATISTICS
+      ? { request: m.request, maxUsageCount: INFINITE, error: new Error('Network down') }
+      : m,
+  );
+  render(
+    <MemoryRouter>
+      <MockedProvider mocks={failing}>
+        <ToastProvider>
+          <POModule />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/couldn.t load the counts/i)).toBeInTheDocument();
+  const segment = screen.getByRole('button', { name: 'Filter by Nexus Draft' });
+  expect(segment).toHaveTextContent('–');
+  expect(segment).not.toHaveTextContent('0');
+});

@@ -559,7 +559,12 @@ function POListPage() {
 
   // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
   // project's POs, and changing the scope re-asks. The origin filter narrows it the same way (#1358).
-  const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
+  const {
+    data: statsData,
+    loading: statsLoading,
+    error: statsError,
+    refetch: refetchStats,
+  } = useQuery<{
     poStatistics: POStatistics;
   }>(GET_PO_STATISTICS, {
     variables: { projectId: projectId || null, origin: origin === 'ALL' ? null : origin },
@@ -619,6 +624,9 @@ function POListPage() {
   const [syncGpPos, { loading: syncing }] = useMutation(SYNC_GP_POS);
 
   const stats = statsData?.poStatistics;
+  // #1847: a failed stats read has no counts to show; every segment read 0, which says "no POs here".
+  const statsFailed = statsError !== undefined && !stats;
+  const countsUnknown = statsLoading || statsFailed;
   const rows = useMemo(() => pageData?.purchaseOrdersPage.rows ?? [], [pageData]);
   const totalCount = pageData?.purchaseOrdersPage.totalCount ?? 0;
   // The scope chip's label, read off the page (#1238) so an archived project - or one with no POs on
@@ -842,7 +850,7 @@ function POListPage() {
                   {group.cards.map((card, i) => {
                     const active = isStatusCardActive({ statuses }, card.status);
                     const count = stats?.[card.key] ?? 0;
-                    const zero = !statsLoading && count === 0;
+                    const zero = !countsUnknown && count === 0;
                     return (
                       <StaggerItem key={card.key} style={{ display: 'flex' }}>
                         <ButtonBase
@@ -876,7 +884,7 @@ function POListPage() {
                               opacity: zero ? 0.6 : 1,
                             }}
                           >
-                            {statsLoading ? '–' : <AnimatedNumber value={count} />}
+                            {countsUnknown ? '–' : <AnimatedNumber value={count} />}
                           </Typography>
                           <Typography
                             component="span"
@@ -898,6 +906,24 @@ function POListPage() {
               </Box>
             ))}
             {/* Sits in the strip's own row, beside the boxes it explains, so it costs no height. */}
+            {statsFailed && (
+              <Typography
+                variant="caption"
+                color="error"
+                role="status"
+                sx={{ alignSelf: 'flex-end', pb: 1, minWidth: 0 }}
+              >
+                Couldn&apos;t load the counts.{' '}
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => void refetchStats().catch(() => undefined)}
+                  sx={{ minWidth: 0, p: 0, verticalAlign: 'baseline', textDecoration: 'underline' }}
+                >
+                  Retry
+                </Button>
+              </Typography>
+            )}
             {searchingAllStatuses && (
               <Typography
                 variant="caption"
