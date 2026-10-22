@@ -1,4 +1,4 @@
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type {
   ParsedProject,
   ParsedOpening,
@@ -406,10 +406,33 @@ export function extractHardwareItems(
 // parseHardwareSchedule — main entry point
 // ---------------------------------------------------------------------------
 
+/** A file that stops before its closing </Contract> tag, located at its last character. */
+function cutOffError(trimmed: string): Error {
+  const lastBreak = trimmed.lastIndexOf('\n');
+  let line = 1;
+  for (let i = trimmed.indexOf('\n'); i !== -1; i = trimmed.indexOf('\n', i + 1)) line += 1;
+  const col = trimmed.length - lastBreak - 1;
+  return new Error(
+    `Invalid XML at line ${line}, column ${col}: the file ends before its closing </Contract> tag, so it was likely cut off. Export it again.`,
+  );
+}
+
 export function parseHardwareSchedule(
   xmlContent: string,
   onProgress?: (percent: number, phase: string) => void,
 ): ParseResult {
+  // #1916: XMLParser.parse doesn't validate, so a file cut off at a tag boundary parsed as everything
+  // before the cut and went on to replace the schedule with half of it. Refuse it, saying where it broke.
+  const trimmed = xmlContent.trimEnd();
+  const cutOff = !trimmed.endsWith('</Contract>');
+  const validation = XMLValidator.validate(xmlContent);
+  if (validation !== true) {
+    const { code, msg, line, col } = validation.err;
+    // Tags still open at the end are reported at line 1, column 1; the break is the end of the file.
+    if (cutOff && (code === 'InvalidXml' || msg.startsWith('Unclosed tag'))) throw cutOffError(trimmed);
+    throw new Error(`Invalid XML at line ${line}, column ${col}: ${msg}`);
+  }
+
   const parser = new XMLParser(parserOptions);
   const parsed = parser.parse(xmlContent);
   const contract = parsed.Contract;
@@ -419,6 +442,7 @@ export function parseHardwareSchedule(
       'Invalid XML: missing root <Contract> element',
     );
   }
+  if (cutOff) throw cutOffError(trimmed);
 
   onProgress?.(10, 'Parsing XML');
 

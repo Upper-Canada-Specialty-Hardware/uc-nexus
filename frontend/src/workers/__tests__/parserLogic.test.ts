@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   textOrNull,
   parseFloatOrNull,
@@ -1005,6 +1007,44 @@ describe('parseHardwareSchedule (end-to-end with XML string)', () => {
     expect(() => parseHardwareSchedule(xml)).toThrow(
       'missing root <Contract>',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1916: a cut-off or malformed file is refused with where it broke
+// ---------------------------------------------------------------------------
+
+describe('parseHardwareSchedule - a file that is not whole (#1916)', () => {
+  const fixture = readFileSync(resolve(__dirname, '../../../../testing/fixtures/contracterp-74.xml'), 'utf8');
+
+  it('the real schedule cut at 30% is refused, not read as part of a schedule', () => {
+    const cut = fixture.slice(0, Math.floor(fixture.length * 0.3));
+    expect(() => parseHardwareSchedule(cut)).toThrow(/^Invalid XML at line \d+, column \d+: /);
+  });
+
+  it('cut at a tag boundary: refused as cut off, at the end of the file', () => {
+    const cut30 = fixture.slice(0, Math.floor(fixture.length * 0.3));
+    const cut = cut30.slice(0, cut30.lastIndexOf('</Assignment>') + '</Assignment>'.length);
+    expect(() => parseHardwareSchedule(cut)).toThrow(
+      `Invalid XML at line 1, column ${cut.length}: the file ends before its closing </Contract> tag`,
+    );
+  });
+
+  it('a mismatched tag is refused naming its line and column', () => {
+    const xml = '<?xml version="1.0"?>\n<Contract>\n<Fields><Project_ID>P1</Fields>\n</Contract>';
+    expect(() => parseHardwareSchedule(xml)).toThrow(
+      /^Invalid XML at line 3, column \d+: Expected closing tag 'Project_ID'/,
+    );
+  });
+
+  it('a well-formed file whose contract is not closed last is refused', () => {
+    expect(() => parseHardwareSchedule('<Contract Description="T"/>')).toThrow('ends before its closing </Contract> tag');
+  });
+
+  it('the whole schedule still parses', () => {
+    const result = parseHardwareSchedule(fixture);
+    expect(result.openings.length).toBeGreaterThan(0);
+    expect(result.hardwareItems.length).toBeGreaterThan(0);
   });
 });
 
