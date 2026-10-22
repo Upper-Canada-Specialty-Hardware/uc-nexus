@@ -37,7 +37,10 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
   const { showToast } = useToast();
   const stored = useMemo(() => detailsFromSlip(slip), [slip]);
   const [details, setDetails] = useState<SiteFormDetails>(stored);
-  const storedLoadId = slip.load?.id ?? NEW_LOAD;
+  // The load the slip is on as far as this dialog knows: the one it opened with, until a move here lands.
+  // The slip prop is the list's snapshot from when the dialog opened, so without this a header refused
+  // after the move went through would send the move again on every retry, and be refused (#1819).
+  const [storedLoadId, setStoredLoadId] = useState<string>(slip.load?.id ?? NEW_LOAD);
   const [loadId, setLoadId] = useState<string>(storedLoadId);
   const [error, setError] = useState<string | null>(null);
   const shipmentMethods = useShipmentMethods();
@@ -74,9 +77,12 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
       setError(WEIGHT_ERROR);
       return;
     }
+    let moved = false;
     try {
       if (loadChanged) {
         await moveShipment({ variables: { id: slip.id, loadId: loadId === NEW_LOAD ? null : loadId } });
+        setStoredLoadId(loadId);
+        moved = true;
       }
       await updateShipment({
         // Full replace: the driver goes on every save, null clearing it, like the header beside it.
@@ -85,7 +91,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
       showToast(`Shipment ${slip.packingSlipNumber} updated`, 'success');
       onClose();
     } catch (err) {
-      setError(userMessage(err));
+      setError(moved ? `The load change is saved. ${userMessage(err)}` : userMessage(err));
     }
   };
 
