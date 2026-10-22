@@ -313,6 +313,58 @@ def test_returning_a_cancelled_batch_locks_the_request(db_session, locks_taken):
     assert locks_taken[:1] == ["ShopAssemblyRequest"]
 
 
+def test_a_reupload_locks_the_live_requests_before_reading_them(db_session, monkeypatch):
+    """#1852: a batch locks the request before it marks openings BATCHED, so the re-upload takes the
+    same lock before it reads what is pending. Unlocked, a batch committing in between had its opening
+    deleted and the request REJECTED while it held a live batch. Every live request is locked - a
+    closed-out one too, since the re-upload flags it - and a rejected one is left alone."""
+    project = _project(db_session)
+    _stock(db_session, project)
+    openings = ["A01", "A02", "A03"]
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": n} for n in openings],
+            "hardware_items": [{**_HINGE, "opening_number": n, "item_quantity": 2} for n in openings],
+            "classifications": [{**_SHOP_HINGE, "classification": "SHOP_HARDWARE"}],
+        },
+    )
+    pending, closed, rejected = (
+        shop_assembly_repository.create_shop_assembly_request(
+            db_session, project.id, [{**_HINGE, "opening_number": n, "requested_quantity": 2}], created_by="pm"
+        )
+        for n in openings
+    )
+    shop_assembly_repository.create_shop_assembly_batch(
+        db_session, closed.id, batch_lines(db_session, closed.id), created_by="manager"
+    )
+    shop_assembly_repository.reject_shop_assembly_request(db_session, rejected.id, "manager", "not needed")
+    db_session.flush()
+    seen: list[tuple[str, set]] = []
+    real = locking.lock_rows
+
+    def spy(session, model_class, ids):
+        seen.append((model_class.__name__, set(ids)))
+        return real(session, model_class, ids)
+
+    monkeypatch.setattr(locking, "lock_rows", spy)
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": n} for n in openings],
+            "hardware_items": [],
+            "replace_schedule": True,
+        },
+    )
+
+    locked = set().union(*(ids for name, ids in seen if name == "ShopAssemblyRequest"))
+    assert {pending.id, closed.id} <= locked
+    assert rejected.id not in locked
+
+
 def test_cancelling_a_batch_pull_locks_request_then_pull_then_inventory(db_session, monkeypatch):
     """#1156: batch creation takes the request and then inventory; batch discard takes the request and
     then the pull. The cancel takes the request first too, then the pull, then inventory - any other

@@ -458,7 +458,28 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
     once the warehouse starts one, inventory has moved and the request is no longer something a
     re-upload may quietly rewrite. Either way the rewrite below only touches PENDING openings; a
     closed-out request just gets the flag.
+
+    #1852: the candidates are row-locked, in id order and after the project lock the finalize took,
+    before anything is read off them. A batch locks the same row before it marks openings BATCHED
+    (`shop_assembly_repository._locked_request`), so unlocked, a batch committing between this read and
+    the deletes below had its batched opening deleted, and a request holding a live batch was REJECTED
+    as though nothing had been dispatched. Now one waits for the other, and the read below sees what
+    the other committed.
     """
+    from app.services.locking import lock_rows
+
+    lock_rows(
+        session,
+        SARModel,
+        list(
+            session.scalars(
+                select(SARModel.id).where(
+                    SARModel.project_id == project_id,
+                    SARModel.status.in_([ShopAssemblyRequestStatus.PENDING, ShopAssemblyRequestStatus.APPROVED]),
+                )
+            ).all()
+        ),
+    )
     worked_batch = (
         select(SARBatchModel.id)
         .join(PullRequestModel, SARBatchModel.pull_request_id == PullRequestModel.id)
@@ -490,7 +511,8 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
             # and without this the identity-mapped request comes back carrying the empty `batches`
             # collection its first load saw - which reads as "never dispatched" and would auto-REJECT
             # a request that has real hardware on the warehouse floor. Same reasoning as the readers
-            # in shop_assembly_repository.
+            # in shop_assembly_repository. It is also what makes the lock above count (#1852): a copy
+            # already in the session would otherwise hide a batch committed while the lock was waited on.
             .execution_options(populate_existing=True)
         )
         .unique()
