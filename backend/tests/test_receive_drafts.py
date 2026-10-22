@@ -215,7 +215,51 @@ def test_resubmitting_the_same_key_returns_the_first_draft(db_session):
     assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == po.id).count() == 1
 
 
-# --- one pending count per PO (#641) --------------------------------------------------------------
+def test_a_create_key_already_used_on_another_po_is_refused(db_session):
+    """#1871: the key is global, so the same key on another PO answered with the first PO's draft -
+    another purchase order's count handed to a caller who never asked for it."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    other_po, other_li = _make_po(db_session, project.id)
+
+    warehouse_repository.create_receive_draft(
+        db_session,
+        po.id,
+        _lines(li, 3),
+        AUTHOR,
+        AUTHOR_NAME,
+        idempotency_key="k-shared",
+        packing_slip_document_id=_packing_slip(db_session, po).id,
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match="another purchase order") as excinfo:
+        warehouse_repository.create_receive_draft(
+            db_session,
+            other_po.id,
+            _lines(other_li, 3),
+            AUTHOR,
+            AUTHOR_NAME,
+            idempotency_key="k-shared",
+            packing_slip_document_id=_packing_slip(db_session, other_po).id,
+        )
+    assert excinfo.value.field == "idempotency_key"
+    assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == other_po.id).count() == 0
+
+
+def test_a_create_key_replays_only_on_its_own_po():
+    """The same guard without a database: both of create's early returns go through it."""
+    from app.repositories.warehouse.receive_drafts import _replayed_on_this_po
+
+    po_id = uuid.uuid4()
+    draft = ReceiveDraft(id=uuid.uuid4(), po_id=po_id)
+
+    assert _replayed_on_this_po(draft, po_id) is draft
+    with pytest.raises(ValidationError, match="another purchase order"):
+        _replayed_on_this_po(draft, uuid.uuid4())
+
+
+# --- one pending count per PO (#641)--------------------------------------------------------------
 #
 # A pending draft is the claim on a delivery. It used to be advisory - the receiving queue still
 # offered the PO and the modal only warned - so two people counting the same truck produced two

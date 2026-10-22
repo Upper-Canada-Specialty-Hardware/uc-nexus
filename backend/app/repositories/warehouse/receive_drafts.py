@@ -203,6 +203,15 @@ def _draft_for_create_key(session: Session, idempotency_key: str | None) -> Rece
     ).first()
 
 
+def _replayed_on_this_po(existing: ReceiveDraftModel, po_id: uuid.UUID) -> ReceiveDraftModel:
+    """A create key's draft, handed back only to a retry on the PO it was written for (#1871). The key is
+    global, so one reused on another PO used to answer with that PO's draft - another purchase order's
+    count, possibly another company's."""
+    if existing.po_id != po_id:
+        raise ValidationError("This draft key was already used on another purchase order.", field="idempotency_key")
+    return existing
+
+
 def _assert_no_pending_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -277,7 +286,7 @@ def create_receive_draft(
 
     existing = _draft_for_create_key(session, idempotency_key)
     if existing is not None:
-        return existing
+        return _replayed_on_this_po(existing, po_id)
 
     if idempotency_key:
         # #1402: a retry that overlaps the first submit passes the unlocked check above, then waits on
@@ -286,7 +295,7 @@ def create_receive_draft(
         lock_rows(session, POModel, [po_id])
         existing = _draft_for_create_key(session, idempotency_key)
         if existing is not None:
-            return existing
+            return _replayed_on_this_po(existing, po_id)
 
     # After the idempotency short-circuit, never before it: a retry of the submission that wrote the
     # pending draft must get that draft back, not a conflict with itself.
