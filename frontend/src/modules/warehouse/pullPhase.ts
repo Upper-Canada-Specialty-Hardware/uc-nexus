@@ -44,8 +44,9 @@ export function pullPhase(pr: PullPhaseFields): PullPhase {
 /**
  * Whether a pull can still be cancelled from the UI's point of view.
  *
- * A pull that has not been started has moved no inventory (reopen or reject the source request
- * instead), and a completed one has handed its hardware over - to the bench or to a shipping desk -
+ * A pull that has not been started has moved no inventory (reopen or reject the source shipping
+ * request instead; a shop assembly pull's batch is discarded on the Shop Assembly page, #1956), and a
+ * completed one has handed its hardware over - to the bench or to a shipping desk -
  * which v1 does not follow, so there is nothing left to reverse. The backend enforces the same rule;
  * a control that cannot succeed is worse than an absent one.
  */

@@ -1635,10 +1635,14 @@ def cancel_pull_request(
     )
 
     if pr.status == PullRequestStatus.PENDING:
-        raise InvalidStateTransitionError(
-            "This pull has not been started yet, so nothing has left inventory. Reopen or reject "
-            "the source request instead."
+        # #1956: a shop assembly batch has no source request to reopen - its unstarted pull is undone by
+        # discarding the batch, whose number the pull carries.
+        undo = (
+            f"Discard batch {pr.request_number} on the Shop Assembly page instead."
+            if pr.source == PullRequestSource.SHOP_ASSEMBLY
+            else "Reopen or reject the source request instead."
         )
+        raise InvalidStateTransitionError(f"This pull has not been started yet, so nothing has left inventory. {undo}")
     if pr.status == PullRequestStatus.CANCELLED:
         raise InvalidStateTransitionError("Pull request is already cancelled")
     if pr.status == PullRequestStatus.COMPLETED:

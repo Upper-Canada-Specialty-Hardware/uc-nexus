@@ -37,6 +37,7 @@ from app.repositories import (
     shop_assembly_repository,
     warehouse_admin_repository,
 )
+from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
 from tests.shop_assembly_helpers import batch_pull, batch_request, with_schedule
 
@@ -470,6 +471,64 @@ def test_a_batched_request_cannot_be_rejected_whole(db_session):
 
     with pytest.raises(InvalidStateTransitionError, match="already been batched"):
         shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
+
+
+def _one_opening_batched(db_session):
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    sar = import_repository.finalize_import_session(
+        db_session,
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
+    )["shop_assembly_request"]
+    db_session.flush()
+    batch = batch_request(db_session, sar.id, openings=["A01"])
+    db_session.flush()
+    return sar, batch
+
+
+def test_a_batched_request_whose_pull_has_not_started_is_pointed_at_discard(db_session):
+    """#1956: an unstarted pull cannot be cancelled, so the refusal names the batch to discard instead."""
+    sar, batch = _one_opening_batched(db_session)
+
+    with pytest.raises(InvalidStateTransitionError) as exc:
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
+
+    assert f"Discard batch {batch.batch_number} on the Shop Assembly page" in str(exc.value)
+    assert "Cancel the batch's pull" not in str(exc.value)
+
+
+def test_a_batched_request_being_pulled_is_still_pointed_at_the_cancel(db_session):
+    sar, batch = _one_opening_batched(db_session)
+    warehouse_repository.start_pull_request_pick(db_session, batch.pull_request_id, "picker")
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError) as exc:
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
+
+    assert "Cancel the batch's pull to undo it" in str(exc.value)
+    assert "Discard" not in str(exc.value)
+
+
+def test_cancelling_a_shop_batch_pull_that_has_not_started_points_at_discard(db_session):
+    """#1956: the cancel refusal said to reopen or reject the source request, which a batch has no way to do."""
+    _sar, batch = _one_opening_batched(db_session)
+
+    with pytest.raises(InvalidStateTransitionError) as exc:
+        warehouse_repository.cancel_pull_request(db_session, batch.pull_request_id, "manager", "wrong pull")
+
+    assert f"Discard batch {batch.batch_number} on the Shop Assembly page instead." in str(exc.value)
+    assert "Reopen or reject" not in str(exc.value)
 
 
 # --- discarding a batch (the #325 reopen, at batch granularity) -------------------------------

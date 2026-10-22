@@ -325,13 +325,17 @@ def _waiting_shop_lines(session: Session, project_id: uuid.UUID) -> dict[Product
     return waiting
 
 
-def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
+def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Product, dict[str, PullRequestStatus]]:
     """Products on an active shop assembly batch whose pull has not finished: hardware is reserved and
-    on the floor for the shop, so a change that takes the product out of the shop waits for it."""
-    holds: dict[Product, set[str]] = defaultdict(set)
-    for category, code, number in session.execute(
+    on the floor for the shop, so a change that takes the product out of the shop waits for it. Each
+    batch number with its pull's status: one not started yet is undone by a discard, not a cancel (#1956)."""
+    holds: dict[Product, dict[str, PullRequestStatus]] = defaultdict(dict)
+    for category, code, number, status in session.execute(
         select(
-            ShopAssemblyBatchItem.hardware_category, ShopAssemblyBatchItem.product_code, ShopAssemblyBatch.batch_number
+            ShopAssemblyBatchItem.hardware_category,
+            ShopAssemblyBatchItem.product_code,
+            ShopAssemblyBatch.batch_number,
+            PullRequest.status,
         )
         .join(ShopAssemblyBatch, ShopAssemblyBatchItem.shop_assembly_batch_id == ShopAssemblyBatch.id)
         .join(ShopAssemblyRequest, ShopAssemblyBatch.shop_assembly_request_id == ShopAssemblyRequest.id)
@@ -342,7 +346,7 @@ def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Produ
             PullRequest.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
         )
     ):
-        holds[(category, code)].add(number)
+        holds[(category, code)][number] = status
     return holds
 
 
@@ -494,8 +498,17 @@ def plan_product_classifications(
             and to != HardwareClassificationChoice.UCH_SHOP
         )
         if leaving_shop:
-            for number in sorted(being_pulled.get(product, ())):
-                blocks.append(f"on shop assembly batch {number}, still being pulled - finish or cancel the pull first")
+            for number, status in sorted(being_pulled.get(product, {}).items()):
+                if status == PullRequestStatus.PENDING:
+                    # #1956: an unstarted pull can't be cancelled; the batch is discarded instead.
+                    blocks.append(
+                        f"on shop assembly batch {number}, whose pull hasn't started - discard batch {number} "
+                        "on the Shop Assembly page first"
+                    )
+                else:
+                    blocks.append(
+                        f"on shop assembly batch {number}, still being pulled - finish or cancel the pull first"
+                    )
             for number, openings in sorted(waiting.get(product, {}).items()):
                 adjusts.append(
                     f"comes off shop assembly request {number} (opening {', '.join(sorted(openings))}); "

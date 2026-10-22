@@ -948,9 +948,24 @@ def reject_shop_assembly_request(
             f"{status_label(request.status)}. {REFRESH_HINT}"
         )
     if request.batches:
+        # #1956: a pull that hasn't started can't be cancelled - its batch is discarded instead, so an
+        # unstarted batch is pointed there, by number.
+        statuses = get_pull_statuses(session, [request])
+        live = [b for b in request.batches if b.status == ShopAssemblyBatchStatus.ACTIVE]
+        unstarted = sorted(b.batch_number for b in live if statuses.get(b.pull_request_id) == PullRequestStatus.PENDING)
+        if unstarted:
+            noun = "batch" if len(unstarted) == 1 else "batches"
+            discard = f"Discard {noun} {', '.join(unstarted)} on the Shop Assembly page"
+            undo = (
+                f"{discard} to undo it"
+                if len(unstarted) == len(live)
+                else f"{discard}, cancel the pull of any batch already being pulled"
+            )
+        else:
+            undo = "Cancel the batch's pull to undo it"
         raise InvalidStateTransitionError(
-            "This request has already been batched, so it cannot be rejected whole. Cancel the "
-            "batch's pull to undo it, and dismiss whatever is left."
+            f"This request has already been batched, so it cannot be rejected whole. {undo}, and dismiss "
+            "whatever is left."
         )
 
     # #1242: a reason is required and the shop is told, as a shipping rejection does (#972).

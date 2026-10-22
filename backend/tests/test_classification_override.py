@@ -497,6 +497,30 @@ def test_shop_to_site_is_refused_while_an_active_batch_pull_is_unfinished(db_ses
     assert batch.batch_number in err.value.message
 
 
+def test_a_batch_whose_pull_has_not_started_is_pointed_at_discard_not_cancel(db_session):
+    """#1956: a pull that hasn't started can't be cancelled, so the block says to discard the batch - and a
+    started one keeps the cancel wording."""
+    project = _project(db_session)
+    a01 = _opening(db_session, project)
+    _item(db_session, project, a01, "HG-1", cls=Classification.SHOP_HARDWARE)
+    _item(db_session, project, a01, "HG-2", cls=Classification.SHOP_HARDWARE)
+    unstarted = _batch(db_session, project, "HG-1", PullRequestStatus.PENDING)
+    started = _batch(db_session, project, "HG-2", PullRequestStatus.IN_PROGRESS)
+
+    plans = repo.plan_product_classifications(
+        db_session, project.id, [(CAT, "HG-1", C.UCH_SITE), (CAT, "HG-2", C.UCH_SITE)]
+    )
+
+    blocks = {plan["product_code"]: plan["blocks"] for plan in plans}
+    assert blocks["HG-1"] == [
+        f"on shop assembly batch {unstarted.batch_number}, whose pull hasn't started - discard batch "
+        f"{unstarted.batch_number} on the Shop Assembly page first"
+    ]
+    assert blocks["HG-2"] == [
+        f"on shop assembly batch {started.batch_number}, still being pulled - finish or cancel the pull first"
+    ]
+
+
 def test_by_others_on_a_po_is_allowed_and_the_rows_stop_counting_as_ordered(db_session):
     """#1050 ruling: the PO does not depend on the classification - it is shown as unaffected, and the
     schedule rows lose their ordered link. Only an unclassified product can get here since #1392."""
