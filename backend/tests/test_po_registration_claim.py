@@ -222,3 +222,29 @@ def test_a_resume_refuses_a_ledger_row_another_kind_of_write_made(monkeypatch, d
     po = po_repository.reload_po(db_session, draft.id)
     assert po.status == POStatus.DRAFT
     assert po.registering_key is None
+
+
+def test_a_finished_key_answers_only_for_the_po_it_registered(monkeypatch, db_session):
+    """#1905: sent with another PO's id, a key that already registered a PO handed that PO back."""
+    from app.errors import ValidationError
+    from app.services.gp_idempotency import IdempotencyState
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes: list[str] = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushes.append(op)
+        return {"po_number": "unused", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    finished = IdempotencyState(
+        op="register_po_in_gp", relay_result={"po_number": "0001300"}, result_id=str(uuid.uuid4())
+    )
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: finished if k == key else None)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _run_register(draft, key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert pushes == []

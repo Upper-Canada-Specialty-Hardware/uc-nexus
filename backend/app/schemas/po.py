@@ -1071,6 +1071,10 @@ class POMutations:
         # #1873: before the row's result is answered with or resumed from, it must be a registration's.
         gp_idempotency.require_op(state, "register_po_in_gp")
         if state is not None and state.result_id is not None:
+            # A key that registered a PO answers for that PO alone (#1905), as #1851 has an approval key
+            # answer for its own draft: sent with another PO's id it handed back the first one.
+            if state.result_id != str(input.po_id):
+                raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
             po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id), tenant_scope(info))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
