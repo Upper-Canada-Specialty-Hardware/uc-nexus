@@ -107,6 +107,20 @@ def add_photo(
     s3_key = f"shipment-photos/{project_id}/{photo_id}_{_safe_key_name(file_name)}"
     storage.upload_file(s3_key, data, stored_type)
     try:
+        if kind == ShipmentPhotoKind.LOADING:
+            # #1944: the container's slip is read again under its row lock, after the upload so no lock
+            # is held across storage. A confirm locks the container and stamps the slip on the photos it
+            # finds; read unlocked, a photo added while that confirm was in flight kept the slip it saw
+            # before it - none - and the shipment's read never found it.
+            container = session.scalars(
+                select(ShipmentContainer)
+                .where(ShipmentContainer.id == container_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).first()
+            if container is None:
+                raise NotFoundError(f"Shipment container {container_id} not found")
+            slip_id = container.packing_slip_id
         photo = ShipmentPhoto(
             id=photo_id,
             project_id=project_id,
