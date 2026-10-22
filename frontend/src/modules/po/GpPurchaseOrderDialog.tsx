@@ -55,6 +55,7 @@ import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { computeRegisterTotals, formatMoney } from './registerTotals';
+import { pastTheCent } from './unitCost';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -1027,7 +1028,7 @@ export default function GpPurchaseOrderDialog({
       if (isNaN(cost)) errs[`li_${i}_cost`] = costText ? 'Not a number' : 'Must be >= 0';
       else if (cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
       // #1394: GP keeps a unit cost to the cent and refuses more places at the line; trailing zeros are fine.
-      else if ((costText.split('.')[1] ?? '').replace(/0+$/, '').length > 2) errs[`li_${i}_cost`] = 'To the cent';
+      else if (pastTheCent(costText)) errs[`li_${i}_cost`] = 'To the cent';
       // A pasted unit that is not one of GP's own would be refused at registration. Only checked on
       // pasted lines, and only once GP's list is known: a line typed here picks from that list.
       if (pastedKeys.has(li.key) && unitsOfMeasure.length > 0 && !unitsOfMeasure.includes(li.uofm))

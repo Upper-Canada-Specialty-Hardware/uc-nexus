@@ -39,6 +39,7 @@ import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
 import { poDocumentGate } from './poDocumentGate';
+import { pastTheCent } from './unitCost';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -85,6 +86,14 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** A unit cost box that can't be saved as typed: not a number, negative, or past the cent, which GP
+ *  refuses at the line (#1394, #1837). Empty is left alone - the line keeps its cost. */
+function unitCostInvalid(val: string): boolean {
+  if (val === '') return false;
+  const parsed = parseFloat(val);
+  return isNaN(parsed) || parsed < 0 || pastTheCent(val);
 }
 
 // --- Props ---
@@ -297,6 +306,7 @@ export default function PODetailModal({
   };
 
   const handleSave = async () => {
+    if (unitCostBlocksSave) return;
     setPoNumberError('');
 
     // Save line item changes (alias + unit cost)
@@ -572,6 +582,10 @@ export default function PODetailModal({
 
   // #1595: a queued registration posts the lines as they were when it was queued, so they are held too.
   const canEditItems = po.status === 'DRAFT' && !registrationQueued;
+  // #1837: a line whose cost can't be sent holds the whole save. The line updates go out together before
+  // the header, so letting the valid ones through saved half the edit and dropped the rest unsaid.
+  const unitCostBlocksSave =
+    editing && canEditItems && po.lineItems.some((li) => unitCostInvalid(unitCostEdits[li.id] ?? ''));
   const poNumberLocked = po.origin === 'GP' || po.status !== 'DRAFT';
   // #1488: once receiving has started on an open PO, only the expected date (the vendor's answer for
   // the rest) and the notes still change; the server refuses the others.
@@ -635,8 +649,7 @@ export default function PODetailModal({
             ...col,
             renderCell: (params) => {
               const val = unitCostEdits[params.row.id as string] ?? String(params.value ?? '');
-              const parsed = parseFloat(val);
-              const isInvalid = val !== '' && (isNaN(parsed) || parsed < 0);
+              const isInvalid = unitCostInvalid(val);
               return (
                 <TextField
                   size="small"
@@ -719,7 +732,7 @@ export default function PODetailModal({
           <Button
             variant="contained"
             onClick={handleSave}
-            disabled={updateLoading}
+            disabled={updateLoading || unitCostBlocksSave}
           >
             {updateLoading ? 'Saving...' : 'Save Changes'}
           </Button>

@@ -484,6 +484,24 @@ describe('PODetailModal', () => {
     expect(updateCalls).toEqual([{ id: 'po-1' }]);
   });
 
+  it('marks a unit cost past the cent and holds the save until it is fixed (#1837)', () => {
+    renderModal(draftPo);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const cost = screen.getByDisplayValue('2.5');
+    // Trailing zeros are still to the cent.
+    fireEvent.change(cost, { target: { value: '12.500' } });
+    expect(cost).not.toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+
+    fireEvent.change(cost, { target: { value: '0.333' } });
+    expect(cost).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
+
+    fireEvent.change(cost, { target: { value: '0.33' } });
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+  });
+
   it('shows and edits Stock or Overhead only on a draft with no project (#832)', async () => {
     const calls: Record<string, unknown>[] = [];
     const stockDraft: PurchaseOrder = { ...draftPo, projectId: null, poolKind: 'STOCK' };
