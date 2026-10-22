@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material';
 import AppLayout from '../AppLayout';
@@ -57,4 +57,17 @@ test('the app bar offers no reset', () => {
   expect(screen.getByText('Home')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /reset data/i })).not.toBeInTheDocument();
   expect(screen.queryByText(/DevAction/i)).not.toBeInTheDocument();
+});
+
+test('storage that throws cannot blank the app, and the rail still toggles (#1899)', () => {
+  const refuse = () => {
+    throw new DOMException('The operation is insecure.', 'SecurityError');
+  };
+  vi.stubGlobal('localStorage', { getItem: refuse, setItem: refuse, removeItem: refuse, clear: refuse });
+
+  renderLayout();
+
+  expect(screen.getByText('Home')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+  expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
 });

@@ -25,17 +25,33 @@ import CompanyWordmark from './CompanyWordmark';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
+// #1899: the shell renders above the app's only error boundary, so a storage access that throws (a
+// private window, blocked site data) must not take the whole app down with it. The rail just forgets.
+function readRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeRailCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* storage unavailable - the rail keeps its state for this visit */
+  }
+}
+
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [railCollapsed, setRailCollapsed] = useState(
-    () => localStorage.getItem(RAIL_COLLAPSED_KEY) === '1',
-  );
+  const [railCollapsed, setRailCollapsed] = useState(readRailCollapsed);
 
   const toggleRail = () => {
     setRailCollapsed((prev) => {
-      localStorage.setItem(RAIL_COLLAPSED_KEY, prev ? '0' : '1');
+      writeRailCollapsed(!prev);
       return !prev;
     });
   };
