@@ -24,7 +24,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__ as VERSION
 from . import autostart, updater
-from .config import ChannelCfg, DEFAULT_CONFIG_PATH, SqlCfg, primary_url
+from .config import ChannelCfg, DEFAULT_CONFIG_PATH, SqlCfg, is_enrolled_secret, primary_url
 
 
 def _resolve_log_path(config_path: Path, logging_file: str) -> Path:
@@ -74,7 +74,7 @@ def config_summary(config_path: str | Path | None = None) -> dict:
         "backend_url": primary_url(backend_urls),
         "host": server.get("host", "127.0.0.1"),
         "port": server.get("port", 7321),
-        "enrolled": bool(secret),
+        "enrolled": is_enrolled_secret(secret),  # the placeholder a fresh install seeds is not (#1929)
         "logging_file": (data.get("logging") or {}).get("file", "relay.log"),
     }
 

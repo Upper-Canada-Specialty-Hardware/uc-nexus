@@ -51,6 +51,13 @@ def test_config_summary_not_enrolled_when_secret_blank(tmp_path):
     assert ui.config_summary(_cfg(tmp_path, '[auth]\nshared_secret = ""\n'))["enrolled"] is False
 
 
+def test_config_summary_not_enrolled_on_the_placeholder_a_fresh_install_seeds(tmp_path):
+    # #1929: the seeded config carries the placeholder until enrollment replaces it, and reading that as
+    # enrolled told the operator there was nothing left to do.
+    body = '[auth]\nshared_secret = "REPLACE_ME_RANDOM_TOKEN"\n'
+    assert ui.config_summary(_cfg(tmp_path, body))["enrolled"] is False
+
+
 def test_config_summary_parse_error(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text("definitely = not [[[ valid toml", encoding="utf-8")

@@ -3,6 +3,7 @@ stop-by-pid. Plus the ui.Api wizard-method guards. No real SQL, no window, no re
 
 import subprocess
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -64,6 +65,27 @@ def test_write_config_writes_a_parseable_file(tmp_path):
     assert r["ok"] is True
     assert p.exists()
     tomllib.loads(p.read_text(encoding="utf-8"))  # parses
+
+
+def test_the_installers_seed_file_is_the_config_setup_writes(tmp_path):
+    # #1929: the installers used to copy config.example.toml, a developer's sample with a placeholder
+    # backend host and a TUBC buyer, onto a fresh workstation. They copy this seed instead, and it has to
+    # stay exactly what the setup wizard would write for a relay not enrolled yet.
+    seed = Path(__file__).resolve().parents[1] / "install" / "config.seed.toml"
+    assert seed.read_text(encoding="utf-8") == setup.build_config_toml({})
+    for installer in ("install-relay-user.ps1", "install-relay.ps1"):
+        script = (seed.parent / installer).read_text(encoding="utf-8")
+        assert 'Join-Path $PSScriptRoot "config.seed.toml"' in script, installer
+        assert r"..\config.example.toml" not in script, installer
+
+
+def test_the_placeholder_secret_and_an_empty_one_are_not_enrolled():
+    from ucnexus_relay.config import PLACEHOLDER_SECRET, is_enrolled_secret
+
+    assert not is_enrolled_secret("")
+    assert not is_enrolled_secret(None)
+    assert not is_enrolled_secret(PLACEHOLDER_SECRET)
+    assert is_enrolled_secret("enc:dpapi:AQAAsecret")
 
 
 def test_write_config_preserves_an_already_enrolled_secret(tmp_path):

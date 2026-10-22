@@ -36,6 +36,18 @@ class AuthCfg(BaseModel):
     shared_secret: str = ""
 
 
+# What the setup wizard writes, and what a fresh install seeds, before enrollment puts a real secret in
+# its place (#1929). It sits in a real config.toml on every workstation that has not enrolled yet.
+PLACEHOLDER_SECRET = "REPLACE_ME_RANDOM_TOKEN"
+
+
+def is_enrolled_secret(secret: str | None) -> bool:
+    """Whether [auth] shared_secret is a secret enrollment wrote, rather than empty or the placeholder
+    (#1929). The placeholder used to read as enrolled: the Status tab said yes and serve dialled the
+    backend with it, to be refused on every attempt."""
+    return bool(secret) and secret.strip() not in ("", PLACEHOLDER_SECRET)
+
+
 class CorsCfg(BaseModel):
     # Baked: the Nexus frontend origins (dev-determined infra, not a per-workstation setting).
     allowed_origins: list[str] = [

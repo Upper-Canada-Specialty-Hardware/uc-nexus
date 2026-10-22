@@ -13,9 +13,9 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from .config import PLACEHOLDER_SECRET as _PLACEHOLDER_SECRET
 from .fsutil import atomic_write_text
 
-_PLACEHOLDER_SECRET = "REPLACE_ME_RANDOM_TOKEN"
 _DEFAULT_DRIVER = "ODBC Driver 17 for SQL Server"
 
 
