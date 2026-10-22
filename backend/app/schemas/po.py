@@ -520,21 +520,19 @@ def _release_registration(po_id, key) -> None:
         logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
 
 
-def _held_registration(key: str, po_id: uuid.UUID, gp_result: dict) -> dict:
+def _held_registration(key: str, po_id: uuid.UUID) -> dict | None:
     """What a resume saves (#1950): the held write GP's answer belongs to, with the context GP was sent.
 
     The resume used to save this call's lines, vendor, costs and project over GP's answer - a form the
-    person could have edited since the push. A key with no held write has nothing to save it from, so it
-    is refused; GP's PO is finished from the held write, or reconciled, never from the form."""
+    person could have edited since the push. None when the key has no held write: its save and the queueing
+    of it both failed, or GP answered before #1950. Refusing that left the draft held by an answer nothing
+    could finish, so the resume saves from this call's context instead - the window that pushed it, under
+    its key, and no other window may resume it; the server refuses edits to the draft from the moment GP
+    answers (#1903), so this call's is the nearest to what GP was sent that is left."""
     with SessionLocal() as session:
         row = gp_outbox_repository.registration_for_key(session, key)
         if row is None:
-            number = str((gp_result or {}).get("po_number") or "") or "(number not recorded)"
-            raise InvalidStateTransitionError(
-                f"GP already created PO {number} for this draft, but it was not recorded here. Finish it with "
-                "Retry on the held GP writes panel, or have it reconciled; registering it again from this form "
-                "could record lines GP was never sent."
-            )
+            return None
         if (row.persist_context or {}).get("po_id") != str(po_id):
             raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
         return {"id": row.id, "status": row.status, "persist_context": row.persist_context}
@@ -1235,15 +1233,18 @@ class POMutations:
                 gp_result = state.relay_result
                 # #1950: saved from what GP was sent, kept on the held write, never from this call's form -
                 # the dialog keeps its key after a failure, and its lines could have been edited since.
-                held = await asyncio.to_thread(_held_registration, key, pid, gp_result)
-                if held["status"] in ("PENDING", "IN_FLIGHT"):
+                # With no held write to save from, this call's context is saved, and held as a fresh push's
+                # is when that save fails too, so a resume can always finish it.
+                held = await asyncio.to_thread(_held_registration, key, pid)
+                if held is not None and held["status"] in ("PENDING", "IN_FLIGHT"):
                     # The queue is finishing it right now; the queued row holds the draft from here.
                     release = True
                     po = await asyncio.to_thread(_load_po_type, pid)
                     return RegisterPOResult(
                         queued=True, outbox_entry_id=strawberry.ID(str(held["id"])), purchase_order=po
                     )
-                persist_context = held["persist_context"]
+                if held is not None:
+                    persist_context = held["persist_context"]
             else:
                 # Refused before anything is sent: a relay that does not recognise the key cannot tell a
                 # retry of this registration from a second order, and the queueing below assumes it can.

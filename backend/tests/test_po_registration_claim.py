@@ -297,20 +297,49 @@ def test_the_original_attempt_resumes_from_what_gp_was_sent_without_pushing_agai
     assert db_session.get(GpWriteOutbox, held.id).status == "SUCCEEDED"
 
 
-def test_a_resume_with_nothing_kept_of_what_gp_was_sent_is_refused(monkeypatch, db_session):
+def test_a_resume_with_no_held_write_saves_from_this_calls_context(monkeypatch, db_session):
+    """#1950 review: a key whose save and queueing both failed, or a ledger answer from before #1950, has no
+    held write. Refusing it held the draft behind an answer nothing could finish; the attempt's own resume
+    saves from what it sends, without pushing again."""
     draft = _stock_draft_po(db_session)
     key = str(uuid.uuid4())
     pushes = _resume_world(monkeypatch, db_session, key, "0001292")
     po_repository.claim_po_registration(db_session, draft.id, key)
     _ledger(db_session, key, po_number="0001292")
 
-    with pytest.raises(InvalidStateTransitionError, match="0001292") as e:
-        _run_register(draft, key)
-    assert "Retry on the held GP writes panel" in e.value.message
+    result = _run_register(draft, key)
     assert pushes == []
+    assert result.queued is False
+    assert result.purchase_order.po_number == "0001292"
     po = po_repository.reload_po(db_session, draft.id)
-    assert po.status == POStatus.DRAFT
-    assert po.registering_key == key  # GP holds a PO for it, so the claim keeps holding the draft
+    assert po.status == POStatus.GP_REGISTERED
+    assert po.registering_key is None
+    assert [float(li.unit_cost) for li in po.line_items] == [10.0]
+
+
+def test_a_resume_with_no_held_write_that_fails_to_save_is_held_for_retry(monkeypatch, db_session):
+    """And when that save fails too, it is queued under the key as a fresh push's is, so the held writes
+    panel's Retry finishes it; a queue that is also down leaves the claim for the next resume."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001294")
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    _ledger(db_session, key, po_number="0001294")
+
+    def _persist_fails(**kw):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(po_schema, "_persist_register_po", _persist_fails)
+    try:
+        with pytest.raises(RuntimeError, match="database went away"):
+            _run_register(draft, key)
+        queued = _queued_write(key)
+        assert (queued["status"], queued["maybe_in_gp"]) == ("PENDING", True)
+        assert queued["persist_context"]["po_id"] == str(draft.id)
+        assert pushes == []
+        assert po_repository.reload_po(db_session, draft.id).registering_key is None
+    finally:
+        _delete_queued_write(key)
 
 
 def test_a_resume_while_the_queue_is_finishing_it_answers_queued(monkeypatch, db_session):
