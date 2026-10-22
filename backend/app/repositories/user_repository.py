@@ -80,13 +80,20 @@ def list_users() -> list[dict]:
     limit = 100
 
     while True:
-        resp = _client.get(
-            "/users",
-            headers=_headers(),
-            params={"limit": limit, "offset": offset, "order_by": "-created_at"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        # #1934: mapped as the single-user reads are - the roster backs the users page and every
+        # roster-backed field, and a raw httpx error there was an opaque "something went wrong".
+        try:
+            resp = _client.get(
+                "/users",
+                headers=_headers(),
+                params={"limit": limit, "offset": offset, "order_by": "-created_at"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as e:
+            raise AppError(
+                "Could not load the user list from Clerk; please try again.", code="CLERK_UNAVAILABLE"
+            ) from e
 
         for u in data:
             users.append(_user_summary(u))
@@ -126,17 +133,49 @@ def get_user_roles(user_id: str) -> list[str]:
     return _public_metadata(user_id).get("roles") or []
 
 
+def _clerk_refusal(response: httpx.Response) -> tuple[str | None, str | None]:
+    """Clerk's own words for a refused write, and the field it names: its error body is
+    {"errors": [{"message", "long_message", "meta": {"param_name"}}]}. (None, None) when it has none."""
+    try:
+        first = (response.json().get("errors") or [None])[0] or {}
+    except (ValueError, AttributeError):
+        return None, None
+    message = first.get("long_message") or first.get("message")
+    field = (first.get("meta") or {}).get("param_name")
+    return message, field if message else None
+
+
+def _write_to_clerk(send) -> dict:
+    """Send one write to Clerk and answer its user payload. #1934: a raw `raise_for_status` made every
+    Clerk failure on a save an opaque 500. Clerk refusing the value itself (422 - a name it will not
+    take) is the admin's to fix, so it reads in Clerk's words; anything else is Clerk unavailable."""
+    try:
+        resp = send()
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 422:
+            message, field = _clerk_refusal(e.response)
+            if message:
+                raise ValidationError(message, field=field) from e
+        raise AppError("Could not save the change to Clerk; please try again.", code="CLERK_UNAVAILABLE") from e
+    except httpx.HTTPError as e:
+        raise AppError("Could not save the change to Clerk; please try again.", code="CLERK_UNAVAILABLE") from e
+
+
 def _merge_public_metadata(user_id: str, patch: dict) -> dict:
     """Merge keys into a Clerk user's publicMetadata via the /metadata endpoint (deep merge), so
     writing one key (roles) never wipes another (gpBuyerId) - PATCH /users/{id} would replace the
     whole object. Returns the updated user summary."""
-    resp = _client.patch(
-        f"/users/{user_id}/metadata",
-        headers=_headers(),
-        json={"public_metadata": patch},
+    return _user_summary(
+        _write_to_clerk(
+            lambda: _client.patch(
+                f"/users/{user_id}/metadata",
+                headers=_headers(),
+                json={"public_metadata": patch},
+            )
+        )
     )
-    resp.raise_for_status()
-    return _user_summary(resp.json())
 
 
 def update_user_roles(user_id: str, roles: list[str], expected_roles: list[str] | None = None) -> dict:
@@ -160,13 +199,15 @@ def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
     """Issue #240: admin-driven display-name change. first_name/last_name are top-level Clerk user
     fields (not metadata), so this never touches roles/gpBuyerId. Everything that shows a display
     name (useIdentity fullName, resolve_display_name for received_by) derives from these."""
-    resp = _client.patch(
-        f"/users/{user_id}",
-        headers=_headers(),
-        json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
+    return _user_summary(
+        _write_to_clerk(
+            lambda: _client.patch(
+                f"/users/{user_id}",
+                headers=_headers(),
+                json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
+            )
+        )
     )
-    resp.raise_for_status()
-    return _user_summary(resp.json())
 
 
 def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
