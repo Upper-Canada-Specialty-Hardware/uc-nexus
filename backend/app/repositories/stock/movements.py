@@ -1,6 +1,7 @@
 """Pool entry/exit flows: destock, allocate-to-project, receive-to-stock, transfer."""
 
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 
@@ -222,6 +223,30 @@ def _non_schedule_type_codes(session: Session, company: str | None) -> set[str]:
     return set(session.scalars(select(InventoryItemType.code).where(InventoryItemType.company == company)).all())
 
 
+_SCHEDULE_CHECK_READS = "stock_schedule_check_reads"
+
+
+@contextmanager
+def schedule_check_reads(session: Session):
+    """Within the block, the schedule check reads a company's type codes and a project's pairs once
+    (#1834). For a batch that allocates entry by entry (the legacy migration, which the demo build runs
+    too) and writes neither between them: two reads per entry was ~4000 for a 2000-entry batch."""
+    session.info[_SCHEDULE_CHECK_READS] = {}
+    try:
+        yield
+    finally:
+        session.info.pop(_SCHEDULE_CHECK_READS, None)
+
+
+def _read_once(session: Session, key: tuple, read):
+    reads = session.info.get(_SCHEDULE_CHECK_READS)
+    if reads is None:
+        return read()
+    if key not in reads:
+        reads[key] = read()
+    return reads[key]
+
+
 def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, code: str) -> None:
     """Schedule hardware allocated to a project must name a pair on its schedule (#1647).
 
@@ -235,16 +260,22 @@ def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, co
     with every unit past the schedule (#1491, ruled on #1527), so the pair must still be asked units of.
     Whether the project has a schedule at all is still decided by any row, dropped or not.
     """
-    if category in _non_schedule_type_codes(session, project.company):
+    type_codes = _read_once(
+        session, ("types", project.company), lambda: _non_schedule_type_codes(session, project.company)
+    )
+    if category in type_codes:
         return
-    scheduled = get_scheduled_pairs(session, project.id)
+    scheduled = _read_once(session, ("pairs", project.id), lambda: get_scheduled_pairs(session, project.id))
     if not scheduled:
         # INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1647 / #1756, 2026-10-19): a
         # project with no hardware schedule imported yet takes the allocation. The units land as floating
         # inventory - on the project, tied to no schedule line item, so nothing claims them until they
         # are tied to one. Do not refuse it, and do not report it as a gap in later audits.
         return
-    if (category, code) not in get_scheduled_pairs(session, project.id, still_scheduled=True):
+    still = _read_once(
+        session, ("still", project.id), lambda: get_scheduled_pairs(session, project.id, still_scheduled=True)
+    )
+    if (category, code) not in still:
         raise ValidationError(
             f"{category} / {code} is not on this project's hardware schedule. Pick one of the schedule's products.",
             field="target_product_code",

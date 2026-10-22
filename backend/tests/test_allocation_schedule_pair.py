@@ -395,3 +395,27 @@ def test_picked_hardware_is_counted_once_wherever_it_is(db_session):
     si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")
 
     assert _needed(db_session, project, si) == {("HINGE", "HG-100"): 20 - 6 - 3 - 2}
+
+
+def test_a_batch_reads_the_schedule_check_once_and_nothing_outlives_it():
+    """#1834: inside the block a read is made once; outside it every check reads afresh."""
+    from types import SimpleNamespace
+
+    from app.repositories.stock import movements
+
+    session = SimpleNamespace(info={})
+    reads = []
+
+    def read():
+        reads.append(1)
+        return {("HINGE", "H-1")}
+
+    with movements.schedule_check_reads(session):
+        for _ in range(5):
+            movements._read_once(session, ("pairs", "p1"), read)
+    assert len(reads) == 1
+    assert session.info == {}
+
+    movements._read_once(session, ("pairs", "p1"), read)
+    movements._read_once(session, ("pairs", "p1"), read)
+    assert len(reads) == 3

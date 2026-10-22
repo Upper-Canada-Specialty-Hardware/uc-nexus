@@ -31,6 +31,7 @@ from .movements import (
     destock_inventory,
     get_allocation_targets,
     receive_into_stock,
+    schedule_check_reads,
     transfer_inventory,
 )
 
@@ -49,6 +50,7 @@ __all__ = [
     "mark_stock_item_unlocated",
     "move_stock_location",
     "receive_into_stock",
+    "schedule_check_reads",
     "reclassify_stock_item",
     "report_inventory_deficiency",
     "report_stock_deficiency",
