@@ -321,3 +321,50 @@ def test_a_projects_racks_are_listed_per_product_net_of_condemned_units(db_sessi
             "locations": [{"warehouse_code": wh.code, "aisle": "A", "row": "1", "bay": "2", "quantity": 6}],
         }
     ]
+
+
+def test_a_products_racks_are_in_natural_order(db_session):
+    """#1881: the racks were in text order, so bay 10 came before bay 2."""
+    from datetime import datetime
+
+    from app.models.inventory import InventoryLocation
+    from app.models.stock_item import StockItem
+    from app.models.warehouse import Warehouse
+    from app.repositories.rack_locations import project_rack_locations
+
+    project = _project(db_session)
+    wh = Warehouse(id=uuid.uuid4(), name="Main", code=f"M{uuid.uuid4().hex[:4]}", company="TUBC")
+    db_session.add(wh)
+    db_session.flush()
+
+    for bay in ("10", "2", "1"):
+        stock = StockItem(
+            id=uuid.uuid4(),
+            warehouse_id=wh.id,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            quantity=0,
+            received_at=datetime(2026, 10, 1),
+        )
+        db_session.add(stock)
+        db_session.flush()
+        db_session.add(
+            InventoryLocation(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                stock_item_id=stock.id,
+                warehouse_id=wh.id,
+                hardware_category="HINGE",
+                product_code="HG-100",
+                quantity=1,
+                deficient_quantity=0,
+                aisle="A",
+                row="1",
+                bay=bay,
+                received_at=datetime(2026, 10, 1),
+            )
+        )
+    db_session.flush()
+
+    [product] = project_rack_locations(db_session, project.id)
+    assert [loc["bay"] for loc in product["locations"]] == ["1", "2", "10"]
