@@ -89,6 +89,18 @@ def test_anybody_in_demo_mode_resets_it(stored, monkeypatch):
     assert started == [("Otto Other", {"started_by_id": "u_other", "kind": demo_build.DEMO_RESET})]
 
 
+def test_a_reset_is_refused_while_the_nightly_runs_and_no_tab_is_told_of_one(monkeypatch):
+    """#1831: refused up front, not accepted and failed on the lock; and the nightly only adds, so the
+    demo tabs, which read `building()`, are not put behind the reset dialog."""
+    from app.errors import ConflictError
+
+    monkeypatch.setattr(demo_build, "_nightly_running", True)
+
+    with pytest.raises(ConflictError, match="nightly"):
+        demo_build.start_rebuild("Otto Other", started_by_id="u_other", kind=demo_build.DEMO_RESET)
+    assert demo_build.building() is False
+
+
 # --- being told --------------------------------------------------------------------------------
 
 

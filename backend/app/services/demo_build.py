@@ -120,9 +120,8 @@ def _read_masters_after() -> None:
 
 
 def building() -> bool:
-    """Whether a build is under way in this process, or the nightly sync holds the build's lock: a reset
-    accepted then would announce itself to every demo tab and fail on the lock (#1814)."""
-    return demo_reset_running() or _nightly_running or any(not t.done() for t in _tasks)
+    """Whether a build is under way in this process."""
+    return demo_reset_running() or any(not t.done() for t in _tasks)
 
 
 def start_rebuild(started_by: str, *, started_by_id: str | None = None, kind: str = ADMIN_REBUILD) -> None:
@@ -130,6 +129,11 @@ def start_rebuild(started_by: str, *, started_by_id: str | None = None, kind: st
     rebuild or a demo user's reset; either way the starter is the one person not told of it."""
     if building():
         raise ConflictError("The demo is being built already. Wait for it to finish.")
+    if _nightly_running:
+        # Refused here and not in `building()`, which every demo tab reads as "a reset is under way": the
+        # nightly only adds, so the tabs carry on (#1831). Accepted, the reset would tell every tab it was
+        # resetting and then fail on the lock the nightly holds.
+        raise ConflictError("The demo's nightly sync is running. Try again in a few minutes.")
     task = asyncio.create_task(_build(started_by, started_by_id, kind))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
@@ -193,7 +197,7 @@ async def ensure_built(started_by: str) -> None:
 
 @contextmanager
 def _nightly_holds_the_lock():
-    """The build's lock for the nightly sync, said in this process too, so `building()` refuses a reset."""
+    """The build's lock for the nightly sync, said in this process too, so `start_rebuild` refuses a reset."""
     global _nightly_running
     with demo_reset.no_reset_running():
         _nightly_running = True
