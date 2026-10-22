@@ -29,8 +29,6 @@ from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
-from app.models.shipping import PackingSlip as PackingSlipModel
-from app.models.shipping import PackingSlipItem as PackingSlipItemModel
 from app.models.shipping_out_request import (
     ShippingOutRequest as ShippingOutRequestModel,
 )
@@ -318,27 +316,26 @@ def reconcile_schedule(
     # The slip is the record of departure now that no assembled unit carries one. Nothing here counts
     # assembly: a completed SHOP_ASSEMBLY pull is the only evidence the bench ever got the hardware,
     # and Step 3 has already bucketed it.
-    slip_stmt = (
-        select(
-            PackingSlipItemModel.opening_number,
-            PackingSlipItemModel.hardware_category,
-            PackingSlipItemModel.product_code,
-            func.sum(PackingSlipItemModel.quantity).label("qty"),
-        )
-        .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
-        .where(PackingSlipModel.project_id == project_id)
-        .group_by(
-            PackingSlipItemModel.opening_number,
-            PackingSlipItemModel.hardware_category,
-            PackingSlipItemModel.product_code,
-        )
-    )
+    # #1941: the shipping workspace's own reads - manual lines left out (free text that never came off
+    # inventory), and what came back netted - so a re-import does not see a spare line or a returned
+    # unit as the opening's hardware gone out.
+    from app.repositories.request_composer import came_back_stmt, slip_shipped_stmt
+
     shipped_by_pair: dict[tuple[str, str, str], int] = defaultdict(int)
-    for row in session.execute(slip_stmt).all():
-        key = (row.opening_number, row.hardware_category, row.product_code)
+    for opening_number, category, code, quantity in session.execute(slip_shipped_stmt(project_id)).all():
+        key = (opening_number, category, code)
         if key not in pair_set:
             continue
-        shipped_by_pair[key] += row.qty or 0
+        shipped_by_pair[key] += int(quantity or 0)
+    # Split by where it went: a return to the project is back on its shelf, a cancelled slip's return
+    # to stock left the project. Either way the opening is owed it again.
+    back_on_shelf: dict[tuple[str, str, str], int] = defaultdict(int)
+    back_elsewhere: dict[tuple[str, str, str], int] = defaultdict(int)
+    for opening_number, category, code, to_project, quantity in session.execute(came_back_stmt(project_id)).all():
+        key = (opening_number, category, code)
+        if key not in pair_set:
+            continue
+        (back_on_shelf if to_project else back_elsewhere)[key] += int(quantity or 0)
 
     # ---- Process each item using pre-loaded data ----
     for item in lifecycle_items:
@@ -407,6 +404,15 @@ def reconcile_schedule(
             from_received = min(extra, buckets.get("RECEIVED", 0))
             buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
             buckets["SHIPPED_OUT"] = existing_shipped + from_received
+
+        # Step 4b (#1941): what came back is not shipped out - the way the shipping workspace nets it
+        # (max of pull and slip, less what came back). Returned to the project, it is on the shelf
+        # again; returned to stock off a cancelled slip, it left the project and is owed again.
+        to_shelf = min(back_on_shelf.get(pair_key, 0), buckets.get("SHIPPED_OUT", 0))
+        buckets["SHIPPED_OUT"] = buckets.get("SHIPPED_OUT", 0) - to_shelf
+        buckets["RECEIVED"] = buckets.get("RECEIVED", 0) + to_shelf
+        gone = min(back_elsewhere.get(pair_key, 0), buckets["SHIPPED_OUT"])
+        buckets["SHIPPED_OUT"] -= gone
 
         # Step 5: Calculate NOT_COVERED gap
         total_committed = sum(buckets.values())
