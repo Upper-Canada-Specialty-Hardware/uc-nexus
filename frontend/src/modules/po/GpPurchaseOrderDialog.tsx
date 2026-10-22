@@ -28,6 +28,7 @@ import {
   GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
+  GET_PROJECT_SHIP_TO,
   SUGGEST_VENDOR_FOR_MANUFACTURER,
   UPDATE_PO,
   UPDATE_PO_NOTES,
@@ -48,6 +49,7 @@ import type { PoolKind } from '../../types/poolKind';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
+import { userMessage } from '../../graphql/userMessage';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
 import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
@@ -459,8 +461,24 @@ export default function GpPurchaseOrderDialog({
   const relayConnected = relayStatus === true;
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
-  const isJob = !!projectId && !!selectedProject;
-  const jobNumber = selectedProject?.projectId ?? null;
+  // #1843: registering reads the draft's project by its id rather than off the picker list. The list
+  // leaves archived projects out - and an archived job's drafts keep working (set_project_archived) -
+  // and while it was loading or had failed, a job draft read as a stock one: registered with no cost
+  // codes and no line booked to the job. The list stays for picking a project on a draft that has none.
+  const {
+    data: jobProjectData,
+    error: jobProjectError,
+    refetch: refetchJobProject,
+  } = useQuery<{ projectShipTo: { id: string; projectId: string } | null }>(GET_PROJECT_SHIP_TO, {
+    variables: { projectId },
+    skip: !open || !isRegister || !projectId,
+  });
+  const jobProject =
+    isRegister && jobProjectData?.projectShipTo?.id === projectId ? jobProjectData.projectShipTo : null;
+  const isJob = !!projectId && (isRegister ? !!jobProject : !!selectedProject);
+  // Registering waits until the draft's project has been read: it decides the job and its cost codes.
+  const projectUnread = isRegister && !!projectId && !jobProject;
+  const jobNumber = (isRegister ? jobProject?.projectId : selectedProject?.projectId) ?? null;
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
   // with a direct pick from this list, snapshotted onto the PO.
@@ -1525,7 +1543,7 @@ export default function GpPurchaseOrderDialog({
       <Button
         variant="contained"
         onClick={handleSubmit}
-        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister || gpJobBlocksRegister}
+        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister || gpJobBlocksRegister || projectUnread}
       >
         {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
@@ -1601,6 +1619,25 @@ export default function GpPurchaseOrderDialog({
         <Box sx={{ mb: 2 }}>
           <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
         </Box>
+      )}
+      {projectUnread && (
+        <Alert
+          severity={jobProjectError ? 'error' : jobProjectData ? 'warning' : 'info'}
+          sx={{ mb: 2 }}
+          action={
+            jobProjectData || jobProjectError ? (
+              <Button color="inherit" size="small" onClick={() => void refetchJobProject().catch(() => undefined)}>
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          {jobProjectError
+            ? `Couldn't read this draft's project, so its job can't be checked and it can't register yet. ${userMessage(jobProjectError, { reading: true })}`
+            : jobProjectData
+              ? "This draft's project couldn't be found, so it can't register - it would go to GP with no job or cost codes."
+              : "Reading this draft's project - it registers once its job is known."}
+        </Alert>
       )}
       {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
       {isRegister && <GpJobNotOpenBanner project={selectedProject} action="registering it in GP" dense />}

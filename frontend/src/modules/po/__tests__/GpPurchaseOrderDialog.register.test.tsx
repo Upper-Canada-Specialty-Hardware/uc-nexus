@@ -7,6 +7,7 @@ import {
   GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_VENDORS,
   GET_GP_COST_CODES,
+  GET_PROJECT_SHIP_TO,
 } from '../../../graphql/po';
 import {
   INFINITE,
@@ -16,6 +17,7 @@ import {
   projectDraft,
   baseMocks,
   costCodesMock,
+  projectByIdMock,
   registerData,
   queuedRegisterData,
   renderDialog,
@@ -153,6 +155,39 @@ describe('GpPurchaseOrderDialog', () => {
     expect(await screen.findByText('Cost codes could not be read from GP - refresh to try again')).toBeInTheDocument();
     expect(screen.queryByText('No cost codes defined for this job in GP')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Refresh cost codes' })).toBeEnabled();
+  });
+
+  // #1843: a job draft read its project off the picker list, so while that list was loading or had
+  // failed it registered as a stock PO - no cost codes, no line booked to the job. The project is read by
+  // its id now, and registering waits for that read, offering it again when it fails.
+  it('does not register a job draft while its project could not be read', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_PROJECT_SHIP_TO, variables: { projectId: 'p1' } },
+      result: { errors: [new GraphQLError('Database timeout')] },
+    };
+    renderDialog({ registerPo: projectDraft }, [failing, ...baseMocks().filter((m) => m.request.query !== GET_PROJECT_SHIP_TO)]);
+
+    expect(await screen.findByText(/couldn't read this draft's project, so its job can't be checked/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Register in GP' })).toBeDisabled();
+  });
+
+  // #1843: the picker list leaves archived projects out, and an archived job's drafts keep working.
+  it('registers an archived job draft as a job, its project read by id', async () => {
+    const archivedDraft = { ...projectDraft, projectId: 'p-archived' };
+    const mocks = [
+      ...baseMocks(),
+      projectByIdMock('p-archived', 'JOB-100'),
+      costCodesMock(),
+    ];
+    renderDialog({ registerPo: archivedDraft }, mocks);
+
+    await waitForVendorPreselect();
+
+    // Not on the picker list, yet still the job: its line books to the job and asks for a cost code.
+    expect(screen.queryByText(/this draft's project/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(await screen.findByText('Cost code required on a job cost line')).toBeInTheDocument();
   });
 
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
