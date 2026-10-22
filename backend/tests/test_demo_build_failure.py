@@ -39,7 +39,9 @@ def test_a_failed_first_build_is_named_with_its_reason(first_build):
     with pytest.raises(AppError) as e:
         asyncio.run(demo_build.ensure_built("Mira Lane"))
     assert e.value.code == "DEMO_BUILD_FAILED"
-    assert e.value.message == "The demo couldn't be built: Graph answered 503"
+    # The cause stays in the build record and the log, never in what the person is shown.
+    assert e.value.message.startswith("The demo couldn't be built.")
+    assert "503" not in e.value.message
     assert records[-1]["error"] == "Graph answered 503"
     assert records[-1]["running"] is False
 

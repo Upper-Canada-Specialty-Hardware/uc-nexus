@@ -193,7 +193,12 @@ async def ensure_built(started_by: str) -> None:
             raise
         # #1937: anything else reached the person switching demo mode on as the masked server error, with
         # nothing to say demo mode stayed off because the build failed - nor why.
-        raise AppError(f"The demo couldn't be built: {str(e) or type(e).__name__}", "DEMO_BUILD_FAILED") from e
+        # The exception's own text stays in the recorded build error and the log: a database error carries
+        # its SQL and UBC's values, a client error internal URLs - not for the person switching it on.
+        raise AppError(
+            "The demo couldn't be built. A UC Nexus Admin can see why under Nexus Admin → Demo.",
+            "DEMO_BUILD_FAILED",
+        ) from e
 
 
 # --- the nightly sync ---------------------------------------------------------------------------------
