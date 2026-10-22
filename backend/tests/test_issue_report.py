@@ -350,6 +350,8 @@ def test_mentions_in_the_context_table_do_not_notify():
     assert "| screen | 2560x1440 @​2x |" in body
     assert "@Upper-Canada-Specialty-Hardware/devs" not in body
     assert "@alice" not in body
+    # An email address is no mention, and stays whole so it can be copied.
+    assert "pat@example.test" in body
 
 
 def test_an_admin_working_in_another_company_is_named_with_both():

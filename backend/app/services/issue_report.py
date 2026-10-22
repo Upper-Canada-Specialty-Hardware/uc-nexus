@@ -150,8 +150,9 @@ def _cell(value: str | None) -> str:
 
 def _defuse(text: str) -> str:
     """@mentions in client text do not notify: a zero-width space after the @ looks the same and is not
-    a mention, so a report cannot ping a person or an org team from a public issue."""
-    return re.sub(r"@(?=[\w-])", "@​", text)
+    a mention, so a report cannot ping a person or an org team from a public issue. Only an @ that starts
+    a word: one inside a word, as in an email address, is no mention to GitHub and is left whole (#1817)."""
+    return re.sub(r"(?<![\w.+-])@(?=[\w-])", "@​", text)
 
 
 def _quoted(lines: list[str]) -> str:
