@@ -69,8 +69,8 @@ def test_an_explicit_code_is_normalized_rather_than_taken_verbatim(db_session):
 def test_a_derived_code_is_cut_to_gps_item_number(db_session):
     """#1911: the code is a PO line's GP item number, which holds 30 characters."""
     created = _type(db_session, name="Extra Long Acoustic Door Seal Kits Assorted")
-    assert created.code == "EXTRA_LONG_ACOUSTIC_DOOR_SEAL_KITS_ASSORTED"[:30]
-    assert len(created.code) == 30
+    # Cut at 30 lands on a word break, which is dropped as an uncut code would drop it.
+    assert created.code == "EXTRA_LONG_ACOUSTIC_DOOR_SEAL"
 
 
 def test_an_explicit_code_of_thirty_characters_is_taken(db_session):

@@ -145,7 +145,8 @@ def create_item_type(session: Session, *, name: str, code: str | None = None, so
                 f"no more; {code} is {len(code)}.",
                 field="code",
             )
-        code = code[:MAX_TYPE_CODE_LENGTH]
+        # Cut at a word break it ends on one, so DOOR_SEAL_ reads DOOR_SEAL, as an uncut code would.
+        code = code[:MAX_TYPE_CODE_LENGTH].rstrip("_")
 
     _check_type_name_free(session, name, company)
     _check_code_free(session, code, company)

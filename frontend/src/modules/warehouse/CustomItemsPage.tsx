@@ -510,8 +510,9 @@ function TypeForm({
         .replace(/[^\p{L}\p{N}]/gu, '_')
         .replace(/_+/g, '_')
         .replace(/^_|_$/g, '')
-        // #1911: GP's item number holds 30, and the server cuts a derived code to it.
-        .slice(0, 30),
+        // #1911: GP's item number holds 30, and the server cuts a derived code to it, no trailing _.
+        .slice(0, 30)
+        .replace(/_$/, ''),
     [name],
   );
 

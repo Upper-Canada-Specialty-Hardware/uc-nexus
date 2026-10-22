@@ -35,6 +35,6 @@ it("previews a long name's code cut to gp's 30-character item number", async () 
     target: { value: 'Extra Long Acoustic Door Seal Kits Assorted' },
   });
 
-  expect(screen.getByText('EXTRA_LONG_ACOUSTIC_DOOR_SEAL_')).toBeInTheDocument();
-  expect('EXTRA_LONG_ACOUSTIC_DOOR_SEAL_').toHaveLength(30);
+  // Cut at 30 lands on a word break, dropped as the server drops it.
+  expect(screen.getByText('EXTRA_LONG_ACOUSTIC_DOOR_SEAL')).toBeInTheDocument();
 });
