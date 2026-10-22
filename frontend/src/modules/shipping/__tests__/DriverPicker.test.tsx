@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
+import { GraphQLError } from 'graphql';
 import DriverPicker from '../DriverPicker';
 import { GET_SHIPMENT_DRIVERS } from '../../../graphql/shipping';
 
@@ -59,4 +60,18 @@ it('keeps showing a stored driver who is no longer listed', async () => {
   );
   const menu = await openMenu();
   expect(within(menu).getByText('Paul Former')).toBeInTheDocument();
+});
+
+it('says the drivers could not be loaded, rather than that nobody has the role (#1839)', async () => {
+  const failed: MockedResponse = {
+    request: { query: GET_SHIPMENT_DRIVERS, variables: { projectId: 'proj-1' } },
+    result: { errors: [new GraphQLError('The drivers could not be read')] },
+  };
+  render(
+    <MockedProvider mocks={[failed]}>
+      <Harness />
+    </MockedProvider>,
+  );
+  expect(await screen.findByText(/^Could not load the drivers: The drivers could not be read/)).toBeInTheDocument();
+  expect(screen.queryByText(/Nobody has the Driver role/)).toBeNull();
 });
