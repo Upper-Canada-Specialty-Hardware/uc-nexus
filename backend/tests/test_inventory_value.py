@@ -410,6 +410,29 @@ def test_staged_hardware_nothing_can_price_counts_zero(db_session):
     assert value["non_ossa"]["total_value"] == Decimal("0.00")
 
 
+def test_hardware_picked_off_a_row_that_cost_nothing_is_worth_nothing(db_session):
+    """#1951: a row with a known $0 cost is free hardware, so what was picked off it is staged at 0 -
+    never at the project's average, which here the 10.00 row would make 4.00. The other two pulls,
+    staged with no pick lines, are there so the fallback read takes in this project's product too."""
+    company = _company()
+    warehouse = _warehouse(db_session, company)
+    project = _project(db_session, company)
+    other_project = _project(db_session, company)
+
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("0.00"), quantity=2, age_days=3)
+    _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("10.00"), quantity=3, age_days=1)
+    # FIFO: both picked units come off the older, free row.
+    _stage_by_picking(db_session, project, quantity=2)
+    _stage_without_picking(db_session, project, quantity=1, code="XX-999")
+    _stage_without_picking(db_session, other_project, quantity=1)
+    db_session.flush()
+
+    value = _value(db_session, company)
+
+    # Shelf 3 x 10.00 = 30.00, staged 2 x 0.00. The two unpicked pulls know no price at all.
+    assert value["non_ossa"]["hardware_value"] == Decimal("30.00")
+
+
 # --- US dollars, beside the Canadian figure (#1557) ---------------------------------------------------
 
 

@@ -307,12 +307,6 @@ def _project_average_costs(
     }
 
 
-def _priced(price: _Price | None) -> bool:
-    """A price that knows something. A picked price of nothing in either currency falls back to the
-    project average, as a zero picked price always has."""
-    return price is not None and bool(price[0] or price[1])
-
-
 def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.UUID, bool], Decimal]:
     """Staged hardware per (project, priced in USD) - the same keying as the shelf.
 
@@ -331,9 +325,9 @@ def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.
 
     value: dict[tuple[uuid.UUID, bool], Decimal] = defaultdict(Decimal)
     for key, quantity in staged.items():
-        price = picked.get(key)
-        if not _priced(price):
-            price = fallback.get(key) or (_ZERO, _ZERO)
+        # #1951: a picked price is what the units cost, 0 included - a row bought at a known $0 is free
+        # hardware, not an unknown one. Only a product with no priced pick line takes the average.
+        price = picked[key] if key in picked else fallback.get(key) or (_ZERO, _ZERO)
         cad_share, usd_share = price
         value[(key[0], False)] += Decimal(quantity) * cad_share
         value[(key[0], True)] += Decimal(quantity) * usd_share
