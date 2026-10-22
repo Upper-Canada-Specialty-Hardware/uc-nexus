@@ -602,6 +602,33 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[0].list_price).toBeNull();
   });
 
+  it('makes a row whose price is too large for its column a row error naming it (#1938)', () => {
+    const contract = {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'LOCK-100',
+            Material_List_Fields: { Product_Description: 'Lockset', Unit_Cost: '45.50', List_Price: '1000000' },
+            Assignments: { Assignment: [{ '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' }] },
+          },
+          {
+            '@_Description': 'HINGE-1',
+            Material_List_Fields: { Product_Description: 'Hinge', Unit_Cost: '999999.9999', Markup_Pct: '30' },
+            Assignments: { Assignment: [{ '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '3' }] },
+          },
+        ],
+      },
+    };
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems.map((h) => h.product_code)).toEqual(['HINGE-1']);
+    expect(result.skippedRows).toEqual([
+      {
+        reason: 'List_Price must be under 1,000,000',
+        context: 'Product_Code: LOCK-100, Opening: D101, List_Price: 1000000',
+      },
+    ]);
+  });
+
   it('handles no Detail element', () => {
     const contract = {};
     const result = extractHardwareItems(contract);

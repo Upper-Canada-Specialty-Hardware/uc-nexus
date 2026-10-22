@@ -676,6 +676,22 @@ def test_replace_schedule_with_no_openings_is_refused_before_anything_is_read():
     assert exc.value.field == "openings"
 
 
+def test_a_schedule_price_too_large_for_its_column_is_refused_naming_its_row():
+    """#1938: prices and markup are Numeric(10,4); a row past 999,999.9999 overflowed at flush as the masked
+    server error. Refused before anything is read, naming the opening and product."""
+    rows = [
+        _hardware_item_input("A01", "HG-100", unit_cost=999_999.9999),
+        _hardware_item_input("A02", "HG-200", list_price=1_000_000, markup_pct="2500000"),
+    ]
+    with pytest.raises(ValidationError) as exc:
+        import_repository.finalize_import_session(
+            None, {"project_id": str(uuid.uuid4()), "openings": [_opening_input("A01")], "hardware_items": rows}
+        )
+    assert exc.value.field == "hardware_items"
+    assert "opening A02 HG-200 (list price 1000000, markup 2500000)" in exc.value.message
+    assert "HG-100" not in exc.value.message
+
+
 def test_replace_schedule_with_no_openings_leaves_the_schedule_alone(db_session):
     """#1917: a contract with no assignments (a wrong export, a cut-off file) deleted every opening with
     nothing ordered and wiped every unordered row. Refused, the schedule is as it was."""

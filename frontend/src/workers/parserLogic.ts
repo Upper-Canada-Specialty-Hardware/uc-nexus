@@ -233,6 +233,10 @@ export function extractOpenings(
 // extractHardwareItems
 // ---------------------------------------------------------------------------
 
+/** #1938: a schedule row's prices and markup are stored as Numeric(10,4), at most 999,999.9999. One at
+ *  or past this overflowed at finalize as the masked server error, naming nothing; it is a row error here. */
+export const MAX_SCHEDULE_VALUE = 1_000_000;
+
 export function extractHardwareItems(
   contract: XmlNode,
   onProgress?: (percent: number) => void,
@@ -293,6 +297,15 @@ export function extractHardwareItems(
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
+    const tooLarge = (
+      [
+        ['Unit_Cost', unitCost],
+        ['Unit_Price', unitPrice],
+        ['List_Price', listPrice],
+        ['Vendor_Discount', vendorDiscount],
+        ['Markup_Pct', markupPct],
+      ] as const
+    ).filter(([, v]) => v !== null && Math.abs(v) >= MAX_SCHEDULE_VALUE);
 
     // #627: skip the whole Material_List when it is a door or frame (temporary - the import path only
     // orders hardware today). Fail-open: only the known door/frame category codes drop; an unknown or
@@ -323,6 +336,14 @@ export function extractHardwareItems(
         skippedRows.push({
           reason: 'Missing Material_ID',
           context: `Product_Code: ${productCode}, Opening: ${assignOpeningNumber}`,
+        });
+        continue;
+      }
+
+      if (tooLarge.length > 0) {
+        skippedRows.push({
+          reason: `${tooLarge.map(([name]) => name).join(', ')} must be under 1,000,000`,
+          context: `Product_Code: ${productCode}, Opening: ${assignOpeningNumber}, ${tooLarge.map(([name, v]) => `${name}: ${v}`).join(', ')}`,
         });
         continue;
       }

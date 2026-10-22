@@ -865,6 +865,38 @@ def restate_beyond_schedule(
     session.flush()
 
 
+# #1938: a schedule row's prices and markup are Numeric(10,4) columns, at most 999,999.9999. The parser
+# refuses a row past that; this is the backstop, so a row sent past it is named rather than overflowing at
+# flush as the masked server error.
+_MAX_SCHEDULE_VALUE = Decimal(1_000_000)
+_SCHEDULE_VALUE_FIELDS = {
+    "unit_cost": "unit cost",
+    "unit_price": "unit price",
+    "list_price": "list price",
+    "vendor_discount": "vendor discount",
+    "markup_pct": "markup",
+}
+
+
+def refuse_schedule_values_too_large(hardware_items: list[dict]) -> None:
+    """Refuse schedule rows whose prices or markup their columns can't hold, naming each row (#1938)."""
+    rows = []
+    for hi in hardware_items:
+        past = [
+            f"{label} {hi[key]}"
+            for key, label in _SCHEDULE_VALUE_FIELDS.items()
+            if hi.get(key) is not None and abs(Decimal(str(hi[key]))) >= _MAX_SCHEDULE_VALUE
+        ]
+        if past:
+            rows.append(f"opening {hi.get('opening_number')} {hi.get('product_code')} ({', '.join(past)})")
+    if rows:
+        shown = "; ".join(rows[:5]) + (f"; and {len(rows) - 5} more" if len(rows) > 5 else "")
+        raise ValidationError(
+            f"A schedule price or markup must be under {_MAX_SCHEDULE_VALUE:,} - fix these rows: {shown}",
+            field="hardware_items",
+        )
+
+
 def finalize_import_session(
     session: Session,
     input_data: dict,
@@ -909,6 +941,7 @@ def finalize_import_session(
             "Check the file is the right export.",
             field="openings",
         )
+    refuse_schedule_values_too_large(hardware_items_input)
 
     # 1. Project lookup (must already exist), row-locked so finalizes on one project run one at a time
     # (#1156). Unlocked, two concurrent finalizes each wiped and re-inserted the AVAILABLE schedule: the
