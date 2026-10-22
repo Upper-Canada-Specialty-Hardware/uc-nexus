@@ -242,6 +242,9 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
               <Accordion
                 variant="outlined"
                 defaultExpanded={requests.length === 1}
+                // The details mount when a row is opened: a list of many collapsed rows otherwise ran every
+                // row's own reads at once (shipping requests' rack locations, one per project, #1822).
+                slotProps={{ transition: { unmountOnExit: true } }}
                 sx={{
                   transition: 'border-color 0.2s ease',
                   '&:hover': { borderColor: 'text.secondary' },
