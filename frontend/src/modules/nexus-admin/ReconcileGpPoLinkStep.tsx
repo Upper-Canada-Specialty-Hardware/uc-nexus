@@ -19,6 +19,8 @@ import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import {
   PO_LINK_REASON_LABELS,
   SKIP_PO_LINK,
+  linesOffered,
+  poLineClaims,
   type PoLinkPick,
   type PoLinkResolution,
 } from './sharepointMigration';
@@ -48,9 +50,10 @@ interface Props {
  * The Reconcile GP PO link step.
  *
  * Every row whose PO cell could not be turned into exactly one GP PO LINE ITEM on its own, with the
- * reason, the lines of the purchase order when Nexus holds it, and a pick-or-skip control. A row
- * that is linked automatically is counted here and otherwise left alone; a row that is skipped -
- * or simply left alone - migrates exactly as it always has.
+ * reason, the lines of the purchase order the server would accept for it, and a pick-or-skip control.
+ * A row that linked automatically is listed after them with its line, and can be skipped or re-pointed
+ * too (#1908) - a match on a description is a guess the person may know better than. A row that is
+ * skipped - or simply left alone - migrates exactly as it always has.
  */
 export default function ReconcileGpPoLinkStep({
   resolutions,
@@ -66,7 +69,10 @@ export default function ReconcileGpPoLinkStep({
   const answered = resolutions.filter(
     (r) => r.reason !== null && picks.get(r.spItemId) !== undefined,
   );
-  const automatic = resolutions.filter((r) => r.reason === null).length;
+  const automaticRows = resolutions.filter((r) => r.reason === null);
+  const automatic = automaticRows.length;
+  // Which identities hold each line, so no row is offered a line the server would refuse it.
+  const claims = poLineClaims(resolutions, picks);
 
   return (
     <Card variant="outlined">
@@ -74,9 +80,10 @@ export default function ReconcileGpPoLinkStep({
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Rows that name a purchase order can be attached to the line their hardware was bought on.
           The units then land as a receipt against that line instead of as off-PO stock, and the line
-          takes the row&apos;s hardware category and product code. Rows below could not be matched on
-          their own. Pick a line or skip them - a row left alone is treated as skipped, and migrates
-          exactly as it would have without a purchase order.
+          takes the row&apos;s hardware category and product code. The rows that could not be matched
+          on their own come first, with the reason. Pick a line or skip them - a row left alone is
+          treated as skipped, and migrates exactly as it would have without a purchase order. The
+          rows matched automatically follow, and any of them can be skipped too.
         </Typography>
 
         {error ? (
@@ -109,16 +116,25 @@ export default function ReconcileGpPoLinkStep({
               <Alert severity="info">
                 No migrated row names a purchase order, so there is nothing to reconcile.
               </Alert>
-            ) : unresolved.length === 0 && answered.length === 0 ? (
-              <Alert severity="success">
-                Every row naming a purchase order matched exactly one line on its own.
-              </Alert>
             ) : (
-              <FitTable storageKey="sharepoint-migration-po-link" columns={PO_LINK_COLUMNS} maxHeight={480}>
-                {[...unresolved, ...answered].map((row) => (
-                  <PoLinkRowCells key={row.spItemId} row={row} pick={picks.get(row.spItemId)} onPick={onPick} />
-                ))}
-              </FitTable>
+              <>
+                {unresolved.length === 0 && answered.length === 0 && (
+                  <Alert severity="success" sx={{ mb: 2 }}>
+                    Every row naming a purchase order matched exactly one line on its own.
+                  </Alert>
+                )}
+                <FitTable storageKey="sharepoint-migration-po-link" columns={PO_LINK_COLUMNS} maxHeight={480}>
+                  {[...unresolved, ...answered, ...automaticRows].map((row) => (
+                    <PoLinkRowCells
+                      key={row.spItemId}
+                      row={row}
+                      pick={picks.get(row.spItemId)}
+                      claims={claims}
+                      onPick={onPick}
+                    />
+                  ))}
+                </FitTable>
+              </>
             )}
           </>
         )}
@@ -130,13 +146,17 @@ export default function ReconcileGpPoLinkStep({
 function PoLinkRowCells({
   row,
   pick,
+  claims,
   onPick,
 }: {
   row: PoLinkResolution;
   pick: PoLinkPick | undefined;
+  claims: Map<string, Set<string>>;
   onPick: (spItemId: string, pick: PoLinkPick | null) => void;
 }) {
-  const lines = row.po?.lines ?? [];
+  const lines = linesOffered(row, claims, pick);
+  // An automatic row shows the line it linked to until the person picks another or skips it.
+  const lineValue = pick === SKIP_PO_LINK ? '' : (pick ?? row.poLineItemId ?? '');
   return (
     <TableRow hover>
       <TableCell sx={monoSx} title={row.partNumber || undefined}>
@@ -155,7 +175,7 @@ function PoLinkRowCells({
         <Chip
           size="small"
           variant="outlined"
-          color={pick === undefined ? 'warning' : 'default'}
+          color={pick === undefined ? (row.reason ? 'warning' : 'success') : 'default'}
           label={row.reason ? PO_LINK_REASON_LABELS[row.reason] : 'Matched'}
         />
       </TableCell>
@@ -165,13 +185,13 @@ function PoLinkRowCells({
             size="small"
             displayEmpty
             disabled={lines.length === 0}
-            value={pick && pick !== SKIP_PO_LINK ? pick : ''}
+            value={lineValue}
             onChange={(e) => onPick(row.spItemId, (e.target.value as string) || null)}
             fullWidth
             sx={{ minWidth: 0, flex: 1 }}
           >
             <MenuItem value="">
-              <em>{lines.length === 0 ? 'No PO to pick from' : 'Choose a line…'}</em>
+              <em>{lines.length === 0 ? (row.po ? 'No line it can take' : 'No PO to pick from') : 'Choose a line…'}</em>
             </MenuItem>
             {lines.map((line) => (
               <MenuItem key={line.id} value={line.id}>

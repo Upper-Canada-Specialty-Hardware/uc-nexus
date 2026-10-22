@@ -90,10 +90,10 @@ describe('ReconcileGpPoLinkStep', () => {
     expect(screen.getByText('PO097085 + PO090457')).toBeInTheDocument();
   });
 
-  it('counts the rows that linked automatically without listing them', () => {
+  it('counts the rows that linked automatically, and lists them after the ones it has to ask about', () => {
     renderStep({
       resolutions: [
-        resolution({ spItemId: 'auto', reason: null, poLineItemId: 'line-a' }),
+        resolution({ spItemId: 'auto', reason: null, poLineItemId: 'line-a', poCell: 'PO501788-AUTO' }),
         resolution({ spItemId: 'ask' }),
       ],
     });
@@ -102,6 +102,54 @@ describe('ReconcileGpPoLinkStep', () => {
     expect(screen.getByText('Matched automatically').nextSibling).toHaveTextContent('1');
     expect(screen.getByText('Still unanswered').nextSibling).toHaveTextContent('1');
     expect(screen.queryAllByText('Several lines matched')).toHaveLength(1);
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('Several lines matched');
+    expect(rows[1]).toHaveTextContent('Matched');
+    // The automatic row shows the line it linked to.
+    expect(within(rows[1]).getByRole('combobox')).toHaveTextContent('1431 CPS TB EN CLOSER · 6 ordered');
+  });
+
+  it('lets an automatic link be skipped (#1908)', () => {
+    const { onPick } = renderStep({
+      resolutions: [resolution({ spItemId: 'auto', reason: null, poLineItemId: 'line-a' })],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+    expect(onPick).toHaveBeenCalledWith('auto', SKIP_PO_LINK);
+  });
+
+  it('names the links the server refuses, and offers a project row no line of a PO it refuses (#1908)', () => {
+    renderStep({
+      resolutions: [
+        resolution({ spItemId: 'a', reason: 'PO_HAS_NO_PROJECT' }),
+        resolution({ spItemId: 'b', reason: 'PO_ON_A_DIFFERENT_PROJECT', po: { ...PO, projectId: 'p2' } }),
+        resolution({ spItemId: 'c', reason: 'LINE_MATCHED_BY_ANOTHER_PART' }),
+      ],
+    });
+    expect(screen.getByText('PO has no project')).toBeInTheDocument();
+    expect(screen.getByText('PO is on a different project')).toBeInTheDocument();
+    expect(screen.getByText('Line matched by another part')).toBeInTheDocument();
+    const [noProject, otherProject, shared] = screen.getAllByRole('combobox');
+    expect(noProject).toHaveAttribute('aria-disabled', 'true');
+    expect(noProject).toHaveTextContent('No line it can take');
+    expect(otherProject).toHaveAttribute('aria-disabled', 'true');
+    // Two parts on one line is a question of which, so the lines stay pickable.
+    expect(shared).not.toHaveAttribute('aria-disabled');
+    // Each can still be skipped.
+    expect(screen.getAllByRole('button', { name: 'Skip' })).toHaveLength(3);
+  });
+
+  it('does not offer a line another part already holds (#1908)', () => {
+    renderStep({
+      resolutions: [
+        resolution({ spItemId: 'mine' }),
+        resolution({ spItemId: 'theirs', hardwareCategory: 'Closer' }),
+      ],
+      picks: new Map([['theirs', 'line-b']]),
+    });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    const options = within(screen.getByRole('listbox'));
+    expect(options.getByText(/1431 CPS TB EN CLOSER · 6 ordered/)).toBeInTheDocument();
+    expect(options.queryByText(/1431 CPS TB EN CLOSER SPARE/)).not.toBeInTheDocument();
   });
 
   it('reports the line the user picks', () => {

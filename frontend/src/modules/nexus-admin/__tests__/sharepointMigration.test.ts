@@ -30,6 +30,8 @@ import {
   buildPoLinkResolutions,
   resolvedPoLinks,
   poLinkCounts,
+  poLineClaims,
+  linesOffered,
   distinctPoNumbers,
   chunkPoNumbers,
   SKIP_PO_LINK,
@@ -1219,8 +1221,9 @@ describe('Reconcile GP PO link matching', () => {
       );
       expect(resolution.reason).toBe('PO_ON_A_DIFFERENT_PROJECT');
       expect(resolution.poLineItemId).toBeNull();
-      // The person can still pick from it, so the PO and its lines come through.
       expect(resolution.po).toBe(otherJob);
+      // The server refuses any line of it for a project row (#1368), so none is offered (#1908).
+      expect(linesOffered(resolution, new Map())).toEqual([]);
     });
 
     it('links normally when the PO is on the same project as the row', () => {
@@ -1233,13 +1236,70 @@ describe('Reconcile GP PO link matching', () => {
       expect(resolution.poLineItemId).toBe('line-1');
     });
 
-    it('links normally when the PO is on no project at all', () => {
+    it('will not link a project row to a PO bought for no project, which the server refuses (#1908)', () => {
       const [resolution] = buildPoLinkResolutions(
         candidateFor('PO501788', PROJECT),
         new Map([['PO501788', gpPo({ projectId: null })]]),
       );
-      expect(resolution.reason).toBeNull();
-      expect(resolution.poLineItemId).toBe('line-1');
+      expect(resolution.reason).toBe('PO_HAS_NO_PROJECT');
+      expect(resolution.poLineItemId).toBeNull();
+      expect(linesOffered(resolution, new Map())).toEqual([]);
+    });
+
+    it('links a stock row to a PO on no project, or on any project', () => {
+      for (const projectId of [null, 'p2']) {
+        const [resolution] = buildPoLinkResolutions(
+          candidateFor('PO501788', null),
+          new Map([['PO501788', gpPo({ projectId })]]),
+        );
+        expect(resolution.reason).toBeNull();
+        expect(resolution.poLineItemId).toBe('line-1');
+      }
+    });
+
+    it('will not link to a PO raised in Nexus, which the server refuses (#1908)', () => {
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788'),
+        new Map([['PO501788', gpPo({ origin: 'NEXUS' })]]),
+      );
+      expect(resolution.reason).toBe('PO_RAISED_IN_NEXUS');
+      expect(linesOffered(resolution, new Map())).toEqual([]);
+    });
+
+    it('links neither of two different parts that match the same line (#1908)', () => {
+      const items = [
+        item({ spItemId: 'a', poNumber: 'PO501788' }),
+        item({ spItemId: 'b', poNumber: 'PO501788' }),
+        item({ spItemId: 'c', poNumber: 'PO501788' }),
+      ];
+      const resolutions = buildPoLinkResolutions(
+        poLinkCandidates(
+          [
+            poEntry({ spItemId: 'a' }),
+            // The same part on another shelf: one identity, so it links beside 'a' - until 'c' differs.
+            poEntry({ spItemId: 'b' }),
+            poEntry({ spItemId: 'c', hardwareCategory: 'Closer' }),
+          ],
+          items,
+        ),
+        new Map([['PO501788', gpPo()]]),
+      );
+      expect(resolutions.map((r) => [r.spItemId, r.reason, r.poLineItemId])).toEqual([
+        ['a', 'LINE_MATCHED_BY_ANOTHER_PART', null],
+        ['b', 'LINE_MATCHED_BY_ANOTHER_PART', null],
+        ['c', 'LINE_MATCHED_BY_ANOTHER_PART', null],
+      ]);
+    });
+
+    it('links the same part on two shelves to one line', () => {
+      const resolutions = buildPoLinkResolutions(
+        poLinkCandidates(
+          [poEntry({ spItemId: 'a' }), poEntry({ spItemId: 'b' })],
+          [item({ spItemId: 'a', poNumber: 'PO501788' }), item({ spItemId: 'b', poNumber: 'PO501788' })],
+        ),
+        new Map([['PO501788', gpPo()]]),
+      );
+      expect(resolutions.map((r) => r.poLineItemId)).toEqual(['line-1', 'line-1']);
     });
 
     it('reports several matching lines', () => {
@@ -1304,6 +1364,59 @@ describe('Reconcile GP PO link matching', () => {
     it('lets a pick override an automatic link', () => {
       const overridden: Map<string, PoLinkPick> = new Map([['auto', 'line-other']]);
       expect(resolvedPoLinks(resolutions, overridden).get('auto')).toBe('line-other');
+    });
+
+    it('lets an automatic link be skipped (#1908)', () => {
+      const skipped: Map<string, PoLinkPick> = new Map([['auto', SKIP_PO_LINK]]);
+      expect(resolvedPoLinks(resolutions, skipped).has('auto')).toBe(false);
+      expect(poLinkCounts(resolutions, skipped)).toEqual({ linked: 0, skipped: 1, unlinked: 3 });
+    });
+
+    it('sends no leftover pick on a PO the server refuses for the row (#1908)', () => {
+      const [refused] = buildPoLinkResolutions(
+        poLinkCandidates([poEntry({ projectId: PROJECT })], [item({ spItemId: '1', poNumber: 'PO501788' })]),
+        new Map([['PO501788', gpPo({ projectId: 'p2' })]]),
+      );
+      const stale: Map<string, PoLinkPick> = new Map([['1', 'line-1']]);
+      expect(resolvedPoLinks([refused], stale).size).toBe(0);
+      expect(poLinkCounts([refused], stale)).toEqual({ linked: 0, skipped: 0, unlinked: 1 });
+    });
+  });
+
+  describe('linesOffered (#1908)', () => {
+    const several = gpPo({
+      projectId: null,
+      lines: [
+        poLine({ id: 'free' }),
+        poLine({ id: 'taken' }),
+        poLine({ id: 'registered-else', nexusRegistered: true, hardwareCategory: 'Hinge', productCode: 'BB1279' }),
+        poLine({
+          id: 'registered-ours',
+          nexusRegistered: true,
+          hardwareCategory: 'Surface Closer',
+          productCode: '1431 CPS TB EN',
+        }),
+      ],
+    });
+    const [mine, other] = buildPoLinkResolutions(
+      poLinkCandidates(
+        [poEntry({ spItemId: 'mine' }), poEntry({ spItemId: 'other', hardwareCategory: 'Closer' })],
+        [item({ spItemId: 'mine', poNumber: 'PO501788' }), item({ spItemId: 'other', poNumber: 'PO501788' })],
+      ),
+      new Map([['PO501788', several]]),
+    );
+
+    it('offers only the lines the server would accept for the row', () => {
+      const picks: Map<string, PoLinkPick> = new Map([['other', 'taken']]);
+      const claims = poLineClaims([mine, other], picks);
+      expect(linesOffered(mine, claims).map((l) => l.id)).toEqual(['free', 'registered-ours']);
+      // The row that holds a line keeps seeing it.
+      expect(linesOffered(other, claims, 'taken').map((l) => l.id)).toEqual(['free', 'taken']);
+    });
+
+    it('frees a line again once the other row is skipped', () => {
+      const claims = poLineClaims([mine, other], new Map([['other', SKIP_PO_LINK]]));
+      expect(linesOffered(mine, claims).map((l) => l.id)).toEqual(['free', 'taken', 'registered-ours']);
     });
   });
 
