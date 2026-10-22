@@ -110,6 +110,58 @@ def test_not_busy_when_no_job_has_ever_run():
     assert update_poller.is_busy({"channel": {"jobs_in_flight": 0, "last_job_finished_ago": None}}) is False
 
 
+def _counters(*, jobs=0, job_ago=None, writes=0, write_ago=None) -> dict:
+    return {
+        "channel": {
+            "jobs_in_flight": jobs,
+            "last_job_finished_ago": job_ago,
+            "writes_in_flight": writes,
+            "last_write_finished_ago": write_ago,
+        }
+    }
+
+
+def test_reads_finishing_all_day_do_not_keep_the_relay_busy():
+    # #1927: the backend's own loops read from the relay every few seconds, so a busy rule that counted
+    # them saw a job finish inside the grace window on every check, and a scheduled update never happened.
+    assert update_poller.is_busy(_counters(jobs=1, job_ago=3, writes=0, write_ago=None)) is False
+    assert update_poller.is_busy(_counters(jobs=0, job_ago=1, writes=0, write_ago=600)) is False
+
+
+def test_a_write_in_flight_or_just_finished_still_holds_the_update_back():
+    assert update_poller.is_busy(_counters(jobs=1, writes=1)) is True
+    assert update_poller.is_busy(_counters(jobs=0, job_ago=5, writes=0, write_ago=5)) is True
+
+
+def test_the_scheduled_handoff_waits_for_a_write_but_not_a_read(monkeypatch):
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=2, job_ago=1))
+    assert update_poller.ready_for_scheduled_handoff() is True
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=1, writes=1))
+    assert update_poller.ready_for_scheduled_handoff() is False
+
+
+def test_the_manual_handoff_waits_for_a_write_but_not_a_read(monkeypatch):
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=2))
+    assert update_poller.ready_for_manual_handoff() is True
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=1, writes=1))
+    assert update_poller.ready_for_manual_handoff() is False
+
+
+def test_every_op_is_either_a_read_or_a_listed_write():
+    # The op audit WRITE_OPS points at: a write left off the list would be swapped out from under.
+    from ucnexus_relay import channel
+
+    reads = ("list_", "get_", "read_", "sync_")
+    for op in channel._OPS:
+        if op in channel.WRITE_OPS:
+            continue
+        assert op.startswith(reads) or op in ("job_setup_health", "server_load"), (
+            f"{op} is not in channel.WRITE_OPS; if it writes to GP add it, if it reads add it here"
+        )
+    assert channel.WRITE_OPS <= set(channel._OPS)
+    assert not channel.WRITE_OPS & channel.BACKGROUND_OPS
+
+
 def test_unreachable_health_counts_as_busy():
     # Fail-safe: "cannot tell" must never authorise killing a relay that might be mid-eConnect.
     assert update_poller.is_busy({}) is True

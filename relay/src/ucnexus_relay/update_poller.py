@@ -38,9 +38,10 @@ INTERVAL_JITTER_SECONDS = 7200
 DEFER_RETRY_SECONDS = 900
 MAX_DEFERRALS = 8
 
-# Treat the relay as busy for this long after the last job finished. The backend records a relay
+# Treat the relay as busy for this long after the last GP WRITE finished. The backend records a relay
 # result and then persists the UC Nexus side of the write; killing the relay inside that window is
-# survivable but pointlessly risky when the alternative is waiting two minutes.
+# survivable but pointlessly risky when the alternative is waiting two minutes. Writes only (#1927): the
+# backend's own loops read from the relay all day, so a window that every read reopened never closed.
 BUSY_GRACE_SECONDS = 120
 
 # The post-update self-check: how long the freshly updated build gets to bring its backend channel up
@@ -96,30 +97,42 @@ def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[boo
     return True, f"update available: {latest}"
 
 
+def _write_counters(channel: dict) -> tuple[int, float | None]:
+    """(GP writes in flight, seconds since the last one finished) from a /health channel snapshot (#1927).
+    A serve build older than the write counters reports only the every-job pair, which is read in their
+    place: that can only make the relay look busier than it is, never less busy."""
+    if "writes_in_flight" in channel:
+        in_flight, last = channel.get("writes_in_flight"), channel.get("last_write_finished_ago")
+    else:
+        in_flight, last = channel.get("jobs_in_flight"), channel.get("last_job_finished_ago")
+    return int(in_flight or 0), (None if last is None else float(last))
+
+
 def is_busy(health: dict) -> bool:
-    """Whether the serve child is mid-GP-work (or unreachable). Fail-safe: an empty or malformed
+    """Whether the serve child is mid-GP-write (or unreachable). Fail-safe: an empty or malformed
     /health payload means we cannot tell, and "cannot tell" must never authorise killing the relay
-    while eConnect is holding a transaction open."""
+    while eConnect is holding a transaction open. Reads do not count (#1927): one killed by the swap is
+    retried, and the backend's loops keep one finishing every few seconds."""
     if not health:
         return True
     channel = health.get("channel")
     if not isinstance(channel, dict):
         return True
-    if int(channel.get("jobs_in_flight") or 0) > 0:
+    in_flight, last = _write_counters(channel)
+    if in_flight > 0:
         return True
-    last = channel.get("last_job_finished_ago")
-    if last is not None and float(last) < BUSY_GRACE_SECONDS:
+    if last is not None and last < BUSY_GRACE_SECONDS:
         return True
     return False
 
 
 def jobs_running(health: dict) -> bool:
-    """Whether a /health that ANSWERED reports GP work in flight. The manual "Update now" rule (#1212):
+    """Whether a /health that ANSWERED reports a GP write in flight. The manual "Update now" rule (#1212):
     unlike is_busy it is not fail-safe, because a person pressing the button on a relay whose serve child
-    is not answering is exactly the case an update may be needed to fix; only a job known to be running
-    holds it back."""
+    is not answering is exactly the case an update may be needed to fix; only a write known to be running
+    holds it back - a read is retried, for the same reason is_busy ignores reads (#1927)."""
     channel = health.get("channel") if isinstance(health, dict) else None
-    return isinstance(channel, dict) and int(channel.get("jobs_in_flight") or 0) > 0
+    return isinstance(channel, dict) and _write_counters(channel)[0] > 0
 
 
 def ready_for_scheduled_handoff() -> bool:

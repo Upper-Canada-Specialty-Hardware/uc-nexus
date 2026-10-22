@@ -76,6 +76,12 @@ _UNKNOWN_STATE = {"connected": False, "state": "unknown"}
 # a job from a PR-environment channel is just as real a GP write as one from production.
 _INFLIGHT = 0
 _LAST_JOB_AT: float | None = None
+# The same pair counting GP WRITES only (#1927), which is what the update poller actually keys on. Killing
+# a read mid-flight costs a retry; killing a write leaves the backend a dispatched job whose socket died,
+# which it has to mark ambiguous. The backend polls reads all day, so a poller counting every job saw a
+# job finish inside its grace window on every check and never updated.
+_WRITES_INFLIGHT = 0
+_LAST_WRITE_AT: float | None = None
 
 # The GP SYNC STATE each backend last pushed, keyed by channel URL: the backend's own account of its
 # sync work, sent down the socket it already holds as a {"type": "gp_sync_state", ...} frame. The relay
@@ -279,6 +285,8 @@ def channel_state_snapshot() -> dict:
     snapshot = dict(dict(states).get(chosen, _UNKNOWN_STATE) if chosen else _UNKNOWN_STATE)
     snapshot["jobs_in_flight"] = _INFLIGHT
     snapshot["last_job_finished_ago"] = None if _LAST_JOB_AT is None else time.monotonic() - _LAST_JOB_AT
+    snapshot["writes_in_flight"] = _WRITES_INFLIGHT
+    snapshot["last_write_finished_ago"] = None if _LAST_WRITE_AT is None else time.monotonic() - _LAST_WRITE_AT
     snapshot["channels"] = [{"url": url, "primary": is_primary_backend_url(url), **state} for url, state in states]
     return snapshot
 
@@ -837,6 +845,21 @@ _OPS = {
 # a sample, whatever its op.
 BACKGROUND_OPS = frozenset({"sync_pos", "read_pos_by_number", "list_jobs", "job_setup_health"})
 
+# The ops that write to GP (#1927): the only ones the update poller waits for, because a write killed by
+# the exe swap is the one the backend cannot tell happened. Every other op in _OPS reads. A new write op
+# has to be added here; the op audit in tests/test_update_poller.py fails until it is.
+WRITE_OPS = frozenset(
+    {
+        "create_po",
+        "create_receipt",
+        "create_job",
+        "create_buyer",
+        "create_customer_address",
+        "update_job_site",
+        "update_job",
+    }
+)
+
 # Ops that answer a question about the SERVER rather than about a company. They run without one: the
 # backend probes the load while paused, and the company checks below have nothing to bite on because
 # there is no company data in the answer.
@@ -1155,8 +1178,11 @@ async def _run_once(url: str, secret: str, cfg) -> None:
             # try/finally so a crashing or cancelled job cannot leak the counter: a stuck _INFLIGHT
             # would wedge the update poller into deferring forever, which looks exactly like "updates
             # silently stopped working".
-            global _INFLIGHT, _LAST_JOB_AT
+            global _INFLIGHT, _LAST_JOB_AT, _WRITES_INFLIGHT, _LAST_WRITE_AT
+            write = isinstance(job, dict) and job.get("op") in WRITE_OPS
             _INFLIGHT += 1
+            if write:
+                _WRITES_INFLIGHT += 1
             # The channel this job arrived on rides along on the RELAY TRAFFIC row: a job from a
             # non-production backend is real GP work, and an operator looking at the tab has to be able
             # to tell whose work it was.
@@ -1168,6 +1194,9 @@ async def _run_once(url: str, secret: str, cfg) -> None:
             finally:
                 _INFLIGHT -= 1
                 _LAST_JOB_AT = time.monotonic()
+                if write:
+                    _WRITES_INFLIGHT -= 1
+                    _LAST_WRITE_AT = _LAST_JOB_AT
                 # The traffic row closes in the same finally and for the same reason: a job that was
                 # cancelled or crashed and stayed in `running` would read on the tab as GP work stuck
                 # in flight forever. With no reply to read it lands as a failure, which it was.
