@@ -464,7 +464,12 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
     except RelayCallError as e:
         relay_error = str((e.detail or {}).get("error") or "")
         if relay_error in _TRANSIENT_RELAY_ERRORS:
-            maybe_in_gp = relay_error in _MAYBE_COMMITTED_RELAY_ERRORS
+            # A database error can also be the commit itself failing, and then the write may be in GP. A
+            # keyed write's retry finds it by its key; one with no key could post twice, so it waits for a
+            # person like a timeout (#1857).
+            maybe_in_gp = relay_error in _MAYBE_COMMITTED_RELAY_ERRORS or (
+                relay_error == "sql_error" and not retry_safe
+            )
             if maybe_in_gp and not retry_safe:
                 # Like a timeout: the write may be in GP and asking again could post it twice.
                 await asyncio.to_thread(

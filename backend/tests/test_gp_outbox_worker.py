@@ -341,11 +341,11 @@ def test_a_gp_rejection_fails_as_gp_rejected(_migrate_database, monkeypatch):
 @pytest.mark.parametrize(
     ("relay_error", "payload", "maybe_in_gp"),
     [
-        ("sql_error", None, False),
+        ("sql_error", _KEYED_RECEIPT, False),
         ("company_not_allowed", None, False),
         ("internal_error", _KEYED_RECEIPT, True),
     ],
-    ids=["sql-error", "no-company-served", "internal-error-keyed"],
+    ids=["sql-error-keyed", "no-company-served", "internal-error-keyed"],
 )
 def test_a_transient_relay_error_is_asked_again_not_held_as_gp_refusing(
     _migrate_database, monkeypatch, relay_error, payload, maybe_in_gp
@@ -378,11 +378,25 @@ def test_an_unkeyed_receipt_the_relay_raised_on_unexpectedly_fails_as_ambiguous(
         _delete(row_id)
 
 
+def test_an_unkeyed_receipt_the_relay_hit_a_database_error_on_fails_as_ambiguous(_migrate_database, monkeypatch):
+    # #1857: the error can be the commit itself failing, and nothing would recognise a second send.
+    row_id, _key = _enqueue_committed()
+    try:
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("link dropped", detail={"error": "sql_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "ambiguous", True)
+    finally:
+        _delete(row_id)
+
+
 def test_a_sql_error_on_the_last_attempt_exhausts_the_row(_migrate_database, monkeypatch):
     from app.database import SessionLocal
 
-    row_id, _key = _enqueue_committed()
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
     try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
         with SessionLocal() as session:
             gp_outbox_repository.get_entry(session, row_id).attempts = gp_outbox_repository.MAX_ATTEMPTS
             session.commit()
