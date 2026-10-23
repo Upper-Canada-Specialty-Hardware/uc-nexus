@@ -251,7 +251,7 @@ it('warns before cancelling a receipt GP may hold that its draft stays approved 
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
   expect(await screen.findByText(/GP may already hold this receipt/)).toBeInTheDocument();
-  expect(screen.getByText(/the draft stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
+  expect(screen.getByText(/one still approved stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
   expect(screen.queryByText(/whoever submitted it will have to redo it/)).toBeNull();
 });
 
