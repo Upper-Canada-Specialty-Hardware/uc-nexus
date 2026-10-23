@@ -444,9 +444,12 @@ export function parseHardwareSchedule(
 ): ParseResult {
   // #1916: XMLParser.parse doesn't validate, so a file cut off at a tag boundary parsed as everything
   // before the cut and went on to replace the schedule with half of it. Refuse it, saying where it broke.
-  const trimmed = xmlContent.trimEnd();
+  // Blank lines before the XML declaration parsed before the check came in, and the validator refuses
+  // them as a declaration not at the start; both read the file without them.
+  const content = xmlContent.trimStart();
+  const trimmed = content.trimEnd();
   const cutOff = !trimmed.endsWith('</Contract>');
-  const validation = XMLValidator.validate(xmlContent);
+  const validation = XMLValidator.validate(content);
   if (validation !== true) {
     const { code, msg, line, col } = validation.err;
     // Tags still open at the end are reported at line 1, column 1; the break is the end of the file.
@@ -455,7 +458,7 @@ export function parseHardwareSchedule(
   }
 
   const parser = new XMLParser(parserOptions);
-  const parsed = parser.parse(xmlContent);
+  const parsed = parser.parse(content);
   const contract = parsed.Contract;
 
   if (!contract) {

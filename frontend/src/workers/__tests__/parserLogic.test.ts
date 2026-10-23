@@ -1073,6 +1073,12 @@ describe('parseHardwareSchedule - a file that is not whole (#1916)', () => {
     expect(result.openings.length).toBeGreaterThan(0);
     expect(result.hardwareItems.length).toBeGreaterThan(0);
   });
+
+  // Parsed before the check came in; the validator alone refused a declaration not at the very start.
+  it('a schedule with blank lines before its declaration still parses', () => {
+    const result = parseHardwareSchedule('\r\n\n' + fixture);
+    expect(result.openings.length).toBe(parseHardwareSchedule(fixture).openings.length);
+  });
 });
 
 // ---------------------------------------------------------------------------
