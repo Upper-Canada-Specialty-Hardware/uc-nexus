@@ -556,7 +556,33 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
 
 
 def _live_shipping_out_requests(session: Session, project_id: uuid.UUID) -> list[ShippingOutRequestModel]:
-    """Shipping-out requests still in flight, on the same definition as their shop-assembly twin."""
+    """Shipping-out requests still in flight, on the same definition as their shop-assembly twin.
+
+    #1852: row-locked in id order before they are read, as the shop ones are. Accept locks the request
+    row (`shipping_repository.lock_shipping_out_request`) and then only inserts its pull, whose project key
+    share the finalize's no-key-update project lock lets through, so the order is the project, then the
+    requests, then the reservations and inventory the rewrite below takes - the order a request's edit
+    takes them in too. Unlocked, an accept committing between this read and the writes below had its
+    APPROVED written over with REJECTED and the reservations its new pull relies on released. Now one
+    waits for the other, and the read below sees the status the other committed: a request accepted
+    meanwhile reads APPROVED and is only flagged.
+    """
+    from app.services.locking import lock_rows
+
+    lock_rows(
+        session,
+        ShippingOutRequestModel,
+        list(
+            session.scalars(
+                select(ShippingOutRequestModel.id).where(
+                    ShippingOutRequestModel.project_id == project_id,
+                    ShippingOutRequestModel.status.in_(
+                        [ShippingOutRequestStatus.PENDING, ShippingOutRequestStatus.APPROVED]
+                    ),
+                )
+            ).all()
+        ),
+    )
     return list(
         session.scalars(
             select(ShippingOutRequestModel)
@@ -575,6 +601,9 @@ def _live_shipping_out_requests(session: Session, project_id: uuid.UUID) -> list
                     ),
                 ),
             )
+            # What makes the lock above count (#1852): a copy already in the session would otherwise hand
+            # back the status and items from before an accept or edit committed while the lock was waited on.
+            .execution_options(populate_existing=True)
         )
         .unique()
         .all()

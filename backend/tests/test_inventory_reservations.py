@@ -787,6 +787,81 @@ def test_reupload_rebuilds_a_shipping_requests_loose_claim(db_session):
     assert req.status == ShippingOutRequestStatus.PENDING
 
 
+def _finalize_shipping_requests(session, project, count, *, opening_number="A01", qty=2):
+    """`count` shipping-out requests raised in one finalize, each for `qty` of HG-100 on one opening."""
+    return import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": opening_number}],
+            "hardware_items": [],
+            "shipping_out_pr_drafts": [
+                {
+                    "request_number": f"SHIP-{uuid.uuid4().hex[:6]}",
+                    "requested_by": "importer",
+                    "items": [
+                        {
+                            "opening_number": opening_number,
+                            "hardware_category": "HINGE",
+                            "product_code": "HG-100",
+                            "requested_quantity": qty,
+                        }
+                    ],
+                }
+                for _ in range(count)
+            ],
+        },
+    )["shipping_out_requests"]
+
+
+def test_reupload_locks_the_live_shipping_requests_before_reading_them(db_session, monkeypatch):
+    """#1852: accept locks the request row and then mints its pull, so the re-upload takes the same lock
+    before it reads what is pending. Unlocked, an accept committing in between had its APPROVED written
+    over with REJECTED and the reservations its pull relies on released. Every live request is locked -
+    an accepted one too, since the re-upload flags it - and a rejected one is left alone."""
+    from app.services import locking
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    pending, accepted, rejected = _finalize_shipping_requests(db_session, project, 3)
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, accepted.id, "manager")
+    shipping_repository.reject_shipping_out_request(db_session, rejected.id, "manager", "not needed")
+    db_session.flush()
+    seen: list[tuple[str, list]] = []
+    real = locking.lock_rows
+
+    def spy(session, model_class, ids):
+        seen.append((model_class.__name__, list(ids)))
+        return real(session, model_class, ids)
+
+    monkeypatch.setattr(locking, "lock_rows", spy)
+
+    _reupload(db_session, project, ["A01"])
+
+    (locked,) = [ids for name, ids in seen if name == "ShippingOutRequest"]
+    assert set(locked) == {pending.id, accepted.id}
+
+
+def test_reupload_only_flags_a_shipping_request_accepted_before_it_ran(db_session):
+    """#1852: what the re-upload reads under the lock is what an accept committed, so an accepted request
+    is never rejected or stripped of the claim its pull relies on - even with every line's opening gone."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    (req,) = _finalize_shipping_requests(db_session, project, 1, qty=4)
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "manager")
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(req)
+
+    assert req.status == ShippingOutRequestStatus.APPROVED
+    assert req.integrity_note is not None
+    assert _reserved_total(db_session, project.id) == 4
+
+
 # --- self-coverage at the repository level ------------------------------------------------------
 
 
