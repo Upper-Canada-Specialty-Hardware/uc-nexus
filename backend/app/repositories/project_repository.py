@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import (
@@ -17,7 +17,7 @@ from app.errors import (
     RelayCallError,
     ValidationError,
 )
-from app.models.enums import GpJobState
+from app.models.enums import GpJobState, POStatus
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 
@@ -538,9 +538,15 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     if project is None:
         return None
 
+    # #1886: every way a PO becomes CANCELLED also soft-deletes it (cancel_po, the GP sync), so the
+    # soft-deleted CANCELLED rows are let through - the Cancelled count always read 0 - as the register's
+    # strip and page let them through. A soft-deleted row of any other status stays out.
     po_counts = session.execute(
         select(PurchaseOrder.status, func.count())
-        .where(PurchaseOrder.project_id == project_id, PurchaseOrder.deleted_at.is_(None))
+        .where(
+            PurchaseOrder.project_id == project_id,
+            or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED),
+        )
         .group_by(PurchaseOrder.status)
     ).all()
 
