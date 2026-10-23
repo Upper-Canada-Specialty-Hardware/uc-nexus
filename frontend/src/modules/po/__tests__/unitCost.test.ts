@@ -7,6 +7,16 @@ describe('parseUnitCost (#1912)', () => {
     expect(parseUnitCost('0')).toBe(0);
   });
 
+  // A decimal comma is refused, not read a hundred times over.
+  it('takes a comma only as a thousands comma', () => {
+    expect(parseUnitCost('12,500')).toBe(12500);
+    expect(parseUnitCost('1,234,567.89')).toBe(1234567.89);
+    expect(parseUnitCost('12,50')).toBeNaN();
+    expect(parseUnitCost('1,25.00')).toBeNaN();
+    expect(parseUnitCost('1250,00')).toBeNaN();
+    expect(unitCostProblem('12,50')).toBe('Not a number');
+  });
+
   it('is NaN for anything left over, never the leading digits', () => {
     expect(parseUnitCost('1250abc')).toBeNaN();
     expect(parseUnitCost('12 ea')).toBeNaN();

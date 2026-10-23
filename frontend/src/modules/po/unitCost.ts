@@ -15,10 +15,16 @@ export const MAX_UNIT_COST = 1e14;
  * first comma, so "1,250.00" saved as 1, and at the first stray letter, so "1250abc" saved as 1250. The
  * rule the average door cost box keeps: thousands commas, a dollar sign and spaces are how people write
  * money, so they are dropped, and anything else left over refuses the amount. Blank is NaN too.
+ *
+ * A comma counts only where a thousands comma goes - every three digits before the point. Dropped
+ * wherever it sat, "12,50" written with a decimal comma read as 1250, a hundred times the price GP
+ * would have been sent; it is refused as not a number instead.
  */
 export function parseUnitCost(text: string): number {
-  const cleaned = text.replace(/[,$\s]/g, '');
-  return cleaned === '' ? NaN : Number(cleaned);
+  const cleaned = text.replace(/[$\s]/g, '');
+  if (cleaned.includes(',') && !/^-?\d{1,3}(,\d{3})+(\.\d*)?$/.test(cleaned)) return NaN;
+  const whole = cleaned.replace(/,/g, '');
+  return whole === '' ? NaN : Number(whole);
 }
 
 /**

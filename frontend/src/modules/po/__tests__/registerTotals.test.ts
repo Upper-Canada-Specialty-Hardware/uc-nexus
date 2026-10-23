@@ -7,6 +7,21 @@ describe('computeRegisterTotals', () => {
     { orderedQuantity: '3', unitCost: '19.99' },
   ];
 
+  // #1912: the totals read a cost the way Register sends it - "1,250.00" is 1250, not 1.
+  it('reads a cost with a thousands comma or a dollar sign whole', () => {
+    const t = computeRegisterTotals({
+      lines: [
+        { orderedQuantity: '2', unitCost: '1,250.00' },
+        { orderedQuantity: '1', unitCost: '$12' },
+      ],
+      freight: '',
+      miscellaneous: '',
+      tradeDiscount: '',
+      taxPercents: [],
+    });
+    expect(t.subtotal).toBe(2512);
+  });
+
   it('sums qty x unit cost and taxes goods, freight and misc at every detail', () => {
     const t = computeRegisterTotals({
       lines,
