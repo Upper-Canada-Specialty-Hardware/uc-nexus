@@ -626,3 +626,16 @@ def test_an_ordered_line_the_revision_left_as_surplus_is_off_the_schedule(db_ses
         shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(1), created_by="manager")
     assert exc.value.field == "lines"
     assert "no longer on this opening's schedule" in str(exc.value)
+
+
+def test_the_removed_openings_named_in_a_note_never_overflow_it():
+    """#1955: a revision that renumbers a whole request's openings listed every one in the 500-character
+    note, and the write refused failed the whole re-upload. They are named while they fit, then counted."""
+    from app.repositories.import_repository import _removed_openings
+
+    assert _removed_openings({"A01"}) == "opening A01"
+    assert _removed_openings({"A02", "A01"}) == "openings A01, A02"
+    many = _removed_openings({f"1-{n:03d}A" for n in range(80)})
+    assert many.startswith("openings 1-000A, 1-001A") and many.endswith(" more")
+    assert len(many) < 300
+    assert len(_removed_openings({"X" * 900, "Y" * 900})) < 300

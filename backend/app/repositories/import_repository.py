@@ -476,13 +476,29 @@ SHOP_SCHEDULE_CHANGED_DROPPED_NOTE = (
 )
 
 
+# The note column is 500 characters, and the rest of a note is about 150: the list is cut short well inside it.
+_REMOVED_OPENINGS_BUDGET = 200
+
+
 def _removed_openings(numbers: set[str]) -> str:
     """The openings a re-upload took off a shop or shipping-out request, for its note (#1955): "opening A01" or
-    "openings A01, A02"."""
+    "openings A01, A02". Named only while they fit the budget, then counted ("and 37 more"): a revision that
+    renumbers a whole request's openings would otherwise overflow the note, and the finalize with it."""
     if not numbers:
         return "its openings"
-    names = ", ".join(sorted(numbers))
-    return f"opening {names}" if len(numbers) == 1 else f"openings {names}"
+    ordered = sorted(numbers)
+    if len(ordered) == 1:
+        return f"opening {ordered[0][:_REMOVED_OPENINGS_BUDGET]}"
+    shown: list[str] = []
+    used = 0
+    for name in ordered:
+        if shown and used + len(name) + 2 > _REMOVED_OPENINGS_BUDGET:
+            break
+        shown.append(name[:_REMOVED_OPENINGS_BUDGET])
+        used += len(shown[-1]) + 2
+    rest = len(ordered) - len(shown)
+    names = ", ".join(shown)
+    return f"openings {names} and {rest} more" if rest else f"openings {names}"
 
 
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
