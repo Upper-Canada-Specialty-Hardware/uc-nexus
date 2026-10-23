@@ -11,6 +11,7 @@ from app.auth import PO_MANAGERS, TENANT_OWNERS, WAREHOUSE_MANAGERS, require_any
 from app.database import SessionLocal
 from app.errors import AppError, ConflictError, NotFoundError
 from app.repositories import gp_outbox_repository, user_repository
+from app.repositories.warehouse import receive_drafts
 
 from .converters import gp_outbox_entry_to_type, gp_outbox_summary_to_type
 from .enums import GpOutboxStatus
@@ -132,17 +133,24 @@ class GpOutboxQueries:
             ledgers = gp_outbox_repository.ledgers_for(session, rows)
             holding = gp_outbox_repository.registrations_holding_drafts(session, rows, ledgers)
             took = gp_outbox_repository.writes_gp_took(rows, ledgers)
+            # One read of the receipts' drafts, for every rule that asks whether a draft moved on (#1965): the
+            # flag the cancel warning reads, which receipts GP took can be let go, and the disabled Retry.
+            unfinished = [r for r in rows if r.status != "SUCCEEDED"]
+            moved_on = receive_drafts.receipts_whose_draft_moved_on(session, unfinished)
             # A registration GP took whose PO is already in Nexus can be let go, so Cancel is offered on it,
             # as it is on a receipt GP took whose draft has moved on (#1961).
             in_nexus = gp_outbox_repository.registrations_already_in_nexus(session, rows, ledgers)
-            let_go = gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers)
+            let_go = gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers, moved_on)
+            refusals = gp_outbox_repository.retry_refusals(session, rows, ledgers, moved_on)
             return [
                 gp_outbox_entry_to_type(
                     r,
                     holds_draft=r.id in holding,
                     gp_took=r.id in took and r.id not in in_nexus and r.id not in let_go,
+                    gp_answered=r.id in took,
                     already_in_nexus_as=in_nexus.get(r.id),
-                    receipt_draft_moved_on=r.id in let_go,
+                    receipt_draft_moved_on=r.id in moved_on,
+                    retry_refusal=refusals.get(r.id),
                 )
                 for r in rows
             ]

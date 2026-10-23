@@ -266,15 +266,66 @@ it('warns before letting go of a receipt whose draft moved on that GP holds it a
       failureKind: 'persist_failed',
       maybeInGp: true,
       gpTook: false,
+      gpAnswered: true,
       receiptDraftMovedOn: true,
     }),
   ]);
 
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
-  expect(await screen.findByText(/GP holds this receipt - it answered after the approval was released/)).toBeInTheDocument();
+  expect(await screen.findByText(/GP holds this receipt, and Nexus booked nothing for it/)).toBeInTheDocument();
   expect(screen.getByText(/Reconcile it in GP first/)).toBeInTheDocument();
   expect(screen.queryByText(/GP may already hold this receipt/)).toBeNull();
+});
+
+// #1965: GP may hold it, with no answer back, and its draft moved on - nothing here holds the draft approved.
+it('warns before cancelling a receipt GP may hold whose draft moved on, without saying the draft stays approved', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'ambiguous',
+      maybeInGp: true,
+      gpTook: false,
+      gpAnswered: false,
+      receiptDraftMovedOn: true,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this receipt .* and its draft has moved on/)).toBeInTheDocument();
+  expect(screen.queryByText(/the draft stays approved/)).toBeNull();
+  expect(screen.queryByText(/GP holds this receipt/)).toBeNull();
+});
+
+// #1965: the backend refuses Retry on a let-go row or a receipt whose draft moved on, so Retry is off and says why.
+it('turns retry off on a row the backend would refuse, and says why', async () => {
+  const why = "This receipt's draft was deleted, so nothing here waits to book it and a retry can only fail.";
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      maybeInGp: true,
+      receiptDraftMovedOn: true,
+      retryRefusal: why,
+    }),
+  ]);
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeDisabled();
+  expect(screen.getByLabelText(why)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+});
+
+it('keeps retry on for a failed row nothing refuses', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({ op: 'create_receive', relayOp: 'create_receipt', status: 'FAILED', retryRefusal: null }),
+  ]);
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
 });
 
 it('keeps the plain cancel words for a write nothing says reached GP', async () => {

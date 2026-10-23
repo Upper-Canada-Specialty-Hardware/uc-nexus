@@ -155,8 +155,12 @@ export const GET_GP_OUTBOX = gql`
       maybeInGp
       # #1948: a registration GP took whose GP PO the mirror already copied into Nexus - let go with Cancel.
       alreadyInNexusAs
-      # #1961: a receipt GP took whose draft has moved on - GP holds it, Nexus booked nothing; Cancel lets it go.
+      # #1961, #1965: a receipt whose draft has moved on (deleted included) - Nexus will never book it, and
+      # Cancel lets it go. gpAnswered says whether GP holds it, or only may.
       receiptDraftMovedOn
+      gpAnswered
+      # #1965: why Retry would be refused, or null - the panel disables Retry and says why.
+      retryRefusal
     }
   }
 `;

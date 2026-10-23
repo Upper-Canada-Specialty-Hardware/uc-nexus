@@ -1294,6 +1294,8 @@ def gp_outbox_entry_to_type(
     gp_took: bool = False,
     already_in_nexus_as: str | None = None,
     receipt_draft_moved_on: bool = False,
+    gp_answered: bool = False,
+    retry_refusal: str | None = None,
 ) -> GpOutboxEntry:
     """Reads only the row's own scalar columns - no relationships, so nothing here can trigger a
     lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md). `holds_draft` and `gp_took` are worked
@@ -1316,6 +1318,8 @@ def gp_outbox_entry_to_type(
         maybe_in_gp=bool(row.maybe_in_gp),
         already_in_nexus_as=already_in_nexus_as,
         receipt_draft_moved_on=receipt_draft_moved_on,
+        gp_answered=gp_answered,
+        retry_refusal=retry_refusal,
     )
 
 

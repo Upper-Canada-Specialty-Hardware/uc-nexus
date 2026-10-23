@@ -161,14 +161,21 @@ def write_gp_took(session: Session, row: GpWriteOutbox) -> bool:
 RECEIPT_LET_GO_RESULT_ID = "let-go:reconciled-in-gp"
 
 
-def receipts_gp_took_whose_draft_moved_on(session: Session, rows: list[GpWriteOutbox], ledgers: dict) -> set[uuid.UUID]:
-    """The receipts GP took, of `rows`, whose draft no longer links to them, off `ledgers_for`'s one read: the
-    ones `cancel_entry` lets go though GP took them (#1961). Retry is refused on each, so without this
-    neither button moved it."""
-    from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
-
+def receipts_gp_took_whose_draft_moved_on(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict, moved_on: dict | None = None
+) -> set[uuid.UUID]:
+    """The receipts GP took, of `rows`, whose draft has moved on from them (deleted included, #1965), off
+    `ledgers_for`'s one read: the ones `cancel_entry` lets go though GP took them (#1961). Retry is refused on
+    each, so without this neither button moved it. `moved_on` is `receipts_whose_draft_moved_on` over the
+    rows, when the caller already read it."""
     took = [r for r in rows if r.op == "create_receive" and _gp_took(ledgers.get(r.idempotency_key))]
-    return receipts_whose_draft_moved_on(session, took) if took else set()
+    if not took:
+        return set()
+    if moved_on is None:
+        from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
+
+        moved_on = receipts_whose_draft_moved_on(session, took)
+    return {r.id for r in took if r.id in moved_on}
 
 
 def _draft_id_of(row: GpWriteOutbox) -> uuid.UUID | None:
@@ -521,18 +528,61 @@ def summary(session: Session, company: str | None = None) -> dict:
     }
 
 
+# What Retry is refused with on a cancelled row whose key's ledger is settled (#1960, #1961, #1965). The worker
+# would read the settled ledger and mark it SUCCEEDED without sending, for a save this row never made - told
+# apart by what settled it, so each says what is true of it.
 LET_GO_RETRY_REFUSAL = (
-    "This write was let go after GP took it, and what GP holds is settled here. There is nothing to send again."
+    "This receipt was let go after GP took it, to be reconciled in GP by hand. There is nothing to send again."
+)
+REGISTRATION_LET_GO_RETRY_REFUSAL = (
+    "This registration was let go after GP took it, as its GP PO is already in Nexus as the mirror's copy. "
+    "There is nothing to send again."
+)
+SETTLED_RETRY_REFUSAL = (
+    "What GP took under this write's key is already recorded here, so there is nothing to send again."
 )
 
 
-def _ledger_settled(session: Session, row: GpWriteOutbox) -> bool:
-    from app.models.gp_write import GpWriteIdempotency
+def _retry_refusal(row: GpWriteOutbox, ledger, draft_deleted: bool | None) -> str | None:
+    """THE reason Retry is refused on a FAILED or CANCELLED row, or None - one rule for `retry_entry` and for
+    the queue's disabled Retry. `ledger` is the key's ledger row (or None). `draft_deleted` is None unless the
+    row is a receipt whose draft has moved on (`receipts_whose_draft_moved_on`), and then says whether that
+    draft was deleted.
 
-    if not row.idempotency_key:
-        return False
-    ledger = session.get(GpWriteIdempotency, row.idempotency_key)
-    return ledger is not None and ledger.result_id is not None
+    - A cancelled row whose ledger is settled: let go as reconciled (a receipt, #1961), let go onto the
+      mirror's copy (a registration, whose own record would be its draft PO, #1960), or recorded for real
+      by another attempt under the key - a resume that booked it, a register that finished it.
+    - A receipt whose draft has moved on: its drain is refused as released meanwhile every time (#1965)."""
+    if row.status == "CANCELLED" and ledger is not None and ledger.result_id is not None:
+        if ledger.result_id == RECEIPT_LET_GO_RESULT_ID:
+            return LET_GO_RETRY_REFUSAL
+        if row.op == "register_po_in_gp" and ledger.result_id != str(_draft_id_of(row)):
+            return REGISTRATION_LET_GO_RETRY_REFUSAL
+        return SETTLED_RETRY_REFUSAL
+    if draft_deleted is not None:
+        from app.repositories.warehouse import receive_drafts
+
+        if draft_deleted:
+            return receive_drafts.DRAFT_DELETED_RETRY_REFUSAL
+        return receive_drafts.DRAFT_MOVED_ON_RETRY_REFUSAL
+    return None
+
+
+def retry_refusals(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict, moved_on: dict | None = None
+) -> dict[uuid.UUID, str]:
+    """Why Retry is refused, by row id, for the rows of `rows` it would be refused on (`_retry_refusal`), off
+    `ledgers_for`'s one read and one read of the drafts. `moved_on` is `receipts_whose_draft_moved_on` over
+    the rows, when the caller already read it."""
+    ended = [r for r in rows if r.status in ("FAILED", "CANCELLED")]
+    if not ended:
+        return {}
+    if moved_on is None:
+        from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
+
+        moved_on = receipts_whose_draft_moved_on(session, ended)
+    refusals = {r.id: _retry_refusal(r, ledgers.get(r.idempotency_key), moved_on.get(r.id)) for r in ended}
+    return {row_id: why for row_id, why in refusals.items() if why is not None}
 
 
 def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
@@ -543,11 +593,9 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
-    if row.status == "CANCELLED" and _ledger_settled(session, row):
-        # A write let go after GP took it (#1960, #1961): its ledger is settled on the mirror's copy or as
-        # reconciled, so the worker would mark it SUCCEEDED without sending, for a save this row never made.
-        raise ConflictError(LET_GO_RETRY_REFUSAL)
-    _assert_receive_draft_still_queued(session, row)
+    refusal = retry_refusals(session, [row], ledgers_for(session, [row])).get(row.id)
+    if refusal is not None:
+        raise ConflictError(refusal)
     row.status = "PENDING"
     row.attempts = 0
     row.next_attempt_at = datetime.utcnow()
@@ -568,8 +616,9 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
     # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
     # Except a registration whose GP PO the mirror already copied into Nexus: nothing is abandoned. And a
-    # receipt whose draft has moved on (#1961): Retry is refused on it, so Retry finishes nothing, and the
-    # count is someone else's to approve now - what GP took under it is reconciled in GP by hand.
+    # receipt whose draft has moved on (#1961), or was deleted (#1965): Retry is refused on it, so Retry
+    # finishes nothing, and the count is someone else's to approve now, or nobody's - what GP took under it
+    # is reconciled in GP by hand.
     in_nexus = None
     receipt_let_go = False
     if write_gp_took(session, row):
@@ -643,9 +692,3 @@ def _release_receive_draft(session: Session, row: GpWriteOutbox) -> None:
     from app.repositories.warehouse.receive_drafts import release_draft_for_outbox_entry
 
     release_draft_for_outbox_entry(session, row)
-
-
-def _assert_receive_draft_still_queued(session: Session, row: GpWriteOutbox) -> None:
-    from app.repositories.warehouse.receive_drafts import assert_outbox_entry_retryable
-
-    assert_outbox_entry_retryable(session, row)

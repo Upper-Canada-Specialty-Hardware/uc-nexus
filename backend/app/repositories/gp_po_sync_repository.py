@@ -334,11 +334,20 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
     )
     if draft_hit is not None:
         return True
+    # #1965: a row whose key's ledger is settled holds nothing - booked by another attempt under the key (a
+    # resume of a held receipt), or let go as reconciled - so its units are already counted, or never will
+    # be. A held FAILED row a resume had booked kept the sync held until someone cancelled it.
+    settled = (
+        select(GpWriteIdempotency.key)
+        .where(GpWriteIdempotency.key == GpWriteOutbox.idempotency_key, GpWriteIdempotency.result_id.is_not(None))
+        .exists()
+    )
     outbox_hit = session.scalar(
         select(GpWriteOutbox.id)
         .where(
             GpWriteOutbox.op == "create_receive",
             GpWriteOutbox.entity_key == f"po:{po_id}",
+            ~settled,
             or_(
                 GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
                 and_(
@@ -367,8 +376,6 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
     # be retried. Held whatever the row says, since only the ledger proves GP took it (a row failed or
     # cancelled before the flag was set on those still holds it). A ledger row whose relay_result is
     # JSON null recorded nothing, so the test is made here rather than in SQL.
-    from app.models.gp_write import GpWriteIdempotency
-
     taken = session.scalars(
         select(GpWriteIdempotency.relay_result)
         .join(GpWriteOutbox, GpWriteOutbox.idempotency_key == GpWriteIdempotency.key)

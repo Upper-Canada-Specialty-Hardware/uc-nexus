@@ -22,8 +22,13 @@ export interface OutboxEntry {
   maybeInGp?: boolean | null;
   /** #1948: a registration GP took whose GP PO is already a Nexus PO, by that number - Cancel lets it go. */
   alreadyInNexusAs?: string | null;
-  /** #1961: a receipt GP took whose draft has moved on - GP holds it and Nexus booked nothing for it. */
+  /** #1961, #1965: a receipt whose draft has moved on - sent back, approved again or deleted - so Nexus will
+   * never book it. `gpAnswered` tells one GP holds from one GP may hold (`maybeInGp`). */
   receiptDraftMovedOn?: boolean | null;
+  /** #1965: the ledger holds GP's answer and Nexus saved nothing, whether or not Cancel may let it go. */
+  gpAnswered?: boolean | null;
+  /** #1965: why the backend would refuse Retry on this row, or null - Retry is off and says why. */
+  retryRefusal?: string | null;
 }
 
 // #1948: why Cancel is off on a write GP took - the backend refuses it, as cancelling abandons what GP holds.
@@ -157,7 +162,9 @@ export function buildGpWriteQueueColumns({
       renderCell: (p) => {
         const row = p.row as OutboxEntry;
         const allowed = canActOn(row.relayOp);
-        const canRetry = allowed && (row.status === 'FAILED' || row.status === 'CANCELLED');
+        // #1965: a row the backend would refuse to retry - let go, or a receipt whose draft moved on - says why.
+        const retryRefusal = row.status === 'FAILED' || row.status === 'CANCELLED' ? row.retryRefusal || null : null;
+        const canRetry = allowed && (row.status === 'FAILED' || row.status === 'CANCELLED') && !retryRefusal;
         const gpTook = !!row.gpTook;
         const canCancel = allowed && !gpTook && (row.status === 'PENDING' || row.status === 'FAILED');
         const cancel = (
@@ -165,11 +172,22 @@ export function buildGpWriteQueueColumns({
             Cancel
           </Button>
         );
+        const retry = (
+          <Button size="small" disabled={!canRetry} onClick={() => onRetry(row)}>
+            Retry
+          </Button>
+        );
         const buttons = (
           <Stack direction="row" spacing={1}>
-            <Button size="small" disabled={!canRetry} onClick={() => onRetry(row)}>
-              Retry
-            </Button>
+            {allowed && retryRefusal ? (
+              <Tooltip title={retryRefusal}>
+                <Box component="span" sx={{ display: 'inline-flex' }}>
+                  {retry}
+                </Box>
+              </Tooltip>
+            ) : (
+              retry
+            )}
             {allowed && gpTook ? (
               <Tooltip title={GP_TOOK_CANCEL_REASON}>
                 <Box component="span" sx={{ display: 'inline-flex' }}>

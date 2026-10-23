@@ -1767,6 +1767,185 @@ def _gp_queue():
     return GpOutboxQueries().gp_outbox(_Info(), ops=["create_receipt"])
 
 
+def _shown(row_id):
+    (shown,) = [e for e in _gp_queue() if e.id == str(row_id)]
+    return shown
+
+
+# --- #1965: a receipt whose draft was deleted, and retries that can only fail ----------------------------
+
+
+def _delete_draft(draft_id) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        warehouse_repository.delete_receive_draft(session, draft_id, AUTHOR, True)
+        session.commit()
+
+
+def test_a_receipt_gp_took_whose_draft_was_deleted_can_be_let_go_and_is_never_retried(
+    committed, monkeypatch, approve_env
+):
+    """#1965: the moved-on test skipped a row whose draft no longer exists, so Cancel was refused as a write
+    GP took, Retry was allowed and failed as released meanwhile on every drain, and the ledger held the PO's
+    received sync for good. A deleted draft has moved on: Retry is refused saying so, and Cancel lets it go."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+
+    f = committed()
+    row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    _delete_draft(f.draft_id)
+
+    shown = _shown(row_id)
+    assert (shown.gp_took, shown.gp_answered, shown.receipt_draft_moved_on) == (False, True, True)
+    assert "was deleted" in shown.retry_refusal
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="was deleted"):
+            gp_outbox_repository.retry_entry(session, row_id)
+        session.rollback()
+        assert gp_outbox_repository.cancel_entry(session, row_id).status == "CANCELLED"
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(GpWriteIdempotency, key).result_id == gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+        assert not _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="let go after GP took it"):
+            gp_outbox_repository.retry_entry(session, row_id)
+    assert "let go after GP took it" in _shown(row_id).retry_refusal
+
+
+def test_a_receipt_gp_may_hold_whose_draft_was_deleted_is_flagged_and_cancelled_plainly(
+    committed, monkeypatch, approve_env
+):
+    """#1965: held as maybe in GP with no answer, its draft deleted. The queue flags the draft as moved on,
+    not as approved, so its cancel warning is true of it, and Retry is off; Cancel settles nothing in the
+    ledger, there being no answer of GP's to settle."""
+    from app.database import SessionLocal
+    from app.errors import RelayTimeoutError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, fail_with=RelayTimeoutError())
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+    _delete_draft(f.draft_id)
+
+    shown = _shown(row.id)
+    assert (shown.maybe_in_gp, shown.gp_answered, shown.receipt_draft_moved_on) == (True, False, True)
+    assert "was deleted" in shown.retry_refusal
+    with SessionLocal() as session:
+        assert gp_outbox_repository.cancel_entry(session, row.id).status == "CANCELLED"
+        session.commit()
+        assert session.get(GpWriteIdempotency, key) is None
+
+
+def test_a_receipt_whose_draft_still_waits_on_it_is_flagged_as_not_moved_on(committed, monkeypatch, approve_env):
+    """#1965: the may-be-in-GP warning that says the draft stays approved is for this one only."""
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, "FAILED")
+
+    shown = _shown(row_id)
+    assert (shown.maybe_in_gp, shown.receipt_draft_moved_on, shown.retry_refusal) == (True, False, None)
+
+
+def test_a_cancelled_receipt_whose_key_a_booking_finished_is_not_said_to_be_let_go(committed, monkeypatch, approve_env):
+    """#1965: the let-go refusal fired on any cancelled row with a settled ledger, and said it was let go
+    after GP took it - false for one whose key another attempt really booked."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, "CANCELLED")
+    with SessionLocal() as session:
+        gp_idempotency.stamp_result_id(
+            session, _queued_row_key(row_id), "create_receive", {"receipt_number": "RCT001965"}, str(uuid.uuid4())
+        )
+        session.commit()
+
+    with SessionLocal() as session, pytest.raises(ConflictError) as excinfo:
+        gp_outbox_repository.retry_entry(session, row_id)
+    assert excinfo.value.message == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    assert "let go" not in excinfo.value.message
+    assert _shown(row_id).retry_refusal == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+
+
+def test_a_held_receipt_whose_key_was_booked_since_no_longer_holds_the_received_sync(
+    committed, monkeypatch, approve_env
+):
+    """#1965 near miss: `_receipt_in_flight` held the sync on any FAILED row maybe in GP, whatever its ledger
+    said, so one whose key a resume had booked held it until somebody cancelled it."""
+    from app.database import SessionLocal
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+    from app.services import gp_idempotency
+
+    f = committed()
+    _row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        gp_idempotency.stamp_result_id(session, key, "create_receive", None, str(uuid.uuid4()))
+        session.commit()
+
+    with SessionLocal() as session:
+        assert not _receipt_in_flight(session, f.po_id)
+
+
+def test_the_moved_on_rule_and_the_retry_refusals_read_as_one_table():
+    """#1964, #1965: the two rules every button asks, as the state table they settle - no database needed."""
+    from types import SimpleNamespace
+
+    from app.repositories import gp_outbox_repository
+    from app.repositories.warehouse import receive_drafts
+
+    row_id = uuid.uuid4()
+    entry = SimpleNamespace(id=row_id, idempotency_key="k-1")
+
+    def draft(status, key=None, link=None):
+        return SimpleNamespace(status=status, approval_idempotency_key=key, approved_outbox_entry_id=link)
+
+    moved_on = receive_drafts._draft_moved_on
+    assert moved_on(entry, None) is True  # deleted
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVED, "k-1", row_id)) is False  # linked
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVING, "k-1")) is False  # claimed under its key
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVED, "k-1")) is False  # booked under its key
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVING, "k-2")) is True  # another approval
+    assert moved_on(entry, draft(ReceiveDraftStatus.PENDING_APPROVAL)) is True  # back for review
+    assert moved_on(entry, draft(ReceiveDraftStatus.PENDING_APPROVAL, "k-1")) is True  # pending is never in flight
+
+    po_id = uuid.uuid4()
+
+    def row(status, op="create_receive"):
+        return SimpleNamespace(status=status, op=op, entity_key=f"po:{po_id}")
+
+    def ledger(result_id):
+        return SimpleNamespace(relay_result={"x": 1}, result_id=result_id)
+
+    refusal = gp_outbox_repository._retry_refusal
+    let_go = gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+    assert refusal(row("CANCELLED"), ledger(let_go), None) == gp_outbox_repository.LET_GO_RETRY_REFUSAL
+    assert refusal(row("CANCELLED"), ledger(str(uuid.uuid4())), None) == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    registration = row("CANCELLED", op="register_po_in_gp")
+    assert refusal(registration, ledger(str(po_id)), None) == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    assert (
+        refusal(registration, ledger(str(uuid.uuid4())), None) == gp_outbox_repository.REGISTRATION_LET_GO_RETRY_REFUSAL
+    )
+    assert refusal(row("FAILED"), None, True) == receive_drafts.DRAFT_DELETED_RETRY_REFUSAL
+    assert refusal(row("FAILED"), ledger(None), False) == receive_drafts.DRAFT_MOVED_ON_RETRY_REFUSAL
+    assert refusal(row("FAILED"), ledger(None), None) is None  # GP took it and its draft waits: Retry books it
+
+
 def _queue_as_maybe_in_gp(f, monkeypatch):
     """An approval whose relay call timed out: the receipt queued under its key, as maybe in GP."""
     from app.errors import RelayTimeoutError

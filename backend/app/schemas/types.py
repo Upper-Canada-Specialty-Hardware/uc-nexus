@@ -2381,9 +2381,14 @@ class GpOutboxEntry:
     # #1948: a registration GP took whose GP PO is already a live Nexus PO (the mirror's copy), by that PO
     # number. Its save can never land; cancelling it abandons nothing in GP, and cancels its draft.
     already_in_nexus_as: str | None = None
-    # #1961: a receipt GP took whose draft has moved on - its approval was released while the attempt ran.
-    # GP holds it and Nexus booked nothing for it; Cancel lets it go once it is reconciled in GP.
+    # #1965: the ledger holds GP's answer and Nexus saved nothing for it, whether or not Cancel may let it go
+    # (`gp_took` is the subset Cancel is refused on) - what tells a receipt GP holds from one GP may hold.
+    gp_answered: bool = False
+    # #1961, #1965: a receipt whose draft has moved on - sent back for review, approved again under another
+    # key, or deleted. Nothing here will book it; Cancel lets it go once what GP holds, or may, is reconciled.
     receipt_draft_moved_on: bool = False
+    # #1965: why Retry would be refused on this row, or null - the panel disables Retry and says why.
+    retry_refusal: str | None = None
 
 
 @strawberry.type
