@@ -1114,6 +1114,7 @@ function POListPage() {
             onRefetch={handleRefetch}
             relayConnected={relayConnected}
             registrationQueued={queuedPoIds.has(selectedPO.id)}
+            registrationHeld={heldPoIds.has(selectedPO.id)}
           />
         ) : (
           <Modal open title="Purchase Order" onClose={handleCloseModal} maxWidth="lg">

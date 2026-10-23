@@ -112,6 +112,8 @@ interface PODetailModalProps {
   // #858: a PO REGISTRATION for this PO is waiting on PENDING GP WRITES. The PO page already joins the
   // queue onto its rows, so it hands the answer down rather than this modal reading the queue again.
   registrationQueued?: boolean;
+  /** #1948: the registration failed but GP took it, or may have - it needs Retry, it won't post by itself. */
+  registrationHeld?: boolean;
 }
 
 // --- Component ---
@@ -135,6 +137,7 @@ export default function PODetailModal({
   onRefetch,
   relayConnected: relayConnectedProp,
   registrationQueued = false,
+  registrationHeld = false,
 }: PODetailModalProps) {
   const { showToast } = useToast();
   const apollo = useApolloClient();
@@ -782,7 +785,14 @@ export default function PODetailModal({
             </Button>
           )}
           {heldForQueuedRegistration && (
-            <Tooltip title="This PO's registration is queued for GP, so it can't be changed until it posts." arrow>
+            <Tooltip
+              title={
+                registrationHeld
+                  ? "GP took this PO's registration, or may have, but it wasn't recorded here, so it can't be changed. Finish it with Retry under Held PO registrations."
+                  : "This PO's registration is queued for GP, so it can't be changed until it posts."
+              }
+              arrow
+            >
               <span>
                 <Button variant="outlined" disabled>
                   Edit
