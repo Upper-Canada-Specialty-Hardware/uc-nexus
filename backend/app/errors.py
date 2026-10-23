@@ -134,6 +134,25 @@ class RelayCallError(AppError):
         super().__init__(message, "RELAY_CALL_FAILED")
         self.detail = detail or {}
 
+    @property
+    def relay_error(self) -> str:
+        """The relay's own error code (`detail.error`), or "" when it sent none."""
+        return str(self.detail.get("error") or "")
+
+    @property
+    def may_have_committed(self) -> bool:
+        """Whether this refusal can come after GP committed the write (#1857), so it is not GP saying no.
+        Every path that lets a write's claim go on a refusal asks this first: released, the next try mints
+        a fresh key and GP takes the write twice."""
+        return self.relay_error in MAYBE_COMMITTED_RELAY_ERRORS
+
+
+# #1857: relay error codes that can come after GP committed the write. The relay rolls back a write that
+# raised a database error (`sql_error`) and refuses an unserved company (`company_not_allowed`) before any
+# work, so neither leaves the write in GP; an unplanned exception (`internal_error`) can come after the
+# commit. Shared by the GP write queue and the online paths, so the two never disagree on what GP refused.
+MAYBE_COMMITTED_RELAY_ERRORS = ("internal_error",)
+
 
 class RelayBusyError(RelayCallError):
     """The relay refused a BACKGROUND op before running it because GP's SQL server is above the

@@ -405,12 +405,14 @@ def _json_line_items(line_items_data: list[dict]) -> list[dict]:
 RECEIPT_MAY_BE_IN_GP = "RECEIPT_MAY_BE_IN_GP"
 
 
-def _receipt_may_be_in_gp(e: Exception) -> ConflictError:
+def _receipt_may_be_in_gp(e: Exception, *, this_attempt: bool = False) -> ConflictError:
     """A refusal on a resumed approval, raised with the claim held (#1945): the reason, and why the draft
-    is not back in the queue. Worded the way the ambiguous outbox case is."""
+    is not back in the queue. Worded the way the ambiguous outbox case is. `this_attempt` when it is this
+    attempt's own receipt that may be in GP - a relay refusal that can follow the commit (#1857)."""
     reason = e.message if isinstance(e, AppError) else "The approval could not be checked again."
+    who = "This approval" if this_attempt else "An earlier attempt at this approval"
     return ConflictError(
-        f"{reason.rstrip('.')}. An earlier attempt at this approval may already have posted the receipt to "
+        f"{reason.rstrip('.')}. {who} may already have posted the receipt to "
         "GP, so the draft stays claimed: check GP before going on - retry once the cause is fixed, or have "
         "the receipt reconciled.",
         code=RECEIPT_MAY_BE_IN_GP,
@@ -1469,13 +1471,20 @@ class WarehouseMutations:
             try:
                 relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
             except (RelayCallError, RelayOpUnsupportedError) as e:
-                # The relay answered: eConnect refused it, or this build cannot run the op. Either
-                # way GP did not commit, so the draft goes back in the queue for whoever fixes the
-                # cause - the #425 quarantine being the usual one. #1945: a refusal is safe to release
-                # on a resume too, because the relay looks the key up before anything else; a build
-                # that cannot run the op never looked, so a resume keeps its claim.
+                # The relay answered: eConnect refused it, or this build cannot run the op. Either way -
+                # short of a refusal that can follow the commit (#1857) - GP did not commit, so the draft
+                # goes back in the queue for whoever fixes the cause - the #425 quarantine being the usual
+                # one. #1945: a refusal is safe to release on a resume too, because the relay looks the key
+                # up before anything else; a build that cannot run the op never looked, so a resume keeps
+                # its claim.
                 if ctx.resumed and isinstance(e, RelayOpUnsupportedError):
                     raise _receipt_may_be_in_gp(e) from e
+                if isinstance(e, RelayCallError) and e.may_have_committed:
+                    # #1857: not GP saying no - an unplanned relay exception can follow the commit, which the
+                    # GP write queue holds as maybe in GP. Released, the draft would be approved again under
+                    # a fresh key and GP would take a second receipt; claimed, a retry goes out under this
+                    # key, which the relay answers with the receipt it posted.
+                    raise _receipt_may_be_in_gp(e, this_attempt=not ctx.resumed) from e
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 if isinstance(e, RelayCallError):
                     # #730: GP found the job inactive, closed or gone at the moment of writing. Worded

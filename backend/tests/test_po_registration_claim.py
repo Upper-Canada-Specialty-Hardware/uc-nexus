@@ -86,6 +86,46 @@ def test_the_claim_is_released_when_gp_refuses(monkeypatch, db_session):
     assert po_repository.reload_po(db_session, draft.id).registering_key is None
 
 
+def test_a_relay_internal_error_is_queued_as_maybe_in_gp_not_released(monkeypatch, db_session):
+    """#1857: an unplanned relay exception can come after GP made the PO, which the GP write queue holds as
+    maybe in GP. Released as GP refusing, the next try pushed a second PO under a fresh key. It is queued
+    under the attempt's key as a dispatched timeout is, and the queued row holds the draft."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        raise RelayCallError("unhandled relay exception", detail={"error": "internal_error"})
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    try:
+        result = _run_register(draft, key)
+
+        assert result.queued is True
+        queued = _queued_write(key)
+        assert (queued["op"], queued["status"], queued["maybe_in_gp"]) == ("register_po_in_gp", "PENDING", True)
+        assert queued["payload"]["idempotency_key"] == key
+        po = po_repository.reload_po(db_session, draft.id)
+        assert po.status == POStatus.DRAFT
+        # Another window is refused by the queued row rather than pushing a second PO.
+        with pytest.raises(InvalidStateTransitionError, match="queued"):
+            po_repository.claim_po_registration(db_session, draft.id, str(uuid.uuid4()))
+    finally:
+        _delete_queued_write(key)
+
+
+def test_the_claim_is_released_when_gp_refuses_with_a_code_of_its_own(monkeypatch, db_session):
+    """#1857 holds only a refusal that can follow the commit: any other code is GP saying no, and releases."""
+    draft = _stock_draft_po(db_session)
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        raise RelayCallError("vendor on hold", detail={"error": "econnect_error"})
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    with pytest.raises(RelayCallError):
+        _run_register(draft, str(uuid.uuid4()))
+    assert po_repository.reload_po(db_session, draft.id).registering_key is None
+
+
 def test_a_registration_gp_took_that_failed_to_save_is_queued_from_what_gp_was_sent(monkeypatch, db_session):
     """#1950: the attempt's key lived only in the dialog that pushed it, so once that closed nothing could
     finish the PO GP had made. It is queued under the same key with what GP was sent; the held writes

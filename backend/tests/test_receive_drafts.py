@@ -1074,6 +1074,34 @@ def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeyp
     assert len(relay.calls) == 1, "the refusal has to come from GP, not from skipping the call"
 
 
+def test_a_relay_internal_error_keeps_the_claim_as_maybe_in_gp(committed, monkeypatch, approve_env):
+    """#1857: an unplanned relay exception can come after GP committed the receipt, and the GP write queue
+    holds it as maybe in GP. Released as GP refusing, the next approval went out under a fresh key and GP
+    took a second receipt. The claim is kept, the refusal says GP may hold it, and the retry asks GP again
+    under the same key."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    relay = _StubRelay(fail_with=RelayCallError("unhandled relay exception", detail={"error": "internal_error"}))
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert "This approval may already have posted the receipt to GP" in excinfo.value.message
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING
+    assert parked.approval_idempotency_key == key
+
+    relay.fail_with = None
+    result = _approve(f.draft_id, key=key)
+
+    assert [payload["idempotency_key"] for (_, _, payload) in relay.calls] == [key, key]
+    assert result.draft.status.value == "APPROVED"
+
+
 def _queued_row(result):
     from app.database import SessionLocal
     from app.models.gp_outbox import GpWriteOutbox

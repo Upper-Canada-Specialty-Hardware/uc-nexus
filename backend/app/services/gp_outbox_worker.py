@@ -263,9 +263,8 @@ def _registration_stale_reason(context: dict) -> str | None:
 # exception nothing on the relay planned for, and `company_not_allowed` a relay that could not read GP's
 # company list just then. Each is asked again under the attempt budget rather than held as GP refusing.
 _TRANSIENT_RELAY_ERRORS = ("sql_error", "internal_error", "company_not_allowed")
-# The relay rolls back a write that raised a database error and refuses an unserved company before any
-# work, so neither leaves the write in GP. An unplanned exception can come after the commit.
-_MAYBE_COMMITTED_RELAY_ERRORS = ("internal_error",)
+# Which of them can come after the commit is `MAYBE_COMMITTED_RELAY_ERRORS` in app.errors, shared with the
+# online paths (#1857).
 
 
 def _load_row(row_id: uuid.UUID):
@@ -532,9 +531,7 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
             # A database error can also be the commit itself failing, and then the write may be in GP. A
             # keyed write's retry finds it by its key; one with no key could post twice, so it waits for a
             # person like a timeout (#1857).
-            maybe_in_gp = relay_error in _MAYBE_COMMITTED_RELAY_ERRORS or (
-                relay_error == "sql_error" and not retry_safe
-            )
+            maybe_in_gp = e.may_have_committed or (relay_error == "sql_error" and not retry_safe)
             if maybe_in_gp and not retry_safe:
                 # Like a timeout: the write may be in GP and asking again could post it twice.
                 await asyncio.to_thread(

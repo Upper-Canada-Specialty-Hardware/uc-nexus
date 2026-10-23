@@ -1302,17 +1302,28 @@ class POMutations:
                     # the claim to go stale rather than letting another window push a second PO.
                     release = False
                     gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-                except (RelayUnavailableError, RelayTimeoutError) as e:
+                except (RelayUnavailableError, RelayTimeoutError, RelayCallError) as e:
+                    if isinstance(e, RelayCallError) and not e.may_have_committed:
+                        # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
+                        # it reads the same. Every other refusal passes through untouched.
+                        release = True  # GP refused it, so nothing reached GP
+                        refusal = project_repository.gp_job_refusal(e, job_number)
+                        if refusal is not None:
+                            raise refusal from e
+                        raise
                     # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
                     # the user it will post itself. All three ways that can happen are queued now - the
                     # relay is not there, the socket died with the job on the wire, or the relay did not
                     # answer in time. The last two used to surface to the user, because a retry might have
                     # reserved a second PO number in GP; the relay recognises the attempt's key now and
-                    # answers with the PO it already made, so asking again cannot double-order.
+                    # answers with the PO it already made, so asking again cannot double-order. #1857: so is
+                    # a refusal that can follow the commit (an unplanned relay exception), which released
+                    # the claim as GP refusing and let the next try push a second PO under a fresh key.
                     project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
-                    # #1948: the last two may have left the PO in GP, so the row says so - however it ends,
-                    # it then keeps holding the draft rather than freeing it to be cancelled or registered again.
-                    may_be_in_gp = isinstance(e, RelayTimeoutError) or e.dispatched
+                    # #1948: all but the first may have left the PO in GP, so the row says so - however it
+                    # ends, it then keeps holding the draft rather than freeing it to be cancelled or
+                    # registered again.
+                    may_be_in_gp = not isinstance(e, RelayUnavailableError) or e.dispatched
                     entry_id = await asyncio.to_thread(
                         gp_outbox_enqueue.enqueue,
                         idempotency_key=key,
@@ -1332,14 +1343,6 @@ class POMutations:
                     release = True
                     po = await asyncio.to_thread(_load_po_type, pid)
                     return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
-                except RelayCallError as e:
-                    # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
-                    # it reads the same. Every other refusal passes through untouched.
-                    release = True  # GP refused it, so nothing reached GP
-                    refusal = project_repository.gp_job_refusal(e, job_number)
-                    if refusal is not None:
-                        raise refusal from e
-                    raise
                 # #1950: kept with GP's answer, what was sent saves it if the save and its queueing both fail.
                 await asyncio.to_thread(
                     gp_idempotency.record_relay_result,
