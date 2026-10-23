@@ -132,13 +132,15 @@ class GpOutboxQueries:
             ledgers = gp_outbox_repository.ledgers_for(session, rows)
             holding = gp_outbox_repository.registrations_holding_drafts(session, rows, ledgers)
             took = gp_outbox_repository.writes_gp_took(rows, ledgers)
-            # A registration GP took whose PO is already in Nexus can be let go, so Cancel is offered on it.
+            # A registration GP took whose PO is already in Nexus can be let go, so Cancel is offered on it,
+            # as it is on a receipt GP took whose draft has moved on (#1961).
             in_nexus = gp_outbox_repository.registrations_already_in_nexus(session, rows, ledgers)
+            let_go = gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers)
             return [
                 gp_outbox_entry_to_type(
                     r,
                     holds_draft=r.id in holding,
-                    gp_took=r.id in took and r.id not in in_nexus,
+                    gp_took=r.id in took and r.id not in in_nexus and r.id not in let_go,
                     already_in_nexus_as=in_nexus.get(r.id),
                 )
                 for r in rows

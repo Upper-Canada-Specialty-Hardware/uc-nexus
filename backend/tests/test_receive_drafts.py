@@ -1489,6 +1489,75 @@ def test_a_timed_out_attempt_whose_claim_was_released_meanwhile_is_held_not_queu
     assert (row.idempotency_key, row.status, row.failure_kind, row.maybe_in_gp) == (key, "FAILED", "ambiguous", True)
 
 
+def test_a_receipt_held_for_an_approval_released_meanwhile_can_be_let_go(committed, monkeypatch, approve_env):
+    """#1961: the held receipt could be neither retried (its draft no longer links to it) nor cancelled (GP
+    took it), and its ledger row held the PO's received-quantity sync for good. Its draft has moved on, so
+    Cancel lets it go and settles the ledger; GP's answer stays on it."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, {"receipt_number": "RCT001961"})
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="went back for review"):
+            gp_outbox_repository.retry_entry(session, row.id)
+        session.rollback()
+        rows = [gp_outbox_repository.get_entry(session, row.id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.writes_gp_took(rows, ledgers) == {row.id}
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == {row.id}
+
+        assert gp_outbox_repository.cancel_entry(session, row.id).status == "CANCELLED"
+        session.commit()
+
+    with SessionLocal() as session:
+        ledger = session.get(GpWriteIdempotency, key)
+        assert ledger.result_id == gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+        assert ledger.relay_result["receipt_number"] == "RCT001961"
+        assert not gp_outbox_repository.write_gp_took(session, gp_outbox_repository.get_entry(session, row.id))
+        assert not _receipt_in_flight(session, f.po_id)
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.receive_record_id is None
+
+
+def test_a_receipt_gp_took_whose_draft_still_links_to_it_is_not_let_go(committed, monkeypatch, approve_env):
+    """#1961 lets go only a receipt whose draft has moved on. One its draft still waits on is finished with
+    Retry: cancelled, GP would hold a receipt the approved draft never books."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    key = _queued_row_key(row_id)
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001961"})
+    with SessionLocal() as session:
+        row = gp_outbox_repository.get_entry_locked(session, row_id)
+        gp_outbox_repository.mark_failed(session, row, kind="persist_failed", error="save failed", maybe_in_gp=True)
+        session.commit()
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == set()
+        with pytest.raises(ConflictError, match="GP already took this write"):
+            gp_outbox_repository.cancel_entry(session, row_id)
+    assert _read_draft(f.draft_id).approved_outbox_entry_id == row_id
+
+
 def _queue_as_maybe_in_gp(f, monkeypatch):
     """An approval whose relay call timed out: the receipt queued under its key, as maybe in GP."""
     from app.errors import RelayTimeoutError

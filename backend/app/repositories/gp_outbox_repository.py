@@ -154,6 +154,23 @@ def write_gp_took(session: Session, row: GpWriteOutbox) -> bool:
     return _gp_took(session.get(GpWriteIdempotency, row.idempotency_key))
 
 
+# #1961: what a let-go receipt's ledger row is settled with in place of a receive record. A receipt held for
+# an approval released meanwhile is booked nowhere and never posts, and its draft has moved on; settled, the
+# key stops reading as a write GP took, and the PO's received-quantity sync stops waiting on it. GP's answer
+# stays on the row, and the marker is no record id, so a resume of the key is refused as another receive's.
+RECEIPT_LET_GO_RESULT_ID = "let-go:reconciled-in-gp"
+
+
+def receipts_gp_took_whose_draft_moved_on(session: Session, rows: list[GpWriteOutbox], ledgers: dict) -> set[uuid.UUID]:
+    """The receipts GP took, of `rows`, whose draft no longer links to them, off `ledgers_for`'s one read: the
+    ones `cancel_entry` lets go though GP took them (#1961). Retry is refused on each, so without this
+    neither button moved it."""
+    from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
+
+    took = [r for r in rows if r.op == "create_receive" and _gp_took(ledgers.get(r.idempotency_key))]
+    return receipts_whose_draft_moved_on(session, took) if took else set()
+
+
 def _draft_id_of(row: GpWriteOutbox) -> uuid.UUID | None:
     try:
         return uuid.UUID(row.entity_key.removeprefix("po:"))
@@ -532,14 +549,25 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
         return None
     # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
     # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
-    # Except a registration whose GP PO the mirror already copied into Nexus: nothing is abandoned.
+    # Except a registration whose GP PO the mirror already copied into Nexus: nothing is abandoned. And a
+    # receipt whose draft has moved on (#1961): Retry is refused on it, so Retry finishes nothing, and the
+    # count is someone else's to approve now - what GP took under it is reconciled in GP by hand.
     in_nexus = None
+    receipt_let_go = False
     if write_gp_took(session, row):
-        in_nexus = registrations_already_in_nexus(session, [row], ledgers_for(session, [row])).get(row.id)
-        if in_nexus is None:
+        ledgers = ledgers_for(session, [row])
+        in_nexus = registrations_already_in_nexus(session, [row], ledgers).get(row.id)
+        receipt_let_go = row.id in receipts_gp_took_whose_draft_moved_on(session, [row], ledgers)
+        if in_nexus is None and not receipt_let_go:
             raise ConflictError(GP_TOOK_CANCEL_REFUSAL)
     row.status = "CANCELLED"
     session.flush()
+    if receipt_let_go:
+        # Settled, or `_receipt_in_flight` held the PO's received-quantity sync on its ledger row for good.
+        from app.services import gp_idempotency
+
+        gp_idempotency.stamp_result_id(session, row.idempotency_key, row.op, None, RECEIPT_LET_GO_RESULT_ID)
+        session.flush()
     if in_nexus is not None:
         # Its draft goes too, cancelled as any draft is: left a draft, Register would push a second GP PO
         # for the order GP holds as the mirrored copy.

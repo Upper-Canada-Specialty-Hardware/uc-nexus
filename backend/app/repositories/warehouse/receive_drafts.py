@@ -1079,6 +1079,44 @@ def release_draft_for_outbox_entry(session: Session, entry) -> ReceiveDraftModel
     return draft
 
 
+def _receive_draft_id_of(entry) -> uuid.UUID | None:
+    draft_id = (entry.persist_context or {}).get("receive_draft_id")
+    try:
+        return uuid.UUID(str(draft_id)) if draft_id else None
+    except ValueError:
+        return None
+
+
+def receipts_whose_draft_moved_on(session: Session, entries) -> set[uuid.UUID]:
+    """The queued receipts, of `entries`, whose draft is there and no longer links to them, in one read.
+
+    Such a row never posts - its Retry is refused (`assert_outbox_entry_retryable`) - whatever GP made of it:
+    sent back for review, or held linked to no draft because the approval was released while it was out at
+    GP (#1945). The draft is someone else's to approve now, so a receipt GP took under the row is a manager's
+    to reconcile in GP by hand, and the row can be let go (#1961, see `cancel_entry`)."""
+    by_draft: dict[uuid.UUID, list] = {}
+    for entry in entries:
+        draft_id = _receive_draft_id_of(entry) if entry.op == "create_receive" else None
+        if draft_id is not None:
+            by_draft.setdefault(draft_id, []).append(entry)
+    if not by_draft:
+        return set()
+    links = dict(
+        session.execute(
+            select(ReceiveDraftModel.id, ReceiveDraftModel.approved_outbox_entry_id).where(
+                ReceiveDraftModel.id.in_(list(by_draft))
+            )
+        ).all()
+    )
+    return {
+        entry.id
+        for draft_id, linked in by_draft.items()
+        if draft_id in links
+        for entry in linked
+        if links[draft_id] != entry.id
+    }
+
+
 def assert_outbox_entry_retryable(session: Session, entry) -> None:
     """Refuse to replay a queued receipt whose draft was sent back for review (#1298).
 
@@ -1086,10 +1124,10 @@ def assert_outbox_entry_retryable(session: Session, entry) -> None:
     row as well would post the same receipt to GP twice."""
     if entry is None or entry.op != "create_receive":
         return
-    draft_id = (entry.persist_context or {}).get("receive_draft_id")
-    if not draft_id:
+    draft_id = _receive_draft_id_of(entry)
+    if draft_id is None:
         return
-    draft = session.get(ReceiveDraftModel, uuid.UUID(str(draft_id)))
+    draft = session.get(ReceiveDraftModel, draft_id)
     if draft is not None and draft.approved_outbox_entry_id != entry.id:
         raise ConflictError(
             "This receipt's draft went back for review when the GP write stopped. Approve the draft "
