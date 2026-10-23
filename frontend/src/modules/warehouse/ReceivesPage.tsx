@@ -20,6 +20,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { appendById } from '../../utils/appendById';
 import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import type { Project } from '../../types/project';
 
@@ -110,7 +111,9 @@ export default function ReceivesPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset paging when the filters change
     setReachedEnd(false);
   }, [projectId, statusFilter, poSearch]);
-  const hasMore = !reachedEnd && rows.length > 0 && rows.length % PAGE_SIZE === 0;
+  // A full first page means older rows may exist; past it, the end is the last page coming back short.
+  // Not a multiple of the page size: a Load more page the dedupe below trimmed leaves one (#1888).
+  const hasMore = !reachedEnd && rows.length >= PAGE_SIZE;
 
   const handleLoadMore = async () => {
     setLoadingMore(true);
@@ -118,7 +121,8 @@ export default function ReceivesPage() {
       const res = await fetchMore({
         variables: { offset: rows.length },
         updateQuery: (prev, { fetchMoreResult }) => ({
-          receives: [...(prev.receives ?? []), ...(fetchMoreResult?.receives ?? [])],
+          // #1888: by id, so a row the offset hands back a second time is not listed twice.
+          receives: appendById(prev.receives ?? [], fetchMoreResult?.receives ?? []),
         }),
       });
       if ((res.data?.receives?.length ?? 0) < PAGE_SIZE) setReachedEnd(true);

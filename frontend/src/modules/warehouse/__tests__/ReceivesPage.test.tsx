@@ -66,6 +66,30 @@ describe('ReceivesPage server paging (#1267)', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  it('does not list a row twice when the next page hands it back again (#1888)', async () => {
+    // A receive approved between the two reads shifts the offset by one, so the second page opens with
+    // the row the first page ended on. It is a full page, so Load more is still offered after it.
+    const mocks: MockedResponse[] = [
+      projectsMock,
+      { request: { query: GET_RECEIVES, variables: { limit: 200, offset: 0 } }, result: { data: { receives: makeRows(1, 200) } } },
+      { request: { query: GET_RECEIVES, variables: { limit: 200, offset: 200 } }, result: { data: { receives: makeRows(200, 200) } } },
+    ];
+
+    render(
+      <MockedProvider mocks={mocks}>
+        <MemoryRouter>
+          <ReceivesPage />
+        </MemoryRouter>
+      </MockedProvider>,
+    );
+
+    expect(await screen.findByText(/200 receive\(s\), newest first - older ones exist/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText(/399 receive\(s\), newest first - older ones exist/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument();
+  });
+
   it('does not offer Load more when the first page is short', async () => {
     const mocks: MockedResponse[] = [
       projectsMock,

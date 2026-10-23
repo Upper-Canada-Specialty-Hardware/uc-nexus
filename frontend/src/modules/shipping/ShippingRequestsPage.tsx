@@ -34,11 +34,11 @@ import { GET_PROJECT, GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { rackLabel, racksCaption, useProjectRacks } from './racks';
+import { appendById } from '../../utils/appendById';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
 // same module rather than a second copy that can drift (#613).
 import {
   HISTORY_PAGE_SIZE,
-  appendById,
   STAGE_COLOR,
   STAGE_LABEL,
   STAGE_ORDER,

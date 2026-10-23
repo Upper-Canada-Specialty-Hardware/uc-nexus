@@ -46,9 +46,9 @@ import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
 import LoadError from '../../components/LoadError';
 import { dismissalLines } from './dismissals';
+import { appendById } from '../../utils/appendById';
 import {
   HISTORY_PAGE_SIZE,
-  appendById,
   PULL_STATUS_COLOR,
   PULL_STATUS_LABEL,
   STAGE_COLOR,
