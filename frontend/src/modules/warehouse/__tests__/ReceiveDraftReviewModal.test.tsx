@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -550,10 +550,15 @@ describe('ReceiveDraftReviewModal', () => {
 
       // The reason first: the button is disabled while the approve is still submitting too, before the
       // re-read that says an attempt may be running has landed.
-      expect(await screen.findByTestId('release-wait-reason', {}, { timeout: 15_000 })).toHaveTextContent(
-        /may still be posting this receipt/,
+      // Both at once, in the state the modal settles in: read one query apart, the re-read could land
+      // between them and re-render the block under the second.
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('release-wait-reason')).toHaveTextContent(/may still be posting this receipt/);
+          expect(screen.getByRole('button', { name: RELEASE })).toBeDisabled();
+        },
+        { timeout: 15_000 },
       );
-      expect(screen.getByRole('button', { name: RELEASE })).toBeDisabled();
     });
 
     it('does not offer the release on a draft awaiting approval', async () => {
