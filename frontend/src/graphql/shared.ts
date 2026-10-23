@@ -155,6 +155,8 @@ export const GET_GP_OUTBOX = gql`
       maybeInGp
       # #1948: a registration GP took whose GP PO the mirror already copied into Nexus - let go with Cancel.
       alreadyInNexusAs
+      # #1961: a receipt GP took whose draft has moved on - GP holds it, Nexus booked nothing; Cancel lets it go.
+      receiptDraftMovedOn
     }
   }
 `;

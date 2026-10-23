@@ -51,11 +51,16 @@ const MAYBE_IN_GP_CANCEL_WARNING =
   'there, cancelling leaves a PO in GP with nothing here for it, and registering the draft again makes a second one.';
 // #1945: a receipt that may be in GP never hands its draft back on its own - released, it could be approved
 // and posted again. Cancelled, the draft stays approved, holding its units, until a manager releases it.
-// Or it has moved on already: an approval released while its attempt ran, which a manager reconciled (#1961).
 const MAYBE_IN_GP_RECEIPT_CANCEL_WARNING =
   'GP may already hold this receipt - an attempt reached GP and no answer came back. Cancelling does not send ' +
-  'its count back for review: the draft is left as it is, and one still approved stays approved until a Warehouse ' +
-  'Manager checks GP and, if no receipt was posted, releases it from Receive Approvals under Held on GP.';
+  'its count back for review: the draft stays approved until a Warehouse Manager checks GP and, if no receipt ' +
+  'was posted, releases it from Receive Approvals under Held on GP.';
+// #1961: a receipt GP answered after its approval was released. GP holds it and nothing was booked here for it;
+// once it is let go the PO's received count follows GP's, so it is reconciled in GP before it is cancelled.
+const RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING =
+  'GP holds this receipt - it answered after the approval was released, and Nexus booked nothing for it. ' +
+  "Once it is cancelled, the PO's received count here follows GP's, with nothing put into inventory for it. " +
+  'Reconcile it in GP first: reverse it there if those units were not received this way.';
 
 // #1948: a registration GP took whose PO the mirror already copied: its save can never land, and cancelling
 // it abandons nothing in GP. The draft is cancelled with it, so it is never registered a second time.
@@ -227,9 +232,11 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
             ? alreadyInNexusCancelWarning(cancelTarget.alreadyInNexusAs)
             : cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
               ? MAYBE_IN_GP_CANCEL_WARNING
-              : cancelTarget?.relayOp === 'create_receipt' && cancelTarget.maybeInGp
-                ? MAYBE_IN_GP_RECEIPT_CANCEL_WARNING
-                : NORMAL_CANCEL_WARNING
+              : cancelTarget?.receiptDraftMovedOn
+                ? RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING
+                : cancelTarget?.relayOp === 'create_receipt' && cancelTarget.maybeInGp
+                  ? MAYBE_IN_GP_RECEIPT_CANCEL_WARNING
+                  : NORMAL_CANCEL_WARNING
         }
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"

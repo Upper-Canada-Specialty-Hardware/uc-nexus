@@ -251,8 +251,30 @@ it('warns before cancelling a receipt GP may hold that its draft stays approved 
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
   expect(await screen.findByText(/GP may already hold this receipt/)).toBeInTheDocument();
-  expect(screen.getByText(/one still approved stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
+  expect(screen.getByText(/the draft stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
   expect(screen.queryByText(/whoever submitted it will have to redo it/)).toBeNull();
+});
+
+// #1961: a receipt GP answered after its approval was released is in GP, with nothing booked here for it.
+it('warns before letting go of a receipt whose draft moved on that GP holds it and to reconcile it there', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'persist_failed',
+      maybeInGp: true,
+      gpTook: false,
+      receiptDraftMovedOn: true,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP holds this receipt - it answered after the approval was released/)).toBeInTheDocument();
+  expect(screen.getByText(/Reconcile it in GP first/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this receipt/)).toBeNull();
 });
 
 it('keeps the plain cancel words for a write nothing says reached GP', async () => {

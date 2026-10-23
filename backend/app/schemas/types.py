@@ -2381,6 +2381,9 @@ class GpOutboxEntry:
     # #1948: a registration GP took whose GP PO is already a live Nexus PO (the mirror's copy), by that PO
     # number. Its save can never land; cancelling it abandons nothing in GP, and cancels its draft.
     already_in_nexus_as: str | None = None
+    # #1961: a receipt GP took whose draft has moved on - its approval was released while the attempt ran.
+    # GP holds it and Nexus booked nothing for it; Cancel lets it go once it is reconciled in GP.
+    receipt_draft_moved_on: bool = False
 
 
 @strawberry.type

@@ -142,6 +142,7 @@ class GpOutboxQueries:
                     holds_draft=r.id in holding,
                     gp_took=r.id in took and r.id not in in_nexus and r.id not in let_go,
                     already_in_nexus_as=in_nexus.get(r.id),
+                    receipt_draft_moved_on=r.id in let_go,
                 )
                 for r in rows
             ]
