@@ -12,7 +12,7 @@ import {
   REJECT_RECEIVE_DRAFT,
   RELEASE_HELD_RECEIVE_APPROVAL,
 } from '../../../graphql/warehouse';
-import { GET_PROJECTS, GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
 import { GraphQLError } from 'graphql';
 import type { ReceiveDraft } from '../receiveDraftTypes';
 
@@ -126,7 +126,8 @@ function warehousesMock(): MockedResponse {
 }
 
 // Pending 3 on the drafted line, so a reviewer raising the count from 2 to 3 is legal and 4 is not.
-function poDetailsMock(): MockedResponse {
+// `project` is the PO's own project as the server reads it (#1877), archived or not.
+function poDetailsMock(project: Record<string, unknown> | null = null): MockedResponse {
   return {
     request: { query: GET_PO_RECEIVING_DETAILS, variables: { poId: 'po-1' } },
     result: {
@@ -136,6 +137,8 @@ function poDetailsMock(): MockedResponse {
           id: 'po-1',
           poNumber: 'PO-123',
           requestNumber: 'RQ-77',
+          projectId: project ? 'proj-1' : null,
+          project,
           gpCompany: 'UCSH',
           gpVendorId: 'GPV-1',
           vendorNameSnapshot: 'Acme Hardware',
@@ -188,10 +191,15 @@ function approveResult(queued: boolean, receiptNumber: string | null) {
   };
 }
 
-function renderModal(extraMocks: MockedResponse[] = [], d: ReceiveDraft = draft(), relayUp = true) {
+function renderModal(
+  extraMocks: MockedResponse[] = [],
+  d: ReceiveDraft = draft(),
+  relayUp = true,
+  poDetails: MockedResponse = poDetailsMock(),
+) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[relayMock(relayUp), warehousesMock(), poDetailsMock(), ...extraMocks]}>
+    <MockedProvider mocks={[relayMock(relayUp), warehousesMock(), poDetails, ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveDraftReviewModal open draft={d} onClose={onClose} />
@@ -204,8 +212,13 @@ function renderModal(extraMocks: MockedResponse[] = [], d: ReceiveDraft = draft(
 
 const SLOW = { timeout: 5000 };
 
-async function openModal(extraMocks: MockedResponse[] = [], d?: ReceiveDraft, relayUp = true) {
-  const result = renderModal(extraMocks, d, relayUp);
+async function openModal(
+  extraMocks: MockedResponse[] = [],
+  d?: ReceiveDraft,
+  relayUp = true,
+  poDetails: MockedResponse = poDetailsMock(),
+) {
+  const result = renderModal(extraMocks, d, relayUp, poDetails);
   await screen.findByText('HG-100', undefined, SLOW);
   return result;
 }
@@ -878,41 +891,42 @@ describe('ReceiveDraftReviewModal', () => {
     expect(approveButton()).toBeDisabled();
   });
 
-  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing.
-  function projectsMock(gpJobState: string | null): MockedResponse {
-    return {
-      request: { query: GET_PROJECTS },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-      result: {
-        data: {
-          projects: [
-            {
-              __typename: 'Project',
-              id: 'proj-1',
-              projectId: 'JOB-1',
-              description: 'Riverside Tower',
-              client: null,
-              jobSiteName: null,
-              scheduleFilename: null,
-              company: 'TUBC',
-              openingCount: 4,
-              gpSetupOk: true,
-              gpSetupCheckedAt: null,
-              gpSetupIssues: null,
-              gpJobState,
-            },
-          ],
-        },
-      },
-    };
+  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing. #1877: the
+  // project is the PO's own, off GET_PO_RECEIVING_DETAILS - the projects list left archived jobs out.
+  function poProject(gpJobState: string | null, gpSetupOk = true): MockedResponse {
+    return poDetailsMock({
+      __typename: 'PurchaseOrderProject',
+      id: 'proj-1',
+      projectId: 'JOB-1',
+      description: 'Riverside Tower',
+      gpJobState,
+      gpSetupOk,
+      gpSetupIssues: gpSetupOk ? null : [{ __typename: 'GpSetupIssue', costCode: '08-710', accountIndex: 9999 }],
+    });
   }
 
   it('blocks approval against a job that is inactive in GP, and says why', async () => {
-    await openModal([projectsMock('INACTIVE')]);
+    await openModal([], undefined, true, poProject('INACTIVE'));
 
     const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
     expect(banner).toHaveTextContent('GP job JOB-1: Inactive in GP');
     expect(banner).toHaveTextContent('So approving a receive against it is not possible.');
+    expect(approveButton()).toBeDisabled();
+  });
+
+  it('blocks approval against an archived job closed in GP, which the projects list leaves out (#1877)', async () => {
+    // No projects-list mock at all: the modal reads the PO's own project, so an archived one is still seen.
+    await openModal([], undefined, true, poProject('CLOSED'));
+
+    const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
+    expect(banner).toHaveTextContent('GP job JOB-1');
+    expect(approveButton()).toBeDisabled();
+  });
+
+  it("warns of an archived job's broken GP setup and blocks approval (#1877)", async () => {
+    await openModal([], undefined, true, poProject('ACTIVE', false));
+
+    expect(await screen.findByTestId('gp-setup-quarantine-banner', undefined, SLOW)).toBeInTheDocument();
     expect(approveButton()).toBeDisabled();
   });
 
@@ -925,7 +939,7 @@ describe('ReceiveDraftReviewModal', () => {
         ],
       },
     };
-    await openModal([projectsMock('ACTIVE'), approveMock]);
+    await openModal([approveMock], undefined, true, poProject('ACTIVE'));
     expect(approveButton()).toBeEnabled();
 
     await approveViaConfirm();

@@ -20,7 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import { GET_WAREHOUSES, GET_PROJECTS } from '../../graphql/shared';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PO_RECEIVING_DETAILS,
   APPROVE_RECEIVE_DRAFT,
@@ -43,7 +43,7 @@ import {
 } from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
-import { isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
+import { isGpJobNotOpen, isGpSetupBroken } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
 import { PostedReceiptLines, type PostedReceipt } from './ReceiveOutcomePanels';
 import {
@@ -167,8 +167,6 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
 
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !open });
-
   // network-only: the reviewer is deciding against what the PO owes RIGHT NOW, which another receive
   // may have moved since the draft was written.
   const {
@@ -221,11 +219,10 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   const relay = useRelayStatus({ skip: !open || succeeded });
   const relayStatus: boolean | null = open ? relay.connected : null;
 
-  const projectId = draft?.projectId ?? null;
-  const project = useMemo(() => {
-    if (!projectId) return null;
-    return (projectsData?.projects ?? []).find((p) => p.id === projectId) ?? null;
-  }, [projectId, projectsData]);
+  // #1877: the verdict is read off the PO's own project, as the receive modal reads it, not found in the
+  // projects list - which leaves archived jobs out, so an archived job's banners hid and Approve stayed on
+  // for the server to refuse.
+  const project = poDetails?.projectId ? (poDetails.project ?? null) : null;
   const quarantined = project !== null && isGpSetupBroken(project);
   // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing. A hard block
   // for the same reason as #425: queuing would only drain into the same refusal.
