@@ -535,8 +535,12 @@ describe('ReceiveDraftReviewModal', () => {
 
       await approveViaConfirm();
 
-      expect(await screen.findByRole('button', { name: RELEASE }, { timeout: 15_000 })).toBeDisabled();
-      expect(screen.getByTestId('release-wait-reason')).toHaveTextContent(/may still be posting this receipt/);
+      // The reason first: the button is disabled while the approve is still submitting too, before the
+      // re-read that says an attempt may be running has landed.
+      expect(await screen.findByTestId('release-wait-reason', {}, { timeout: 15_000 })).toHaveTextContent(
+        /may still be posting this receipt/,
+      );
+      expect(screen.getByRole('button', { name: RELEASE })).toBeDisabled();
     });
 
     it('does not offer the release on a draft awaiting approval', async () => {
