@@ -521,6 +521,20 @@ def summary(session: Session, company: str | None = None) -> dict:
     }
 
 
+LET_GO_RETRY_REFUSAL = (
+    "This write was let go after GP took it, and what GP holds is settled here. There is nothing to send again."
+)
+
+
+def _ledger_settled(session: Session, row: GpWriteOutbox) -> bool:
+    from app.models.gp_write import GpWriteIdempotency
+
+    if not row.idempotency_key:
+        return False
+    ledger = session.get(GpWriteIdempotency, row.idempotency_key)
+    return ledger is not None and ledger.result_id is not None
+
+
 def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: put a FAILED row back on the queue immediately, with a fresh attempt budget.
 
@@ -529,6 +543,10 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
+    if row.status == "CANCELLED" and _ledger_settled(session, row):
+        # A write let go after GP took it (#1960, #1961): its ledger is settled on the mirror's copy or as
+        # reconciled, so the worker would mark it SUCCEEDED without sending, for a save this row never made.
+        raise ConflictError(LET_GO_RETRY_REFUSAL)
     _assert_receive_draft_still_queued(session, row)
     row.status = "PENDING"
     row.attempts = 0

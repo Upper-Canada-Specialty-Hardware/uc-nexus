@@ -1527,6 +1527,9 @@ def test_a_receipt_held_for_an_approval_released_meanwhile_can_be_let_go(committ
         assert ledger.relay_result["receipt_number"] == "RCT001961"
         assert not gp_outbox_repository.write_gp_took(session, gp_outbox_repository.get_entry(session, row.id))
         assert not _receipt_in_flight(session, f.po_id)
+        # Let go, it is not put back: the worker would read the settled ledger and call it SUCCEEDED.
+        with pytest.raises(ConflictError, match="let go after GP took it"):
+            gp_outbox_repository.retry_entry(session, row.id)
     draft = _read_draft(f.draft_id)
     assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
     assert draft.receive_record_id is None

@@ -216,6 +216,9 @@ def test_letting_go_of_a_registration_already_in_nexus_settles_its_ledger_on_the
     assert po_number not in po_numbers_pending_registration(db_session, "TUBC")
     assert not gp_outbox_repository.write_gp_took(db_session, row)
     assert not gp_outbox_repository.registration_holds_draft(db_session, row)
+    # And it is not put back: the worker would read the settled ledger and call a save it never made done.
+    with pytest.raises(ConflictError, match="let go after GP took it"):
+        gp_outbox_repository.retry_entry(db_session, row.id)
 
 
 @pytest.mark.parametrize("where", ["another-company", "cancelled"])
