@@ -1202,15 +1202,21 @@ def test_a_request_whose_pull_is_finished_is_not_open(db_session, two_companies)
     assert detail["open_shipping_request_count"] == 0
 
 
-def test_a_soft_deleted_po_is_not_counted(db_session, two_companies):
+def test_a_soft_deleted_po_is_not_counted_unless_it_is_cancelled(db_session, two_companies):
+    """Every path to cancelled soft-deletes the PO, so leaving every deleted row out read Cancelled as 0
+    for good (#1886): a cancelled PO is counted, as the register counts it; a deleted one of any other
+    status is not."""
     project = two_companies["mine"]
     cancelled = _po(db_session, "TUBC", project=project, status=POStatus.CANCELLED)
     cancelled.deleted_at = datetime.utcnow()
+    deleted_draft = _po(db_session, "TUBC", project=project, status=POStatus.DRAFT)
+    deleted_draft.deleted_at = datetime.utcnow()
     db_session.flush()
 
-    detail = project_repository.get_admin_project_detail(db_session, project.id)
+    counts = dict(project_repository.get_admin_project_detail(db_session, project.id)["po_counts_by_status"])
 
-    assert POStatus.CANCELLED not in dict(detail["po_counts_by_status"])
+    assert counts.get(POStatus.CANCELLED) == 1
+    assert POStatus.DRAFT not in counts
 
 
 def test_the_detail_is_none_for_a_project_that_does_not_exist(db_session):
