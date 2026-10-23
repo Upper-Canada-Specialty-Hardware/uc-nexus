@@ -303,8 +303,10 @@ def _has_shop_work_evidence(
 # #1954: a re-upload trims a pending request only of the openings it removed (#342), so a kept opening's
 # line still says what it was owed when the request was raised - and the schedule may since have dropped
 # the product from that opening, or lowered it. The review and the batch both hold a line to the opening's
-# schedule now: no rows for it is this reason, and the ceiling is what the schedule lists, gross - the
-# same figure the composer owes and a new request is held to (`_check_lines_against_schedule`).
+# schedule now: no rows for it, or none it still asks for, is this reason, and the ceiling is what the
+# schedule still asks for - net of what a revision left beyond it on ordered rows. The composer and a new
+# request (`_check_lines_against_schedule`) still read the gross figure; whether they should is for the
+# product owner to rule.
 OFF_SCHEDULE_REASON = "this product is no longer on this opening's schedule, so there is nothing to assemble."
 
 
