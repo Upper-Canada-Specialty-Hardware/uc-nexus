@@ -352,7 +352,6 @@ def test_a_registration_gp_refuses_for_the_job_reads_as_the_job_error(monkeypatc
     monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda key: None)
     monkeypatch.setattr(po_schema, "_prepare_register_po", lambda **kw: {"lines": [{"job_number": "23093"}]})
     released = []
-    monkeypatch.setattr(po_schema, "_claim_registration", lambda po_id, key: None)
     monkeypatch.setattr(po_schema, "_release_registration", lambda po_id, key: released.append(key))
 
     async def _live_check(company, job_number):

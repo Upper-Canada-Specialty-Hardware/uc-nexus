@@ -501,3 +501,66 @@ def test_a_resume_with_no_held_write_saves_what_gp_was_sent_not_the_reopened_for
     po = po_repository.reload_po(db_session, draft.id)
     assert po.status == POStatus.GP_REGISTERED
     assert [float(li.unit_cost) for li in po.line_items] == [7.25]
+
+
+# --- #1849: the draft is claimed before it is read for its digest ----------------------------------------
+
+
+def test_the_draft_is_claimed_in_the_pre_flight_that_reads_its_digest(monkeypatch, db_session):
+    """The digest was read before the claim was taken, so an edit could land between them: the queued
+    payload was then refused as a changed draft, though GP may already have taken it. Taken together now."""
+    from app.errors import ConflictError
+    from tests.test_register_po_in_gp import _register_line, _use_test_session
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    _use_test_session(monkeypatch, db_session)
+    digest: dict = {}
+
+    po_schema._prepare_register_po(
+        po_id=draft.id,
+        gp_vendor_id="GPV1",
+        buyer_id="mira",
+        cost_code=None,
+        line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        site="VANCOUVER",
+        idempotency_key=key,
+        digest_out=digest,
+        claim=True,
+    )
+
+    assert po_repository.reload_po(db_session, draft.id).registering_key == key
+    with pytest.raises(ConflictError, match="being registered in GP right now"):
+        po_repository.update_po(db_session, draft.id, shipping_cost=85)
+    assert digest["registration_digest"] == po_repository.registration_digest(db_session, draft.id)
+
+
+def test_an_edit_during_the_relay_attempt_is_refused_so_the_queued_registration_is_not_stale(monkeypatch, db_session):
+    from app.errors import ConflictError, RelayTimeoutError
+    from tests.test_register_po_in_gp import _delete_queued_write, _queued_write
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    edits: list[str] = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        try:
+            po_repository.update_po(db_session, draft.id, shipping_cost=85)
+            edits.append("saved")
+        except ConflictError:
+            edits.append("refused")
+        raise RelayTimeoutError()
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    try:
+        result = _run_register(draft, key)
+
+        assert result.queued is True
+        assert edits == ["refused"]
+        queued = _queued_write(key)
+        assert queued["maybe_in_gp"] is True
+        assert queued["persist_context"]["registration_digest"] == po_repository.registration_digest(
+            db_session, draft.id
+        )
+    finally:
+        _delete_queued_write(key)

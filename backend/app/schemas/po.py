@@ -342,10 +342,15 @@ def _prepare_register_po(
     comment=None,
     idempotency_key=None,
     digest_out: dict | None = None,
+    claim: bool = False,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
     A lean scalar read - the resolver never needs the PO's documents here.
+
+    `claim` takes the attempt's registration claim (#1274) under the same lock, before the draft is read
+    for its digest, and commits it (#1849): taken after, an edit could land between the read and the claim,
+    and the queued payload would then be refused as a changed draft. The caller releases it.
 
     `contact` is the Confirm With name, and the register form sends the vendor's own contact as its
     default - which is why nothing here asks the relay for it. A round trip to GP just to fill a
@@ -427,10 +432,15 @@ def _prepare_register_po(
         project_repository.require_gp_job_open(session, effective_project_id)
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
+        if claim:
+            # #1849: from here an edit is refused (#1903), so the digest below is the draft GP is sent.
+            po_repository.claim_po_registration(session, po_id, idempotency_key)
         # #1599: the draft as this payload is built from it, read under the same lock - the worker refuses to
         # push the snapshot of a draft that changed since. Handed back beside the payload, never sent to GP.
         if digest_out is not None:
             digest_out["registration_digest"] = po_repository.registration_digest(session, po.id)
+        if claim:
+            session.commit()
 
     gp_po.validate_create_po_inputs(
         job_number=job_number,
@@ -503,12 +513,6 @@ def _email_po_context(po_id: uuid.UUID, scope: str | None) -> EmailPoResult | di
             "file_name": document.file_name,
             "content_type": document.content_type,
         }
-
-
-def _claim_registration(po_id, key) -> None:
-    with SessionLocal() as session:
-        po_repository.claim_po_registration(session, po_id, key)
-        session.commit()
 
 
 def _release_registration(po_id, key) -> None:
@@ -1163,39 +1167,42 @@ class POMutations:
         tax_detail_ids = _fold_tax_detail_ids(input)
         tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
         digest: dict = {}
-        payload = await asyncio.to_thread(
-            _prepare_register_po,
-            po_id=pid,
-            gp_vendor_id=input.gp_vendor_id,
-            buyer_id=input.buyer_id,
-            cost_code=input.cost_code,
-            line_items_data=line_items_data,
-            tax_detail_ids=tax_detail_ids,
-            tax_schedule_id=tax_schedule_id,
-            shipping_cost=input.shipping_cost,
-            miscellaneous=input.miscellaneous,
-            trade_discount=input.trade_discount,
-            project_id=register_project_id,
-            scope=tenant_scope(info),
-            gp_company=input.gp_company,
-            shipping_method=input.shipping_method,
-            vendor_address_code=input.vendor_address_code,
-            site=input.site,
-            doc_date=input.doc_date,
-            contact=input.contact,
-            comment=input.comment,
-            idempotency_key=key,
-            digest_out=digest,
-        )
 
         # #1274: one registration attempt per draft at a time. Taken under the PO's row lock and
         # committed before anything goes to GP, so a second window is refused instead of pushing a
         # second create_po under its own key. Released when the attempt settles: refused before the
         # push, refused by GP, queued, or persisted. When GP may hold the write but Nexus did not
-        # record it, the claim is kept and goes stale after REGISTRATION_CLAIM_SECONDS.
-        await asyncio.to_thread(_claim_registration, pid, key)
-        release = True
+        # record it, the claim is kept and goes stale after REGISTRATION_CLAIM_SECONDS. #1849: taken in
+        # the pre-flight, before the draft is read for its digest. A resume of an attempt GP answered
+        # never lets it go before the save does - that claim is what holds the draft.
+        release = state is None or state.relay_result is None
         try:
+            payload = await asyncio.to_thread(
+                _prepare_register_po,
+                po_id=pid,
+                gp_vendor_id=input.gp_vendor_id,
+                buyer_id=input.buyer_id,
+                cost_code=input.cost_code,
+                line_items_data=line_items_data,
+                tax_detail_ids=tax_detail_ids,
+                tax_schedule_id=tax_schedule_id,
+                shipping_cost=input.shipping_cost,
+                miscellaneous=input.miscellaneous,
+                trade_discount=input.trade_discount,
+                project_id=register_project_id,
+                scope=tenant_scope(info),
+                gp_company=input.gp_company,
+                shipping_method=input.shipping_method,
+                vendor_address_code=input.vendor_address_code,
+                site=input.site,
+                doc_date=input.doc_date,
+                contact=input.contact,
+                comment=input.comment,
+                idempotency_key=key,
+                digest_out=digest,
+                claim=True,
+            )
+
             # #425 live re-check. The job number is read back off the payload rather than returned
             # separately, because the payload is the thing actually being pushed - checking anything else
             # could check a job this PO is not going to GP under. Only job-cost lines carry one; a

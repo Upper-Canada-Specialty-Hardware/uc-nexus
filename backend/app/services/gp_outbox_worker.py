@@ -215,6 +215,12 @@ def _notify_failure(row_id: uuid.UUID) -> None:
 REGISTRATION_CHANGED_REASON = (
     "The purchase order changed after its registration was queued - register it again; nothing was sent to GP"
 )
+# #1849: the same refusal on a row an earlier attempt may have left in GP. Nothing is sent this time, but that
+# attempt may have made a PO, so neither "nothing was sent" nor "register it again" holds.
+REGISTRATION_CHANGED_MAYBE_IN_GP_REASON = (
+    "The draft changed after a registration that may have reached GP - check GP for a PO under this draft "
+    "before cancelling this write"
+)
 
 
 def _registration_stale_reason(context: dict) -> str | None:
@@ -401,6 +407,9 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                     # Still a draft that wants registering: held where the buyer will see it. A retry checks
                     # again and is held again, and the reason says to register it again.
                     logger.warning("gp outbox: registration held, po changed since queued", extra={"label": label})
+                    # Never sent stale (GP would take the old snapshot); worded for what an earlier attempt left.
+                    if row.maybe_in_gp:
+                        stale = REGISTRATION_CHANGED_MAYBE_IN_GP_REASON
                     await asyncio.to_thread(_finish, row_id, "mark_failed", kind="po_changed", error=stale)
                     await asyncio.to_thread(_notify_failure, row_id)
                     return
