@@ -587,7 +587,9 @@ export default function PODetailModal({
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
   // #1595: a queued registration posts the lines as they were when it was queued, so they are held too.
-  const canEditItems = po.status === 'DRAFT' && !registrationQueued;
+  // #1950: and a draft GP already made a PO for that Nexus never recorded - the server refuses its edits,
+  // and Register finishes it with the form as it was registered.
+  const canEditItems = po.status === 'DRAFT' && !registrationQueued && !po.registeringKey;
   // #1837: a line whose cost can't be sent holds the whole save. The line updates go out together before
   // the header, so letting the valid ones through saved half the edit and dropped the rest unsaid.
   const unitCostBlocksSave =
@@ -686,7 +688,7 @@ export default function PODetailModal({
   // snapshot and writes it back, so an edit made meanwhile never reaches GP. Notes keep their own path.
   const heldForQueuedRegistration = po.status === 'DRAFT' && registrationQueued;
   const canEdit =
-    (po.status === 'DRAFT' && !registrationQueued) ||
+    (po.status === 'DRAFT' && !registrationQueued && !po.registeringKey) ||
     po.status === 'GP_REGISTERED' ||
     po.status === 'VENDOR_CONFIRMED' ||
     po.status === 'PARTIALLY_RECEIVED';

@@ -1621,6 +1621,11 @@ QUEUED_REGISTRATION_EDIT_REFUSAL = "This PO's registration is queued for GP, so 
 LIVE_REGISTRATION_EDIT_REFUSAL = (
     "This PO is being registered in GP right now, so it can't be changed until that finishes. Reopen it in a moment."
 )
+# Never clears on its own, unlike a live attempt: only finishing the registration does (#1950).
+UNRECORDED_REGISTRATION_EDIT_REFUSAL = (
+    "GP already made a PO for this draft that Nexus never recorded, so it can't be changed. Reopen Register on "
+    "this PO to finish recording it - nothing is sent to GP again."
+)
 
 
 def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> None:
@@ -1636,10 +1641,12 @@ def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> No
     # #1903: a registration waiting on GP right now is the same - its save writes back the project and
     # lines it sent, and a project chosen meanwhile on a draft with none won over the one GP was given.
     # So is one GP answered that was never recorded here. A refused or failed attempt lets its claim go.
-    if po.status == POStatus.DRAFT and (
-        _registration_claim_is_live(po, datetime.utcnow()) or _unrecorded_gp_po_number(session, po) is not None
-    ):
+    if po.status != POStatus.DRAFT:
+        return
+    if _registration_claim_is_live(po, datetime.utcnow()):
         raise ConflictError(LIVE_REGISTRATION_EDIT_REFUSAL)
+    if _unrecorded_gp_po_number(session, po) is not None:
+        raise ConflictError(UNRECORDED_REGISTRATION_EDIT_REFUSAL)
 
 
 def _update_po_after_receiving_started(

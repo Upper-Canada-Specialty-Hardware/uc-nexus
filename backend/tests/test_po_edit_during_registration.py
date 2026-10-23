@@ -41,8 +41,10 @@ def test_an_edit_is_refused_while_a_registration_waits_on_gp():
 def test_an_edit_is_refused_when_gp_answered_a_registration_never_recorded():
     answered = SimpleNamespace(relay_result={"po_number": "PO1"}, result_id=None)
     stale = datetime.utcnow() - timedelta(seconds=repo.REGISTRATION_CLAIM_SECONDS + 60)
-    with pytest.raises(ConflictError):
+    # It never clears on its own, so it does not say to come back in a moment (#1950): Register finishes it.
+    with pytest.raises(ConflictError, match="Reopen Register on this PO") as exc:
         repo._refuse_while_registration_queued(_Session(ledger=answered), _draft(since=stale))
+    assert "in a moment" not in str(exc.value)
 
 
 def test_a_stale_claim_gp_never_answered_lets_the_edit_through():
