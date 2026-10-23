@@ -1682,6 +1682,91 @@ def test_a_key_that_only_met_a_refusal_approves_again(committed, monkeypatch, ap
     assert _approve(f.draft_id, key=key).draft.status.value == "APPROVED"
 
 
+# --- #1964: a draft approving under the row's own key has not moved on ----------------------------------
+
+
+def _held_receipt_gp_took(f, monkeypatch) -> tuple[uuid.UUID, str]:
+    """A receipt GP answered after its approval was released meanwhile: held under its key, booked nowhere."""
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, {"receipt_number": "RCT001964"})
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+    return row.id, key
+
+
+def _claimed_again_under(draft_id, key) -> None:
+    """The draft claimed again under the held row's own key, as a fresh claim under a spent key could before
+    #1963, and its attempt long since dead: APPROVING under the key, linked to no row, nothing booked."""
+    from datetime import datetime, timedelta
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        draft = session.get(ReceiveDraft, draft_id)
+        draft.status = ReceiveDraftStatus.APPROVING
+        draft.approval_idempotency_key = key
+        draft.reviewed_at = datetime.utcnow() - timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS + 1)
+        session.commit()
+
+
+def test_a_receipt_whose_draft_is_approving_under_its_own_key_is_not_let_go(committed, monkeypatch, approve_env):
+    """#1964: the moved-on test read only the draft's link, which a claim under the row's key never sets, so
+    Cancel was offered and let the row go - stamping its ledger as reconciled. The draft was then stuck
+    APPROVING for good: approve found the key finished as another receive's, release found GP's answer, and
+    delete found a claim. It has not moved on: Cancel is refused as for any receipt GP took, and the claim's
+    own retry under the key books GP's answer."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    _claimed_again_under(f.draft_id, key)
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == set()
+        with pytest.raises(ConflictError, match="GP already took this write"):
+            gp_outbox_repository.cancel_entry(session, row_id)
+        session.rollback()
+        # Retry is not refused as a draft that went back for review: the drain books it for the claim.
+        assert gp_outbox_repository.retry_entry(session, row_id).status == "PENDING"
+        session.rollback()
+    (shown,) = [e for e in _gp_queue() if e.id == str(row_id)]
+    assert (shown.gp_took, shown.receipt_draft_moved_on) == (True, False)
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    result = _approve(f.draft_id, key=key)
+
+    assert result.receive_record.receipt_number == "RCT001964"
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_a_receipt_whose_draft_was_approved_again_under_another_key_has_moved_on(committed, monkeypatch, approve_env):
+    """#1964 narrows the rule to the row's own key: a draft claimed under any other key is a new approval."""
+    from app.database import SessionLocal
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id, _key = _held_receipt_gp_took(f, monkeypatch)
+    _claimed_again_under(f.draft_id, str(uuid.uuid4()))
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == {row_id}
+
+
+def _gp_queue():
+    from app.schemas.gp_outbox import GpOutboxQueries
+
+    return GpOutboxQueries().gp_outbox(_Info(), ops=["create_receipt"])
+
+
 def _queue_as_maybe_in_gp(f, monkeypatch):
     """An approval whose relay call timed out: the receipt queued under its key, as maybe in GP."""
     from app.errors import RelayTimeoutError

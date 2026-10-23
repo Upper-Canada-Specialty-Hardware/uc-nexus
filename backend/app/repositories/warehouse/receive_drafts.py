@@ -1117,8 +1117,27 @@ def _receive_draft_id_of(entry) -> uuid.UUID | None:
         return None
 
 
+def _draft_moved_on(entry, draft) -> bool:
+    """THE answer to "has this queued receipt's draft moved on from it?" - for Retry, for Cancel letting it go
+    and for the queue's flag alike (#1961, #1964). `draft` is the row's draft (anything with its status, key
+    and link).
+
+    It has not while it waits on the row: linked to it (approved with the row as its queued receipt), or
+    claimed or approved under the row's own key with no link. That second one is the approval the row was
+    written for and nothing else - the key is the approval's identity, and the relay answers a repeat of it
+    with the receipt it holds: a held row whose draft was claimed again under its key, or a resume refused
+    with its claim kept. The row's Retry, or the claim's own retry, books it; let go, its key's ledger is
+    settled as reconciled (`cancel_entry`) and the draft stuck APPROVING for good - approve finds the key
+    finished as another receive's, release finds GP's answer, delete finds a claim. Anything else - pending
+    again, rejected, or approved under another key - is someone else's approval now: the row never posts."""
+    if draft.approved_outbox_entry_id == entry.id:
+        return False
+    return not (draft.status in _IN_FLIGHT_STATUSES and draft.approval_idempotency_key == entry.idempotency_key)
+
+
 def receipts_whose_draft_moved_on(session: Session, entries) -> set[uuid.UUID]:
-    """The queued receipts, of `entries`, whose draft is there and no longer links to them, in one read.
+    """The queued receipts, of `entries`, whose draft is there and has moved on from them (`_draft_moved_on`),
+    in one read.
 
     Such a row never posts - its Retry is refused (`assert_outbox_entry_retryable`) - whatever GP made of it:
     sent back for review, or held linked to no draft because the approval was released while it was out at
@@ -1131,34 +1150,34 @@ def receipts_whose_draft_moved_on(session: Session, entries) -> set[uuid.UUID]:
             by_draft.setdefault(draft_id, []).append(entry)
     if not by_draft:
         return set()
-    links = dict(
-        session.execute(
-            select(ReceiveDraftModel.id, ReceiveDraftModel.approved_outbox_entry_id).where(
-                ReceiveDraftModel.id.in_(list(by_draft))
-            )
+    drafts = {
+        row.id: row
+        for row in session.execute(
+            select(
+                ReceiveDraftModel.id,
+                ReceiveDraftModel.status,
+                ReceiveDraftModel.approval_idempotency_key,
+                ReceiveDraftModel.approved_outbox_entry_id,
+            ).where(ReceiveDraftModel.id.in_(list(by_draft)))
         ).all()
-    )
+    }
     return {
         entry.id
         for draft_id, linked in by_draft.items()
-        if draft_id in links
+        if draft_id in drafts
         for entry in linked
-        if links[draft_id] != entry.id
+        if _draft_moved_on(entry, drafts[draft_id])
     }
 
 
 def assert_outbox_entry_retryable(session: Session, entry) -> None:
-    """Refuse to replay a queued receipt whose draft was sent back for review (#1298).
+    """Refuse to replay a queued receipt whose draft has moved on from it (#1298, `_draft_moved_on`).
 
     Once the draft is pending again, a manager can approve it afresh under a new key; replaying the old
     row as well would post the same receipt to GP twice."""
     if entry is None or entry.op != "create_receive":
         return
-    draft_id = _receive_draft_id_of(entry)
-    if draft_id is None:
-        return
-    draft = session.get(ReceiveDraftModel, draft_id)
-    if draft is not None and draft.approved_outbox_entry_id != entry.id:
+    if entry.id in receipts_whose_draft_moved_on(session, [entry]):
         raise ConflictError(
             "This receipt's draft went back for review when the GP write stopped. Approve the draft "
             "again from Receive Approvals instead of retrying this entry."
