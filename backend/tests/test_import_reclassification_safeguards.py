@@ -601,3 +601,28 @@ def test_a_new_product_may_still_be_by_others_at_import(db_session):
     _replace_with_by_others(db_session, project, ["HG-1", "HG-NEW"], ["HG-NEW"])
 
     assert _excluded(db_session, project) == {"HG-NEW"}
+
+
+def test_an_ordered_line_the_revision_left_as_surplus_is_off_the_schedule(db_session):
+    """#1954: a revision keeps an ordered row whole and marks what the schedule no longer asks for as beyond
+    it (#1527, #1825), so the gross quantity still read as scheduled and the batch took it all. Every unit of
+    HG-100 marked beyond the schedule is HG-100 dropped from A01: off the schedule, offered nothing."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+    db_session.execute(
+        update(HardwareItem)
+        .where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+        .values(beyond_schedule_quantity=HardwareItem.item_quantity)
+    )
+    db_session.flush()
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
+    assert reasons["HG-200"] is None
+    assert reasons["HG-100"] == shop_assembly_repository.OFF_SCHEDULE_REASON
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(1), created_by="manager")
+    assert exc.value.field == "lines"
+    assert "no longer on this opening's schedule" in str(exc.value)

@@ -229,24 +229,30 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
 
 
 def _schedule_facts(
-    session: Session, project_id: uuid.UUID, opening_numbers: set[str]
+    session: Session, project_id: uuid.UUID, opening_numbers: set[str], *, still_scheduled: bool = False
 ) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], dict[str | None, int]], set[tuple[str, str]]]:
     """For the named openings: units scheduled per (opening, category, code), the same units split by
     classification value (None for unclassified), and the project's By Others products. One grouped
-    read plus the exclusion list."""
+    read plus the exclusion list.
+
+    `still_scheduled` leaves out of the first the units a revision left beyond the schedule (#1954): an
+    ordered row keeps its whole quantity when the schedule drops or lowers its product, the surplus marked
+    on it (#1527, #1825), so the gross sum still read as the schedule asking for them. The split by
+    classification stays gross - it is evidence of what the rows are, not of how many are asked for."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
     from app.repositories.request_composer import by_others_products
 
     scheduled: dict[tuple[str, str, str], int] = {}
     by_classification: dict[tuple[str, str, str], dict[str | None, int]] = {}
-    for opening_number, category, code, classification, total in session.execute(
+    for opening_number, category, code, classification, total, beyond in session.execute(
         select(
             Opening.opening_number,
             HardwareItem.hardware_category,
             HardwareItem.product_code,
             HardwareItem.classification,
             func.sum(HardwareItem.item_quantity),
+            func.sum(HardwareItem.beyond_schedule_quantity),
         )
         .join(Opening, HardwareItem.opening_id == Opening.id)
         .where(HardwareItem.project_id == project_id, Opening.opening_number.in_(opening_numbers))
@@ -259,7 +265,7 @@ def _schedule_facts(
     ).all():
         key = (opening_number, category, code)
         units = int(total or 0)
-        scheduled[key] = scheduled.get(key, 0) + units
+        scheduled[key] = scheduled.get(key, 0) + (units - int(beyond or 0) if still_scheduled else units)
         counts = by_classification.setdefault(key, {})
         value = classification.value if classification is not None else None
         counts[value] = counts.get(value, 0) + units
@@ -597,7 +603,9 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
     # the same facts read the same way - one grouped read for every pending opening - so its Send box is
     # off with the reason instead of being refused after the manager has composed the batch. #1954: the
     # same for a line its opening's schedule no longer lists, and a line is offered no more than it lists.
-    scheduled, by_classification, by_others = _schedule_facts(session, request.project_id, pending_numbers)
+    scheduled, by_classification, by_others = _schedule_facts(
+        session, request.project_id, pending_numbers, still_scheduled=True
+    )
 
     def _key(item: ShopAssemblyRequestItem) -> tuple[str, str, str]:
         return (item.opening_number, item.hardware_category, item.product_code)
@@ -700,7 +708,7 @@ def create_shop_assembly_batch(
     # only on evidence - schedule rows that are not shop work, or a By Others product: a line whose
     # opening holds no rows for it any more is off the schedule, refused below.
     scheduled, by_classification, by_others = _schedule_facts(
-        session, request.project_id, {key[0] for key in allocations}
+        session, request.project_id, {key[0] for key in allocations}, still_scheduled=True
     )
     for key in sorted(allocations):
         if not _has_shop_work_evidence(key, by_classification, by_others):
