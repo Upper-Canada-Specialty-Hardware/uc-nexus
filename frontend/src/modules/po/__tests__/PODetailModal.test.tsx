@@ -505,6 +505,52 @@ describe('PODetailModal', () => {
     expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
   });
 
+  it('reads a typed unit cost whole: "1,250.00" saves as 1250 and "1250abc" holds the save (#1912)', async () => {
+    const costCalls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO_LINE_ITEM_UNIT_COST, variables: () => true },
+        result: (vars) => {
+          costCalls.push(vars as Record<string, unknown>);
+          return {
+            data: {
+              updatePoLineItemUnitCost: {
+                __typename: 'POLineItem',
+                id: 'li-1',
+                hardwareCategory: 'Hinges',
+                productCode: 'HG-100',
+                classification: null,
+                orderedQuantity: 10,
+                receivedQuantity: 0,
+                createdAt: '2026-07-01T12:00:00Z',
+                updatedAt: '2026-07-01T12:00:00Z',
+                unitCost: 1250,
+                orderAs: null,
+              },
+            },
+          };
+        },
+      },
+      { request: { query: UPDATE_PO, variables: () => true }, result: { data: updatePoData(draftPo) } },
+    ];
+    renderModal(draftPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const cost = screen.getByDisplayValue('2.5');
+    // parseFloat read this as 1250 and saved it.
+    fireEvent.change(cost, { target: { value: '1250abc' } });
+    expect(cost).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
+
+    // And this as 1.
+    fireEvent.change(cost, { target: { value: '1,250.00' } });
+    expect(cost).not.toHaveAttribute('aria-invalid', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    expect(costCalls).toEqual([{ id: 'li-1', unitCost: 1250 }]);
+  });
+
   it('shows and edits Stock or Overhead only on a draft with no project (#832)', async () => {
     const calls: Record<string, unknown>[] = [];
     const stockDraft: PurchaseOrder = { ...draftPo, projectId: null, poolKind: 'STOCK' };

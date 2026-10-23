@@ -39,7 +39,7 @@ import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
 import { canUploadPoDocuments, poDocumentGate } from './poDocumentGate';
-import { MAX_UNIT_COST, pastTheCent } from './unitCost';
+import { parseUnitCost, unitCostProblem } from './unitCost';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -90,13 +90,12 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** A unit cost box that can't be saved as typed: not a number, negative, or past the cent, which GP
- *  refuses at the line (#1394, #1837). Empty is left alone - the line keeps its cost. */
+/** A unit cost box that can't be saved as typed: not a whole number (#1912), negative, past the cent,
+ *  which GP refuses at the line (#1394, #1837), or past what the line's cost column holds (#1936). Empty
+ *  is left alone - the line keeps its cost. */
 function unitCostInvalid(val: string): boolean {
   if (val === '') return false;
-  const parsed = parseFloat(val);
-  // #1936: at or past MAX_UNIT_COST the line's cost column cannot hold it, and the server refuses it.
-  return isNaN(parsed) || parsed < 0 || pastTheCent(val) || parsed >= MAX_UNIT_COST;
+  return unitCostProblem(val) !== null;
 }
 
 // --- Props ---
@@ -330,15 +329,15 @@ export default function PODetailModal({
       .filter((li) => {
         const editVal = unitCostEdits[li.id];
         if (editVal === undefined || editVal === '') return false;
-        const parsed = parseFloat(editVal);
-        // A $0 no-charge line is valid, as it is when the PO is drafted and registered (#1172).
-        return !isNaN(parsed) && parsed >= 0 && parsed !== li.unitCost;
+        // #1912: read whole - parseFloat saved a typed "1,250.00" as 1 and "1250abc" as 1250. A $0
+        // no-charge line is valid, as it is when the PO is drafted and registered (#1172).
+        return !unitCostInvalid(editVal) && parseUnitCost(editVal) !== li.unitCost;
       })
       .map((li) =>
         updateUnitCost({
           variables: {
             id: li.id,
-            unitCost: parseFloat(unitCostEdits[li.id]),
+            unitCost: parseUnitCost(unitCostEdits[li.id]),
           },
         }),
       );

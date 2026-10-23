@@ -204,6 +204,33 @@ it('registers with a null Order As when the field is cleared', async () => {
   expect(input.lineItems[0].orderAs).toBeNull();
 });
 
+// #1912: the register sent parseFloat of the box, which read "1,250.00" as 1, while the check refused it.
+it('registers a unit cost typed with a thousands comma as the whole amount, and refuses a trailing letter', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+  await waitForVendorPreselect();
+
+  await selectTaxDetail();
+  fireEvent.change(screen.getByLabelText('Unit cost line 1'), { target: { value: '1250abc' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+  expect(await screen.findByText('Not a number')).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+
+  fireEvent.change(screen.getByLabelText('Unit cost line 1'), { target: { value: '1,250.00' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { unitCost: number }[] };
+  expect(input.lineItems[0].unitCost).toBe(1250);
+});
+
 it('gives a custom item row no Order As and registers it with none', async () => {
   const calls: Record<string, unknown>[] = [];
   const registerMock: MockedResponse = {

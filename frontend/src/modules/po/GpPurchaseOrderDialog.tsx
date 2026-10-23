@@ -57,7 +57,7 @@ import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { computeRegisterTotals, formatMoney } from './registerTotals';
-import { MAX_UNIT_COST, pastTheCent } from './unitCost';
+import { parseUnitCost, unitCostProblem } from './unitCost';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -1049,15 +1049,11 @@ export default function GpPurchaseOrderDialog({
             ? 'Must be >= 1'
             : 'Whole number';
       } else if (parseInt(qtyText, 10) < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
-      // Number() rather than parseFloat for the same reason: "12 ea" is not a price of 12.
-      const costText = li.unitCost.trim();
-      const cost = costText === '' ? NaN : Number(costText);
-      if (isNaN(cost)) errs[`li_${i}_cost`] = costText ? 'Not a number' : 'Must be >= 0';
-      else if (cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
-      // #1394: GP keeps a unit cost to the cent and refuses more places at the line; trailing zeros are fine.
-      else if (pastTheCent(costText)) errs[`li_${i}_cost`] = 'To the cent';
-      // #1936: past what the line's cost column holds, which the server refuses.
-      else if (cost >= MAX_UNIT_COST) errs[`li_${i}_cost`] = 'Too large';
+      // Read whole for the same reason: "12 ea" is not a price of 12. #1912: through the rule every unit
+      // cost box shares, so "1,250.00" is 1250 here and wherever else it is typed. To the cent (#1394) and
+      // within what the line's cost column holds (#1936).
+      const costProblem = unitCostProblem(li.unitCost);
+      if (costProblem) errs[`li_${i}_cost`] = costProblem;
       // A pasted unit that is not one of GP's own would be refused at registration. Only checked on
       // pasted lines, and only once GP's list is known: a line typed here picks from that list.
       if (pastedKeys.has(li.key) && unitsOfMeasure.length > 0 && !unitsOfMeasure.includes(li.uofm))
@@ -1171,7 +1167,8 @@ export default function GpPurchaseOrderDialog({
       hardwareCategory: li.hardwareCategory.trim(),
       productCode: li.productCode.trim(),
       orderedQuantity: parseInt(li.orderedQuantity, 10),
-      unitCost: parseFloat(li.unitCost),
+      // #1912: as validated - parseFloat read "1,250.00" as 1.
+      unitCost: parseUnitCost(li.unitCost),
       // GP's own three per-line fields. A line that does not book to the job carries no cost code.
       costCode: isJob && li.jobCost ? li.costCode.trim() || null : null,
       uofm: li.uofm.trim() || DEFAULT_UOFM,

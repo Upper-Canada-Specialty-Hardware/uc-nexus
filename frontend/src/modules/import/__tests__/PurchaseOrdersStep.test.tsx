@@ -313,6 +313,20 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(unitCostSpy).toHaveBeenCalledWith('HG-100|HINGE', 8.25);
   });
 
+  // #1912: it took any finite number of 0 or more, so 0.333 went onto every line of the product for GP
+  // to refuse at registration. It is red while typed, and leaving the field puts the previous cost back.
+  it('refuses a unit cost past the cent and puts the previous cost back', () => {
+    unitCostSpy.mockClear();
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+    const cost = screen.getByRole('spinbutton', { name: 'Unit cost of HG-100' });
+    fireEvent.change(cost, { target: { value: '0.333' } });
+    expect(cost).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.blur(cost);
+    expect(unitCostSpy).not.toHaveBeenCalled();
+    expect(cost).toHaveValue(5);
+    expect(cost).not.toHaveAttribute('aria-invalid', 'true');
+  });
+
   it('caps a line at the pool MINUS what a sibling draft holds of the same product', () => {
     render(
       <Harness
