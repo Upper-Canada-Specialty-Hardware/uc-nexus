@@ -461,6 +461,11 @@ export default function GpPurchaseOrderDialog({
   const relayConnected = relayStatus === true;
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
+  // #1877: the GP verdict registering warns and blocks on comes off the draft's own project, archived
+  // included. Off the picker list, an archived job closed in GP showed no warning and offered Register.
+  // The list is the source only for a project picked here, on a draft that had none.
+  const verdictProject =
+    isRegister && registerPo?.project && registerPo.project.id === projectId ? registerPo.project : selectedProject;
   // #1843: registering reads the draft's project by its id rather than off the picker list. The list
   // leaves archived projects out - and an archived job's drafts keep working (set_project_archived) -
   // and while it was loading or had failed, a job draft read as a stock one: registered with no cost
@@ -1494,10 +1499,10 @@ export default function GpPurchaseOrderDialog({
   // #425: only REGISTER is blocked, not draft creation. A draft touches nothing in GP, and forbidding
   // it would stop purchasing preparing the order that becomes registerable the moment accounting
   // fixes the job. Registering is the act that stamps the bad account onto the PO line.
-  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(selectedProject);
+  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(verdictProject);
   // #730: GP refuses a PO REGISTRATION on a job it holds as inactive, closed or missing. The picker
   // already greys such projects out, so this only catches a draft saved against one before it closed.
-  const gpJobBlocksRegister = isRegister && isGpJobNotOpen(selectedProject);
+  const gpJobBlocksRegister = isRegister && isGpJobNotOpen(verdictProject);
 
   // #833: the grid's errors, with every pasted line checked live instead of waiting for a save, and
   // the count of flagged cells the paste summary reports.
@@ -1656,8 +1661,8 @@ export default function GpPurchaseOrderDialog({
           what GP was sent is saved where Nexus kept it, and otherwise what is entered here is.
         </Alert>
       )}
-      {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
-      {isRegister && <GpJobNotOpenBanner project={selectedProject} action="registering it in GP" dense />}
+      {isRegister && <GpSetupQuarantineBanner project={verdictProject} action="registering it in GP" dense />}
+      {isRegister && <GpJobNotOpenBanner project={verdictProject} action="registering it in GP" dense />}
       {/* Issue #216: GP registration happens as YOUR buyer identity. Drafting (issue #256) is open
           to everyone, so this gates register mode only. */}
       {isRegister && !gpBuyerId && (

@@ -38,11 +38,18 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
     # "Nexus registered" chip reads.
     nexusRegistered
     projectId
-    # #1877: the PO's own project, archived included - the projects list leaves archived jobs out.
+    # #1877: the PO's own project, archived included - the projects list leaves archived jobs out. With
+    # the GP verdict the register dialog warns and blocks on, off the project's own columns (no query).
     project {
       id
       projectId
       description
+      gpJobState
+      gpSetupOk
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
     }
     # #832: Stock or Overhead - which half of the pool a PO with no project receives into.
     poolKind
