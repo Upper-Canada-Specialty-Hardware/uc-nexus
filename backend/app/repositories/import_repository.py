@@ -477,7 +477,7 @@ SHOP_SCHEDULE_CHANGED_DROPPED_NOTE = (
 
 
 def _removed_openings(numbers: set[str]) -> str:
-    """The openings a re-upload took off a shop request, for its note (#1955): "opening A01" or
+    """The openings a re-upload took off a shop or shipping-out request, for its note (#1955): "opening A01" or
     "openings A01, A02"."""
     if not numbers:
         return "its openings"
@@ -629,8 +629,8 @@ def _handle_schedule_replacement(
       nothing, because its pending openings never held a claim (#646). A request left with nothing at
       all is auto-REJECTED (which for shipping out releases the rest by the ordinary reject path),
       because an empty request is not something anybody can work; a part-batched shop-assembly one
-      closes out instead, since some of it genuinely happened. Either way a shop-assembly request's
-      note names the openings that went, and an auto-rejected one tells the shop (#1955).
+      closes out instead, since some of it genuinely happened. Either way the request's note names the
+      openings that went, and an auto-rejected one tells the shop or the requester (#1955).
     - **Openings already dispatched or dismissed are left alone.** A batched opening is on a pull
       that is the authority on what the warehouse will hand over, and silently shrinking it
       underneath the puller would be worse than a stale bill of hardware; a dismissed one is a
@@ -731,7 +731,27 @@ def _handle_schedule_replacement(
             req.rejected_by = SCHEDULE_IMPORT_ACTOR
             req.rejection_reason = "All of this request's lines were removed by a hardware schedule re-upload."
             req.rejected_at = datetime.utcnow()
+            # #1955: as on a shop request, the note names the openings that went - they are gone from the
+            # request, and nothing else names them.
+            removed = _removed_openings({i.opening_number for i in lost if i.opening_number})
+            req.integrity_note = (
+                f"The hardware schedule was re-uploaded and removed {removed}, all this request was "
+                "waiting on; nothing had been accepted, so the request was rejected."
+            )
             warehouse_repository.release_reservations(session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
+            # #1955: the requester is told, as a manager's reject tells them (#972) - by their Clerk user id
+            # where the request recorded it, else the shipping audience.
+            notification_service.create_notification(
+                session,
+                project_id=req.project_id,
+                recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+                recipient_user_id=req.created_by_user_id or None,
+                notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
+                message=(
+                    f"For {req.created_by}: {SCHEDULE_IMPORT_ACTOR} rejected shipping request "
+                    f"{req.request_number} - {req.rejection_reason}"
+                ),
+            )
             continue
 
         if lost:

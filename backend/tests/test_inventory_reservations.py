@@ -814,6 +814,36 @@ def _finalize_shipping_requests(session, project, count, *, opening_number="A01"
     )["shipping_out_requests"]
 
 
+def test_reupload_that_rejects_a_shipping_request_names_the_openings_and_tells_the_requester(db_session):
+    """#1955: the auto-reject released the claim and said nothing - no note naming the openings that went,
+    and no word to the requester. Now it reads, and notifies, as a manager's reject does (#972)."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    (req,) = _finalize_shipping_requests(db_session, project, 1)
+    req.created_by_user_id = "user_requester"
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(req)
+
+    assert req.status == ShippingOutRequestStatus.REJECTED
+    assert "removed opening A01" in req.integrity_note
+    assert "rejected" in req.integrity_note
+    assert _reserved_total(db_session, project.id) == 0
+    (notice,) = db_session.scalars(
+        select(Notification).where(
+            Notification.project_id == project.id,
+            Notification.type == NotificationType.SHIPPING_REQUEST_REJECTED,
+        )
+    ).all()
+    assert (notice.recipient_user_id, notice.recipient_role) == ("user_requester", None)
+    assert notice.message == (
+        f"For {req.created_by}: Hardware Schedule Import rejected shipping request {req.request_number} - "
+        f"{req.rejection_reason}"
+    )
+
+
 def test_reupload_locks_the_live_shipping_requests_before_reading_them(db_session, monkeypatch):
     """#1852: accept locks the request row and then mints its pull, so the re-upload takes the same lock
     before it reads what is pending. Unlocked, an accept committing in between had its APPROVED written
