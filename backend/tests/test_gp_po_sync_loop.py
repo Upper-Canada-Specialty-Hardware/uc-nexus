@@ -1764,3 +1764,29 @@ def test_the_open_book_pass_ends_with_the_currency_backfill(monkeypatch):
 
     assert ran == ["TUBC"]
     assert ("finish", None) in asked
+
+
+def test_each_po_of_a_page_is_committed_before_the_next_is_upserted(monkeypatch):
+    """#1959: one page transaction kept every PO's, project's and line's locks to the end of the page, and
+    a register in Nexus taking its PO then the project deadlocked against it. Each PO now starts with
+    nothing held from the one before; and one that fails is rolled back without losing those before it."""
+    from app.repositories import gp_po_sync_repository as sync_repo
+
+    monkeypatch.setattr(gp_po_sync, "_load_project_map", lambda session, company: {})
+    monkeypatch.setattr(sync_repo, "po_numbers_pending_registration", lambda session, company: frozenset())
+    seen = []
+
+    def upsert(session, company, po, project_map, *, pending_registration):
+        seen.append((po["po_number"], session.in_transaction()))
+        if po["po_number"] == "PO2":
+            raise RuntimeError("boom")
+        return "updated"
+
+    monkeypatch.setattr(sync_repo, "upsert_mirrored_po", upsert)
+
+    result = gp_po_sync._persist_page(
+        "UCSH", [{"po_number": n} for n in ("PO1", "PO2", "PO3")], None, is_backfill=False
+    )
+
+    assert seen == [("PO1", False), ("PO2", False), ("PO3", False)]
+    assert result["updated"] == 2 and result["skipped"] == 1

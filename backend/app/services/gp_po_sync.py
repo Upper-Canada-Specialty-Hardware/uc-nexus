@@ -203,10 +203,15 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
     """Upsert one page of GP POs and advance the sync state. Runs in a worker thread - the relay socket
     lives on the event loop and must not block on Postgres.
 
-    Each PO is upserted inside its own SAVEPOINT (begin_nested), so a failure rolls back only that PO and
-    the page's other upserts still commit at the end. The backfill cursor is advanced only over POs that
-    actually persisted: if a PO in the page failed, the cursor is parked at the last consecutively-
-    persisted PO (or left untouched when even the first failed) so the next pass re-reads and retries it.
+    Each PO is upserted and committed on its own, so a failure rolls back only that PO. Not a SAVEPOINT in
+    one page transaction (#1959): a released savepoint keeps its row locks until the page commits, so the
+    mirror held every PO, project and line it had touched while it asked for the next PO's, and a register
+    in Nexus that locks its PO then the project deadlocked against it. A re-read page re-upserts the same
+    rows to the same values, so committing ahead of the cursor costs nothing.
+
+    The backfill cursor is advanced only over POs that actually persisted: if a PO in the page failed, the
+    cursor is parked at the last consecutively-persisted PO (or left untouched when even the first failed)
+    so the next pass re-reads and retries it.
     History is invisible to the incremental phase, so a PO skipped PAST here would be a permanent hole.
 
     Returns per-page counts plus `stored_cursor` (the keyset written, None when the cursor did not move)
@@ -221,11 +226,12 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
         for po in pos:
             po_number = (po.get("po_number") or "").strip()
             try:
-                with session.begin_nested():  # per-PO SAVEPOINT
-                    action = sync_repo.upsert_mirrored_po(
-                        session, company, po, project_map, pending_registration=pending_registration
-                    )
+                action = sync_repo.upsert_mirrored_po(
+                    session, company, po, project_map, pending_registration=pending_registration
+                )
+                session.commit()  # per PO, so its locks go with it (#1959)
             except Exception:  # noqa: BLE001 - one bad PO must not lose the rest of the page
+                session.rollback()
                 logger.exception("gp po sync: failed to upsert PO %s", po.get("po_number"))
                 skipped += 1
                 all_persisted = False
