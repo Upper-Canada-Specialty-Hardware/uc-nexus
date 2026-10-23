@@ -306,21 +306,25 @@ def _mirrored_copy_of(session: Session, po: PurchaseOrder, po_number: str, compa
     ).first()
 
 
+def live_po_id_numbered(
+    session: Session, po_number: str, company: str, *, exclude_po_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The id of a live Nexus PO in the company that already carries `po_number`, if there is one (#1948)."""
+    return session.scalar(
+        select(PurchaseOrder.id)
+        .where(
+            PurchaseOrder.po_number == po_number,
+            PurchaseOrder.id != exclude_po_id,
+            PurchaseOrder.deleted_at.is_(None),
+            or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+        )
+        .limit(1)
+    )
+
+
 def live_po_numbered(session: Session, po_number: str, company: str, *, exclude_po_id: uuid.UUID) -> bool:
     """Whether a live Nexus PO in the company already carries `po_number` (#1948)."""
-    return (
-        session.scalar(
-            select(PurchaseOrder.id)
-            .where(
-                PurchaseOrder.po_number == po_number,
-                PurchaseOrder.id != exclude_po_id,
-                PurchaseOrder.deleted_at.is_(None),
-                or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
-            )
-            .limit(1)
-        )
-        is not None
-    )
+    return live_po_id_numbered(session, po_number, company, exclude_po_id=exclude_po_id) is not None
 
 
 # The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.

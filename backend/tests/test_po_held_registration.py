@@ -197,6 +197,27 @@ def test_a_held_registration_whose_po_is_already_in_nexus_can_be_let_go_and_its_
     assert gp_outbox_repository.queued_po_registration(db_session, po.id) is None
 
 
+def test_letting_go_of_a_registration_already_in_nexus_settles_its_ledger_on_the_copy(db_session):
+    """#1960: the cancel left the ledger with GP's answer and no record, so the number stayed pending
+    registration for good and the mirror skipped the copy on every pass. The ledger now records the copy."""
+    from app.repositories.gp_po_sync_repository import po_numbers_pending_registration
+
+    po_number = f"P{uuid.uuid4().hex[:8].upper()}"
+    po = _po(db_session)
+    row = _failed_registration(db_session, po.id, relay_result={"po_number": po_number, "company": "TUBC"})
+    copy = _mirrored_copy(db_session, po_number)
+    assert po_number in po_numbers_pending_registration(db_session, "TUBC")
+
+    gp_outbox_repository.cancel_entry(db_session, row.id)
+
+    ledger = db_session.get(GpWriteIdempotency, row.idempotency_key)
+    assert ledger.result_id == str(copy.id)
+    assert ledger.relay_result["po_number"] == po_number  # GP's answer is kept
+    assert po_number not in po_numbers_pending_registration(db_session, "TUBC")
+    assert not gp_outbox_repository.write_gp_took(db_session, row)
+    assert not gp_outbox_repository.registration_holds_draft(db_session, row)
+
+
 @pytest.mark.parametrize("where", ["another-company", "cancelled"])
 def test_a_held_registration_gp_took_with_no_live_copy_in_its_company_stays_uncancellable(db_session, where):
     po_number = f"P{uuid.uuid4().hex[:8].upper()}"

@@ -543,9 +543,18 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     if in_nexus is not None:
         # Its draft goes too, cancelled as any draft is: left a draft, Register would push a second GP PO
         # for the order GP holds as the mirrored copy.
-        from app.repositories.po_repository import cancel_draft_gp_po_already_in_nexus
+        from app.repositories.po_repository import cancel_draft_gp_po_already_in_nexus, live_po_id_numbered
+        from app.services import gp_idempotency
 
         cancel_draft_gp_po_already_in_nexus(session, _draft_id_of(row))
+        # And its ledger row is settled on the copy (#1960). Left with GP's answer and no record, it kept the
+        # number pending registration for good (`po_numbers_pending_registration`), so the mirror skipped the
+        # copy on every pass and GP's changes to it never arrived. The copy is the record GP's PO has here,
+        # so its id is the result: the key no longer reads as a write GP took, and nothing waits on it.
+        copy_id = live_po_id_numbered(session, in_nexus, row.company, exclude_po_id=_draft_id_of(row))
+        if copy_id is not None:
+            gp_idempotency.stamp_result_id(session, row.idempotency_key, row.op, None, str(copy_id))
+            session.flush()
     _release_receive_draft(session, row)
     return row
 
