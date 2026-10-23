@@ -722,6 +722,30 @@ def _assert_unchanged_since(draft: ReceiveDraftModel, expected_updated_at: datet
         raise ConflictError(COUNT_CHANGED_MESSAGE, field=COUNT_CHANGED_FIELD)
 
 
+# #1963: what a fresh approval sent under a spent key is refused with. The approval that key belonged to has
+# ended - its queued receipt cancelled or failed, or GP's answer held after its claim was released - and the
+# draft came back for review since. Nothing was sent this time; the client mints a new key for the next press.
+APPROVAL_KEY_SPENT = (
+    "This approval was sent under the key of an earlier approval of this draft, which has since ended. "
+    "Nothing was sent to GP this time; approve it again to send it as a new approval."
+)
+
+
+def approval_key_spent(session: Session, key: str) -> bool:
+    """Whether a receipt approval was already written under `key` (#1963): queued on the GP write queue, or
+    answered by GP into the ledger. Only a resume - the draft still APPROVING under the key - may carry such
+    a key. A fresh claim with one would relink the dead queued row (its Retry then posting the count as it
+    was before the review) or book the ledger's answer, a receipt GP held when the approval was let go and
+    that may since have been reversed there. A key that only ever met a refusal (the claim released before
+    anything was recorded) is not spent, so the same press retried after a dropped connection still works."""
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.models.gp_write import GpWriteIdempotency
+
+    if session.get(GpWriteIdempotency, key) is not None:
+        return True
+    return session.scalar(select(GpWriteOutbox.id).where(GpWriteOutbox.idempotency_key == key).limit(1)) is not None
+
+
 def claim_for_approval(
     session: Session,
     draft_id: uuid.UUID,
@@ -738,7 +762,9 @@ def claim_for_approval(
 
     A retry carrying the same key resumes rather than conflicting: the GP idempotency ledger will
     return the already-posted receipt, so re-entering this path is exactly what should happen after a
-    dropped connection.
+    dropped connection. That resume - the draft APPROVING under the key - is the only way back into an
+    approval (`ApprovalContext.resumed`). A draft awaiting approval is a fresh one, and its key must be
+    unspent (#1963, `approval_key_spent`).
 
     `expected_updated_at` (#1497) is the draft's updated_at as the reviewer saw it. It is part of the
     claim's own WHERE, so an edit can't land between a check and the claim: a count changed since the
@@ -794,6 +820,10 @@ def claim_for_approval(
                 f"{status_label(draft.status)}. {REFRESH_HINT}"
             )
     else:
+        # #1963: a fresh claim is a new approval, and only a key nothing has been written under may start
+        # one. Refused, the claim this transaction just took is rolled back with it: the draft stays pending.
+        if approval_key_spent(session, idempotency_key):
+            raise ConflictError(APPROVAL_KEY_SPENT, field="idempotency_key")
         _assert_no_conflicting_claim(session, draft)
         # #1401: the warehouse was checked when the draft was saved, but it can be retired or moved to
         # another company since. Re-checked on a fresh claim, before the caller commits it and before

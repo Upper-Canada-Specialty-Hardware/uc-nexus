@@ -64,6 +64,19 @@ interface WarehouseOption {
   isPrimary: boolean;
 }
 
+/**
+ * #1963: hold an approval key for a draft only while an approval of it is in progress - the draft
+ * APPROVING under that key, which a retry resumes - and drop it otherwise, so the next approval mints
+ * its own. The server refuses a fresh approval under a key already written under.
+ */
+function syncApprovalKey(keys: Record<string, string>, draft: ReceiveDraft): void {
+  if (draft.status === 'APPROVING' && draft.approvalIdempotencyKey) {
+    keys[draft.id] = draft.approvalIdempotencyKey;
+  } else {
+    delete keys[draft.id];
+  }
+}
+
 interface ReceiveDraftReviewModalProps {
   open: boolean;
   draft: ReceiveDraft | null;
@@ -183,13 +196,15 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     setApproveFailed(false);
     setHeldOnGp(false);
     setRejectReason('');
-    // An approval that died ambiguously left the draft claimed under a key the browser no longer
-    // holds - a reload, or a different manager picking it up. Resuming with the SAME key is the only
-    // way through the idempotency ledger to the receipt GP may already have posted; a fresh key
-    // would be a second approval.
-    if (draft.approvalIdempotencyKey) {
-      idempotencyKeyRef.current[draft.id] = draft.approvalIdempotencyKey;
-    }
+    // The key follows the draft as the server last showed it (#1963). An approval that died ambiguously
+    // left the draft claimed under a key the browser may no longer hold - a reload, or a different manager
+    // picking it up. Resuming with the SAME key is the only way through the idempotency ledger to the
+    // receipt GP may already have posted; a fresh key would be a second approval. Anything else - back for
+    // review, approved, rejected - means no approval of it is in progress, so a key kept from an earlier
+    // one is spent: its queued receipt was cancelled or failed, or its claim was released while GP held
+    // the receipt. Sent again it would relink that dead receipt or book a receipt GP may have reversed
+    // since, and the server refuses it, so the next approval mints its own.
+    syncApprovalKey(idempotencyKeyRef.current, draft);
   }, [open, draft]);
 
   useEffect(() => {
@@ -302,9 +317,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       setApprovedCount(totalUnits);
       if (result?.queued) {
         // #353 PR E: the relay was unreachable, so the receipt is on the durable outbox and will
-        // post itself. The key is deliberately NOT cleared - the outbox row owns it now, and
-        // reusing it is what makes a resubmit a no-op instead of a second queued receipt. Nothing is
-        // in inventory yet, so no inventory refetch.
+        // post itself. The key is not cleared here - the outbox row owns it now, and a resubmit under
+        // it is refused as already approved rather than queued a second time. It goes once the draft is
+        // next seen not claimed (#1963): if the receipt is cancelled or fails and the draft comes back for
+        // review, that key is spent and the next approval mints its own. Nothing is in inventory yet, so
+        // no inventory refetch.
         setQueued(true);
         showToast(
           'Queued — the GP relay is offline. This receipt will post automatically when it reconnects.',
@@ -351,8 +368,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       if (mayBeInGp) setHeldOnGp(true);
       if (approveSent) {
         const fresh = await reload().catch(() => undefined);
+        // #1963: kept only while the draft is still claimed under it. A may-be-in-GP refusal on a draft back
+        // for review is an approval released while its attempt was out at GP: that key is spent too. With no
+        // re-read the outcome is unknown, and the same press retried under the same key is the safe one.
+        if (fresh) syncApprovalKey(idempotencyKeyRef.current, fresh);
         if (fresh && fresh.status !== 'APPROVING' && !mayBeInGp) {
-          delete idempotencyKeyRef.current[draft.id];
           // Pending again: nothing reached GP and the reviewer decides. Approved or rejected: another
           // manager finished it meanwhile - there is nothing here to fix or reject.
           const lead =

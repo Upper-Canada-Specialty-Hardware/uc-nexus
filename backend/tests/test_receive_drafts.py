@@ -1153,8 +1153,11 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
 
     f = committed()
     key = str(uuid.uuid4())
+    # #1963: the attempt GP answered still holds the claim - only that is a resume. A fresh claim under a key
+    # with GP's answer on it is refused (see the #1963 tests after the #1961 ones).
+    _claim_as_an_attempt_that_died(f.draft_id, key)
     gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT000777"})
-    # Close the PO so any re-validation would refuse. The relay must also never be called again.
+    # The relay must never be called again.
     relay = _StubRelay()
     monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
 
@@ -1559,6 +1562,124 @@ def test_a_receipt_gp_took_whose_draft_still_links_to_it_is_not_let_go(committed
         with pytest.raises(ConflictError, match="GP already took this write"):
             gp_outbox_repository.cancel_entry(session, row_id)
     assert _read_draft(f.draft_id).approved_outbox_entry_id == row_id
+
+
+# --- #1963: a fresh approval under a spent key ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ending", ["CANCELLED", "gp_rejected"])
+def test_a_fresh_approval_under_the_key_of_a_queued_receipt_that_ended_is_refused(
+    committed, monkeypatch, approve_env, ending
+):
+    """#1963 path A: approved offline, the receipt queued under K, then cancelled or refused by GP, and the
+    draft back for review. The modal kept K, and the next approval under it was handed the dead row by
+    `enqueue`: the draft linked to it, the toast said it would post, and a Retry posted the pre-review
+    count. A fresh claim under a spent key is refused now, before anything is queued or sent."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayUnavailableError("no relay", dispatched=False))
+    )
+    key = str(uuid.uuid4())
+    row_id = _queued_row(_approve(f.draft_id, key=key)).id
+    with SessionLocal() as session:
+        if ending == "CANCELLED":
+            gp_outbox_repository.cancel_entry(session, row_id)
+        else:
+            row = gp_outbox_repository.get_entry_locked(session, row_id)
+            gp_outbox_repository.mark_failed(session, row, kind="gp_rejected", error="PO line is closed")
+        session.commit()
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+    with pytest.raises(ConflictError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert "Nothing was sent to GP" in excinfo.value.message
+    draft = _read_draft(f.draft_id)
+    assert (draft.status, draft.approved_outbox_entry_id, draft.approval_idempotency_key) == (
+        ReceiveDraftStatus.PENDING_APPROVAL,
+        None,
+        None,
+    )
+    (row,) = _held_rows(f.po_id)
+    assert row.status == ("CANCELLED" if ending == "CANCELLED" else "FAILED")
+
+    # A new key is a new approval: a row of its own, linked to the draft.
+    result = _approve(f.draft_id)
+    assert result.queued is True
+    assert uuid.UUID(str(result.outbox_entry_id)) != row_id
+
+
+def test_a_fresh_approval_under_a_key_gp_answered_after_its_claim_was_released_is_refused(
+    committed, monkeypatch, approve_env
+):
+    """#1963 path B: GP took the receipt after a manager released the claim, so it is held under K, booked
+    nowhere. Reversed in GP and approved again in the same tab, K resumed from the ledger and booked a GP
+    receipt that no longer exists. A draft awaiting approval is a fresh approval and never resumes."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.receiving import ReceiveRecord
+
+    f = committed()
+    relay = _release_while_the_call_is_out(f, {"receipt_number": "RCT001963"})
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    with pytest.raises(ConflictError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+    with SessionLocal() as session:
+        assert session.scalars(select(ReceiveRecord).where(ReceiveRecord.po_id == f.po_id)).all() == []
+
+
+def test_a_resume_after_a_reload_mid_approval_still_finishes_from_the_ledger(committed, monkeypatch, approve_env):
+    """#1963 leaves the genuine resume alone: the draft APPROVING under K (the page reloaded mid-approval,
+    and the modal read K off the draft) books GP's answer under K, without calling GP again."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001963"})
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    result = _approve(f.draft_id, key=key)
+
+    assert relay.calls == []
+    assert result.receive_record.receipt_number == "RCT001963"
+
+
+def test_a_key_that_only_met_a_refusal_approves_again(committed, monkeypatch, approve_env):
+    """#1963 spends a key only once something was written under it. GP refusing the receipt releases the
+    claim with nothing recorded, so the same press retried - the modal keeps its key after a dropped
+    connection it could not re-read - is a fresh approval like any other."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    monkeypatch.setattr(
+        warehouse_module,
+        "relay_gateway",
+        _StubRelay(fail_with=RelayCallError("eConnect 4612 Invalid Account Index", detail={"error": "x"})),
+    )
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    assert _approve(f.draft_id, key=key).draft.status.value == "APPROVED"
 
 
 def _queue_as_maybe_in_gp(f, monkeypatch):

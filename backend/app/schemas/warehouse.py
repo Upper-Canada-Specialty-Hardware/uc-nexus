@@ -1406,8 +1406,11 @@ class WarehouseMutations:
         # GP has ALREADY run under this key and only the persist is outstanding. Re-validating here
         # would be re-asking a question GP has answered: the world can have moved since (another
         # receive against the line), and a refusal would release the claim for a receipt that is
-        # sitting in GP - after which a fresh key would post a second one.
-        resuming = state is not None and state.relay_result is not None
+        # sitting in GP - after which a fresh key would post a second one. #1963: only a genuine resume, the
+        # draft already APPROVING under this key, goes on from the ledger. A fresh claim under a key with GP's
+        # answer on it is refused at the claim (`approval_key_spent`): that answer belongs to an approval let
+        # go since, and GP's receipt may have been reversed there.
+        resuming = ctx.resumed and state is not None and state.relay_result is not None
 
         if resuming:
             relay_result = state.relay_result

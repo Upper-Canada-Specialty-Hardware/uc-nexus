@@ -682,6 +682,131 @@ describe('ReceiveDraftReviewModal', () => {
     expect(captured!.input.idempotencyKey).toBe('held-key-1');
   });
 
+  // #1963: the modal stays mounted, so a key kept from an approval that has since ended would be sent
+  // again by the next one - relinking its dead queued receipt, or booking a receipt GP may have reversed.
+  describe('an approval key lives only as long as its approval (#1963)', () => {
+    function capturingApprove(keys: string[], respond: () => Record<string, unknown>): MockedResponse<
+      Record<string, unknown>,
+      ApproveVars
+    > {
+      return {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          keys.push(vars.input.idempotencyKey);
+          return respond();
+        },
+      };
+    }
+
+    it('mints a new key when a queued approval comes back for review', async () => {
+      const keys: string[] = [];
+      const mocks = [
+        relayMock(false),
+        warehousesMock(),
+        poDetailsMock(),
+        capturingApprove(keys, () => ({ data: approveResult(true, null) })),
+        capturingApprove(keys, () => ({ data: approveResult(true, null) })),
+      ];
+      const tree = (d: ReceiveDraft) => (
+        <MockedProvider mocks={mocks}>
+          <MemoryRouter>
+            <ToastProvider>
+              <ReceiveDraftReviewModal open draft={d} onClose={() => undefined} />
+            </ToastProvider>
+          </MemoryRouter>
+        </MockedProvider>
+      );
+      const { rerender } = render(tree(draft()));
+      await screen.findByText('HG-100', undefined, SLOW);
+      await approveViaConfirm();
+      await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
+
+      // The queued receipt was cancelled, and the list hands the modal the draft back for review.
+      rerender(
+        tree(draft({ rejectionReason: 'Back for review: the queued GP receipt was cancelled', updatedAt: '2026-08-02T10:00:00Z' })),
+      );
+      await approveViaConfirm();
+      await vi.waitFor(() => expect(keys).toHaveLength(2), SLOW);
+
+      expect(keys[0]).toMatch(UUID_RE);
+      expect(keys[1]).toMatch(UUID_RE);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
+    it('mints a new key after a may-be-in-GP refusal whose re-read finds the draft back for review', async () => {
+      // The approval was released while its attempt was out at GP: GP's answer is held under that key.
+      const keys: string[] = [];
+      const refused = capturingApprove(keys, () => ({
+        errors: [
+          new GraphQLError('This approval was released while the attempt was still out at GP.', {
+            extensions: { code: 'RECEIPT_MAY_BE_IN_GP' },
+          }),
+        ],
+      }));
+      const reread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'PENDING_APPROVAL' } } },
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      await openModal([refused, reread, approved]);
+
+      await approveViaConfirm();
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/released while the attempt/), {
+        timeout: 15_000,
+      });
+      await approveViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
+    it('keeps the key for the retry while the re-read finds the draft still claimed under it', async () => {
+      const keys: string[] = [];
+      const timedOut = capturingApprove(keys, () => ({
+        errors: [new GraphQLError('GP did not answer in time.', { extensions: { code: 'RELAY_TIMEOUT' } })],
+      }));
+      const reread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: () => ({
+          data: {
+            receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVING', approvalIdempotencyKey: keys[0] },
+          },
+        }),
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      await openModal([timedOut, reread, approved]);
+
+      await approveViaConfirm();
+      await retryViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('keeps the key for the retry when the connection dropped and nothing could be re-read', async () => {
+      const keys: string[] = [];
+      const dropped: MockedResponse<Record<string, unknown>, ApproveVars> = {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          keys.push(vars.input.idempotencyKey);
+          return { errors: [new GraphQLError('connection reset')] };
+        },
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      // No re-read mock: the re-read fails as the approve did.
+      await openModal([dropped, approved]);
+
+      await approveViaConfirm();
+      await retryViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0]);
+    });
+  });
+
   it('does not re-send the edit on a retry, so the same-key approve is reachable', async () => {
     // The backend refuses to edit an APPROVING draft. A retry that still thought itself dirty would
     // fail on that refusal every time and never reach the approve that is the actual way out.
