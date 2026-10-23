@@ -751,7 +751,10 @@ def set_product_classifications(
     reads the classification list (#1443) only after this has written it.
 
     Every UCH Shop / UCH Site set is written to the project's classification list as well as the rows
-    (#1443). A product only on the list has no rows, so the list is all its change writes."""
+    (#1443). A product only on the list has no rows, so the list is all its change writes.
+
+    A save that writes anything moves the project's schedule revision (#1918), so an import wizard opened
+    before it is refused instead of putting back the exclusions and classifications it loaded."""
     from app.models.project import Project
 
     session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
@@ -800,5 +803,14 @@ def set_product_classifications(
             session.execute(update(HardwareItem).where(product_rows).values(classification=_STORED[to], updated_at=now))
             write_list(session, project_id, {(category, code): _STORED[to]}, updated_by=changed_by)
         written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
+    # #1918: a saved change moves the schedule revision a PO import checks, under the project lock taken
+    # above, the lock a finalize bumps it under. A tab that opened the import wizard before this sends the
+    # exclusions it loaded, and step 2b of the finalize deletes every one it wasn't sent, so a product marked
+    # By Others here went back to being UCH's to order. Its classifications are as stale (the list it filled
+    # them in from), so any written change refuses it with the reload message rather than undoing this.
+    if written:
+        session.execute(
+            update(Project).where(Project.id == project_id).values(schedule_revision=Project.schedule_revision + 1)
+        )
     session.flush()
     return written

@@ -777,6 +777,65 @@ def test_a_finalize_from_an_older_schedule_revision_is_refused(db_session):
     assert project.schedule_revision == 2
 
 
+def test_a_po_import_opened_before_a_classification_page_change_is_refused(db_session):
+    """#1918: a PO import sends the exclusions it loaded and deletes every one it wasn't sent. A tab opened
+    before someone marked a product By Others on the classification page undid the mark, since that save
+    never moved the revision the import checks. It does now, so the stale tab is refused and the mark stays."""
+    from app.models.enums import HardwareClassificationChoice
+    from app.models.project_excluded_item import ProjectExcludedItem
+    from app.repositories import classification_override_repository
+
+    project = _make_project(db_session)
+    db_session.commit()
+    schedule = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+    }
+    import_repository.finalize_import_session(db_session, {**schedule, "expected_schedule_revision": None})
+    db_session.flush()
+    assert project.schedule_revision == 1
+
+    # Tab A opens the PO import wizard at revision 1. Tab B marks HG-200 By Others.
+    classification_override_repository.set_product_classifications(
+        db_session, project.id, [("HINGE", "HG-200", HardwareClassificationChoice.BY_OTHERS)], changed_by="Greg"
+    )
+    db_session.flush()
+    assert project.schedule_revision == 2
+
+    def exclusions() -> set[str]:
+        return set(
+            db_session.scalars(
+                select(ProjectExcludedItem.product_code).where(ProjectExcludedItem.project_id == project.id)
+            )
+        )
+
+    assert exclusions() == {"HG-200"}
+
+    # Tab A finalizes with the exclusions it loaded: none.
+    with pytest.raises(ConflictError, match="The schedule changed since you opened this"):
+        import_repository.finalize_import_session(
+            db_session,
+            {
+                **schedule,
+                "excluded_items": [],
+                "po_drafts": [_po_draft(_ref("A01", "HG-100"))],
+                "expected_schedule_revision": 1,
+            },
+        )
+    assert exclusions() == {"HG-200"}
+    assert project.schedule_revision == 2
+
+    # Setting the value a product already has writes nothing, so it moves nothing either.
+    assert (
+        classification_override_repository.set_product_classifications(
+            db_session, project.id, [("HINGE", "HG-200", HardwareClassificationChoice.BY_OTHERS)], changed_by="Greg"
+        )
+        == []
+    )
+    assert project.schedule_revision == 2
+
+
 def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):
     """#1123 ruling: a new schedule does not undo an order. Ordered hardware with no match in the new
     schedule stays IN_PO on its opening, and the opening stays for it. Hardware Status never counts
