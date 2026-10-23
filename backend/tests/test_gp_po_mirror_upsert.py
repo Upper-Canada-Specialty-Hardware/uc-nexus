@@ -684,6 +684,37 @@ def test_a_po_gp_lost_keeps_the_ties_of_what_was_received(db_session, project):
     assert _tied_and_available(db_session, project, line.id) == (2, 3)
 
 
+def test_the_reconcile_counts_what_a_lost_po_kept_as_received(db_session, project):
+    """#1915 kept the received units' ties on the cancelled PO, and the reconcile reads no cancelled PO: it
+    showed all 5 as not covered and seeded a new PO with them while 2 were on the shelf."""
+    from app.repositories import import_repository
+
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO607", [_line(16384, "IT1", 5, received=2)]), _project_map(db_session)
+    )
+    db_session.flush()
+    _tie_schedule_rows(db_session, project, _get(db_session, "PO607").line_items[0], [5])
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO607"], PASS1)
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO607"], PASS2)
+    db_session.flush()
+
+    results = import_repository.reconcile_schedule(
+        db_session,
+        project.id,
+        [
+            {
+                "opening_number": "101",
+                "hardware_category": "IT1 description",
+                "product_code": "IT1",
+                "quantity_needed": 5,
+            }
+        ],
+    )
+    by_status = {r["status"]: r["quantity"] for r in results}
+    assert by_status.get("RECEIVED") == 2
+    assert by_status.get("NOT_COVERED") == 3
+
+
 def test_two_misses_inside_the_same_pass_do_not_cancel(db_session, project):
     """The stamp is a PASS, not a count: the same pass reporting a number twice is still one pass."""
     _open_mirrored(db_session, "PO602")

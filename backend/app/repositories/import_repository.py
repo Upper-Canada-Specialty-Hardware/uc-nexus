@@ -262,6 +262,10 @@ def reconcile_schedule(
     # into NOT_COVERED, got auto-selected on a PO re-import, and finalize minted a duplicate row per
     # combo while a real PO was drafted for units already on the shelf. They bucket as RECEIVED:
     # bought and received under the retired system is exactly what the marking asserts.
+    #
+    # So do the rows a cancelled PO keeps (#1915): a PO GP voided after receipts keeps its received units
+    # tied, IN_PO, and Query 1 leaves every cancelled or deleted PO out. Hardware Status counts them on
+    # hand; missed here, they fell into NOT_COVERED and were seeded onto a new PO while on the shelf.
     marked_stmt = (
         select(
             OpeningModel.opening_number,
@@ -270,10 +274,16 @@ def reconcile_schedule(
             func.sum(HardwareItemModel.item_quantity).label("marked_quantity"),
         )
         .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
+        .outerjoin(POLineItemModel, HardwareItemModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             HardwareItemModel.project_id == project_id,
             HardwareItemModel.state == HardwareItemState.IN_PO,
-            HardwareItemModel.po_line_item_id.is_(None),
+            or_(
+                HardwareItemModel.po_line_item_id.is_(None),
+                POModel.status == POStatus.CANCELLED,
+                POModel.deleted_at.isnot(None),
+            ),
         )
         .group_by(OpeningModel.opening_number, HardwareItemModel.hardware_category, HardwareItemModel.product_code)
     )
