@@ -570,18 +570,19 @@ describe("POGenerateDialog waits for GP's figures and saves only what the buyer 
   });
 
   it('keeps Generate & preview and Save off while GP is still being read', async () => {
-    renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader(1500)]);
+    // GP answers after 6s: well past the form's own render even on a loaded CI runner, which at 1.5s it
+    // sometimes was not, so the read had already landed when the buttons were first looked at.
+    renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader(6000)]);
 
     await screen.findByRole('textbox', { name: 'Shipping method' });
     expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeDisabled();
 
-    // GP answers after 1.5s here, past waitFor's default wait.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Generate & preview' })).toBeEnabled(), {
-      timeout: 5000,
+      timeout: 15000,
     });
     expect(screen.getByRole('button', { name: 'Save to PO documents' })).toBeEnabled();
-  });
+  }, 30_000);
 
   it("sends GP's figures as unset and only the typed field as typed", async () => {
     const calls: Record<string, unknown>[] = [];
