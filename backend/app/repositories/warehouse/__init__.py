@@ -76,7 +76,11 @@ from .pull_requests import (
     start_pull_request_pick,
 )
 from .receive_drafts import (
+    APPROVAL_ATTEMPT_SECONDS,
+    APPROVAL_RELEASED_MEANWHILE,
     ApprovalContext,
+    approval_releasable_at,
+    approval_still_held,
     claim_for_approval,
     count_pending_drafts,
     create_receive_draft,
@@ -173,6 +177,10 @@ __all__ = [
     "get_receive_draft",
     "get_receive_drafts",
     "drafts_with_stopped_receipts",
+    "APPROVAL_ATTEMPT_SECONDS",
+    "APPROVAL_RELEASED_MEANWHILE",
+    "approval_releasable_at",
+    "approval_still_held",
     "get_all_receives",
     "get_recent_receive_records",
     "get_receiving_history_pos",

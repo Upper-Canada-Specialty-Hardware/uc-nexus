@@ -15,6 +15,7 @@ from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestSta
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
 from app.repositories.shipping_requests import lines_version as shipping_lines_version
+from app.repositories.warehouse.receive_drafts import approval_releasable_at
 
 from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
@@ -223,6 +224,7 @@ def receive_draft_to_type(
         updated_at=draft.updated_at,
         line_items=[receive_draft_line_item_to_type(li) for li in draft.line_items],
         queued_receipt_stopped=queued_receipt_stopped,
+        approval_releasable_at=approval_releasable_at(draft),
     )
 
 

@@ -1334,6 +1334,7 @@ def test_a_manager_who_checked_gp_releases_a_held_approval(committed, monkeypatc
     with pytest.raises(AppError):
         _approve(f.draft_id, key=key)
 
+    _age_the_claim(f.draft_id)  # #1945: past any attempt that may still be running
     released = _release(f.draft_id)
 
     assert released.status.value == "PENDING_APPROVAL"
@@ -1361,9 +1362,131 @@ def test_only_a_held_approval_gp_never_answered_can_be_released(committed, monke
     _claim_as_an_attempt_that_died(f.draft_id, key)
     # GP answered under the claim's key: the receipt is in GP, and the same-key retry books it.
     gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001945"})
+    _age_the_claim(f.draft_id)
     with pytest.raises(ConflictError, match="GP already took this receipt"):
         _release(f.draft_id)
     assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVING
+
+
+def _age_the_claim(draft_id) -> None:
+    """The claim as an attempt long since dead left it: older than any attempt could still be running."""
+    from datetime import datetime, timedelta
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        draft = session.get(ReceiveDraft, draft_id)
+        draft.reviewed_at = datetime.utcnow() - timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS + 1)
+        session.commit()
+
+
+def test_a_held_approval_is_not_released_while_its_attempt_may_still_be_running(committed, approve_env):
+    """#1945: a second manager could release a claim while the first's relay call was still out; the receipt
+    that call posted then had no claim to book against, and the count could be approved and posted again."""
+    from datetime import timedelta
+
+    from app.errors import ConflictError
+
+    f = committed()
+    _claim_as_an_attempt_that_died(f.draft_id, str(uuid.uuid4()))
+
+    with pytest.raises(ConflictError, match="may still be posting the receipt"):
+        _release(f.draft_id)
+    held = _read_draft(f.draft_id)
+    assert held.status == ReceiveDraftStatus.APPROVING
+    shown = warehouse_module.WarehouseQueries().receive_draft(_Info(), str(f.draft_id))
+    window = timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS)
+    assert shown.approval_releasable_at == held.reviewed_at + window
+
+    _age_the_claim(f.draft_id)
+    assert _release(f.draft_id).status.value == "PENDING_APPROVAL"
+
+
+def test_a_resumed_approval_stamps_its_claim_again_and_leaves_the_count_version(committed):
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _age_the_claim(f.draft_id)
+    aged = _read_draft(f.draft_id)
+
+    _claim_as_an_attempt_that_died(f.draft_id, key)  # the same key, resuming
+
+    resumed = _read_draft(f.draft_id)
+    assert resumed.reviewed_at > aged.reviewed_at
+    assert resumed.updated_at == aged.updated_at  # #1497: no count changed
+
+
+def _release_while_the_call_is_out(f, relay_result=None, fail_with=None):
+    """A relay whose call, while it is out, sees the claim aged and released by a second manager."""
+
+    class _ReleasedMeanwhile(_StubRelay):
+        async def relay_call(self, company, op, payload=None, timeout=30.0):
+            self.calls.append((company, op, payload))
+            _age_the_claim(f.draft_id)
+            _release(f.draft_id)
+            if self.fail_with is not None:
+                raise self.fail_with
+            return self.result
+
+    return _ReleasedMeanwhile(result=relay_result, fail_with=fail_with)
+
+
+def _held_rows(po_id):
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        return list(session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.entity_key == f"po:{po_id}")).all())
+
+
+def test_an_attempt_whose_claim_was_released_meanwhile_books_nothing_and_holds_the_receipt(
+    committed, monkeypatch, approve_env
+):
+    """#1945: the late-returning attempt booked GP's receipt over a draft that was no longer its. It books
+    nothing now, and the receipt GP took is held on the GP write queue as maybe in GP, linked to no draft."""
+    f = committed()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _release_while_the_call_is_out(f))
+    key = str(uuid.uuid4())
+
+    with pytest.raises(AppError) as e:
+        _approve(f.draft_id, key=key)
+
+    assert e.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.receive_record_id is None
+    (row,) = _held_rows(f.po_id)
+    assert (row.idempotency_key, row.status, row.failure_kind, row.maybe_in_gp) == (
+        key,
+        "FAILED",
+        "persist_failed",
+        True,
+    )
+    assert draft.approved_outbox_entry_id is None
+
+
+def test_a_timed_out_attempt_whose_claim_was_released_meanwhile_is_held_not_queued_onto_the_draft(
+    committed, monkeypatch, approve_env
+):
+    from app.errors import RelayTimeoutError
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, fail_with=RelayTimeoutError())
+    )
+    key = str(uuid.uuid4())
+
+    with pytest.raises(AppError) as e:
+        _approve(f.draft_id, key=key)
+
+    assert e.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.approved_outbox_entry_id is None
+    (row,) = _held_rows(f.po_id)
+    assert (row.idempotency_key, row.status, row.failure_kind, row.maybe_in_gp) == (key, "FAILED", "ambiguous", True)
 
 
 def _queue_as_maybe_in_gp(f, monkeypatch):

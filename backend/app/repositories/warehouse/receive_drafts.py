@@ -27,6 +27,7 @@ from app.models.receive_draft import ReceiveDraftLineItem as ReceiveDraftLineIte
 from app.models.warehouse import Warehouse
 from app.services import notification_service
 from app.services.locking import lock_rows
+from app.services.relay_gateway import DEFAULT_TIMEOUT_SECONDS as RELAY_CALL_TIMEOUT_SECONDS
 from app.status_labels import REFRESH_HINT, status_label
 
 from .receiving import validate_receive_eligibility
@@ -37,6 +38,11 @@ from .receiving import validate_receive_eligibility
 _IN_FLIGHT_STATUSES = (ReceiveDraftStatus.APPROVING, ReceiveDraftStatus.APPROVED)
 
 MAX_REJECTION_REASON = 1000
+
+# #1945: how long an approval attempt may still be running after it took or resumed its claim: the receipt
+# relay call gives up at its timeout, and the margin covers the re-check before it and the persist after.
+# A held approval is not released inside it - the attempt may be about to book, or to post, the receipt.
+APPROVAL_ATTEMPT_SECONDS = RELAY_CALL_TIMEOUT_SECONDS + 60
 MAX_RECEIVE_NOTES = 2000
 
 
@@ -766,8 +772,15 @@ def claim_for_approval(
     resumed = False
     if rowcount == 0:
         if draft.status == ReceiveDraftStatus.APPROVING and draft.approval_idempotency_key == idempotency_key:
-            # Our own interrupted approval, resuming. Fall through and hand back the context.
+            # Our own interrupted approval, resuming. Fall through and hand back the context. #1945: the
+            # claim is stamped again, so a release waits out this attempt as it would a fresh one.
             resumed = True
+            session.execute(
+                update(ReceiveDraftModel)
+                .where(ReceiveDraftModel.id == draft_id)
+                # Held, as the claim holds it (#1497): the resume changes no count.
+                .values(reviewed_at=datetime.utcnow(), updated_at=ReceiveDraftModel.updated_at)
+            )
         elif draft.status == ReceiveDraftStatus.APPROVING:
             raise ConflictError(f"{draft.reviewed_by_name or 'Another reviewer'} is approving this draft right now")
         elif draft.status == ReceiveDraftStatus.APPROVED:
@@ -847,6 +860,13 @@ def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: s
             f"{REFRESH_HINT}"
         )
     key = draft.approval_idempotency_key
+    if draft.status == ReceiveDraftStatus.APPROVING and approval_attempt_may_be_running(draft, datetime.utcnow()):
+        # #1945: a second manager released a claim while the first's relay call was still out, and the
+        # receipt that call posted then had no claim to book against.
+        raise ConflictError(
+            "An approval attempt on this draft may still be posting the receipt to GP. Wait a couple of "
+            "minutes, check GP again, then release it."
+        )
     if draft.status == ReceiveDraftStatus.APPROVED:
         if entry is None or entry.id != draft.approved_outbox_entry_id:
             raise InvalidStateTransitionError(
@@ -875,6 +895,40 @@ def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: s
     )
     session.flush()
     return draft
+
+
+def approval_attempt_may_be_running(draft: ReceiveDraftModel, now: datetime) -> bool:
+    """Whether the attempt holding an APPROVING draft's claim may still be running (#1945)."""
+    return draft.reviewed_at is not None and draft.reviewed_at > now - timedelta(seconds=APPROVAL_ATTEMPT_SECONDS)
+
+
+def approval_releasable_at(draft: ReceiveDraftModel) -> datetime | None:
+    """When an APPROVING draft's claim has outlived any attempt that took it, so it may be released."""
+    if draft.status != ReceiveDraftStatus.APPROVING or draft.reviewed_at is None:
+        return None
+    return draft.reviewed_at + timedelta(seconds=APPROVAL_ATTEMPT_SECONDS)
+
+
+# #1945: what the persist and the queueing refuse an attempt whose claim was released, and maybe re-claimed,
+# while it was out at GP. The code is the one the review modal reads as "GP may hold this receipt".
+APPROVAL_RELEASED_MEANWHILE = (
+    "This approval was released while the attempt was still out at GP, so its receipt was not booked here"
+)
+
+
+def approval_still_held(session: Session, draft_id: uuid.UUID, key: str) -> bool:
+    """Whether the draft is still this attempt's, under its row lock: claimed under `key` (APPROVING), or
+    approved under it with its receipt queued (APPROVED), and nothing booked (#1945). A manager may release
+    a claim while its attempt is out at GP, and someone may claim the draft again; the late attempt must
+    not book over that, or link its queued receipt to it."""
+    lock_rows(session, ReceiveDraftModel, [draft_id])
+    draft = session.get(ReceiveDraftModel, draft_id, populate_existing=True)
+    return (
+        draft is not None
+        and draft.status in _IN_FLIGHT_STATUSES
+        and draft.approval_idempotency_key == key
+        and draft.receive_record_id is None
+    )
 
 
 def drafts_with_stopped_receipts(session: Session, drafts) -> set[uuid.UUID]:

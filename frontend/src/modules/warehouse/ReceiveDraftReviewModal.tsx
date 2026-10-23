@@ -99,6 +99,10 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [releaseOpen, setReleaseOpen] = useState(false);
+  // #1945: when a claimed draft's attempt has run out of time, and whether that moment has come. A timer
+  // flips it, so Release comes on while the modal is open.
+  const releasableAt = draft?.status === 'APPROVING' ? (draft.approvalReleasableAt ?? null) : null;
+  const [attemptRunOut, setAttemptRunOut] = useState<{ at: string | null; out: boolean }>({ at: null, out: true });
   // #1945: an approval refused with its claim held because GP may hold the receipt - only a manager who
   // checked GP can let it go.
   const [heldOnGp, setHeldOnGp] = useState(false);
@@ -187,6 +191,15 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       idempotencyKeyRef.current[draft.id] = draft.approvalIdempotencyKey;
     }
   }, [open, draft]);
+
+  useEffect(() => {
+    const wait = releasableAt ? parseServerDate(releasableAt).getTime() - Date.now() : 0;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the release window, read from the clock
+    setAttemptRunOut({ at: releasableAt, out: wait <= 0 });
+    if (wait <= 0) return;
+    const timer = window.setTimeout(() => setAttemptRunOut({ at: releasableAt, out: true }), wait);
+    return () => window.clearTimeout(timer);
+  }, [releasableAt]);
 
   // Relay presence: the approval posts a GP receipt. Advisory, not a blocker (#376) - an unreachable
   // relay means the receipt queues itself, which is a legitimate outcome the panel below explains.
@@ -505,8 +518,15 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
 
   const lastChanged = draftLastChanged(draft)?.toLocaleString() ?? null;
   // #1945: held on GP with nothing booked here - refused just now as maybe in GP, or reopened still claimed.
+  // #1945: an APPROVING draft is offered the release only once its attempt has run out of time, or when it
+  // was refused as maybe in GP just now; while an attempt may still be out at GP the button waits, saying why.
+  const attemptMayBeRunning =
+    draft.status === 'APPROVING' && !(attemptRunOut.at === releasableAt && attemptRunOut.out);
   const canRelease =
-    !succeeded && (heldOnGp || (draft.status === 'APPROVING' && !draft.receiveRecordId) || stoppedQueued);
+    !succeeded &&
+    (heldOnGp ||
+      (draft.status === 'APPROVING' && !draft.receiveRecordId && !attemptMayBeRunning) ||
+      stoppedQueued);
 
   // #1354: inventory moves when GP accepts the receipt, which is now only while the relay is up.
   const inventoryNote =
@@ -618,11 +638,24 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
               size="small"
               color="warning"
               variant="outlined"
-              disabled={submitting}
+              disabled={submitting || attemptMayBeRunning}
               onClick={() => setReleaseOpen(true)}
             >
               I've checked GP - no receipt was posted: release it
             </Button>
+            {attemptMayBeRunning && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                display="block"
+                sx={{ mt: 0.5 }}
+                data-testid="release-wait-reason"
+              >
+                An approval attempt may still be posting this receipt to GP. Release it once that has had time to
+                finish{releasableAt ? ` - after ${parseServerDate(releasableAt).toLocaleTimeString()}` : ''}, and
+                check GP again first.
+              </Typography>
+            )}
           </Box>
         )}
 

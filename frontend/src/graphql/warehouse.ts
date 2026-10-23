@@ -508,6 +508,8 @@ const RECEIVE_DRAFT_FIELDS = `
   # #1945: approved, nothing booked, and its queued receipt cancelled or failed with no answer from GP -
   # held until a manager checks GP and releases it.
   queuedReceiptStopped
+  # #1945: on a claimed draft, when the attempt holding the claim has run out of time - not released before.
+  approvalReleasableAt
   # #632: the counter's remark for the approver ("box crushed"). Carried onto the record at approval.
   notes
   totalQuantity

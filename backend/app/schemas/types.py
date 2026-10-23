@@ -587,6 +587,9 @@ class ReceiveDraft:
     # #1945: approved with nothing booked, and its queued receipt cancelled or failed with no answer from
     # GP. It stays approved - its units held against the PO - until a manager checks GP and releases it.
     queued_receipt_stopped: bool = False
+    # #1945: on an APPROVING draft, when the attempt holding its claim has run out of time - the receipt
+    # relay call's timeout and a margin past the claim. A held approval is not released before it.
+    approval_releasable_at: datetime | None = None
 
 
 @strawberry.type

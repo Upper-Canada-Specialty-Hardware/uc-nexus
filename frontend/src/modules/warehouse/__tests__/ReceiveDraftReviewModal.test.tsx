@@ -502,6 +502,43 @@ describe('ReceiveDraftReviewModal', () => {
       expect(screen.getByRole('button', { name: RELEASE })).toBeInTheDocument();
     });
 
+    // #1945: another manager's attempt may still be out at GP, and the server refuses the release until then.
+    it('does not offer the release on a claimed draft whose attempt may still be running', async () => {
+      const soon = new Date(Date.now() + 60_000).toISOString();
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1', approvalReleasableAt: soon }));
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+
+    it('offers the release once the attempt has run out of time', async () => {
+      const past = new Date(Date.now() - 1_000).toISOString();
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1', approvalReleasableAt: past }));
+      expect(screen.getByRole('button', { name: RELEASE })).toBeEnabled();
+    });
+
+    it('holds the release, saying why, when refused as maybe in GP while an attempt may still be running', async () => {
+      const soon = new Date(Date.now() + 60_000).toISOString();
+      const youngReread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: {
+          data: {
+            receiveDraft: {
+              ...draft(),
+              __typename: 'ReceiveDraft',
+              status: 'APPROVING',
+              approvalIdempotencyKey: 'k-1',
+              approvalReleasableAt: soon,
+            },
+          },
+        },
+      };
+      await openModal([approveMock, youngReread]);
+
+      await approveViaConfirm();
+
+      expect(await screen.findByRole('button', { name: RELEASE }, { timeout: 15_000 })).toBeDisabled();
+      expect(screen.getByTestId('release-wait-reason')).toHaveTextContent(/may still be posting this receipt/);
+    });
+
     it('does not offer the release on a draft awaiting approval', async () => {
       await openModal();
       expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
