@@ -159,6 +159,19 @@ def reset_notice(user_id: str) -> dict | None:
     return {"reset_at": build["finished_at"], "reset_by": build.get("started_by")}
 
 
+def build_failure(build: dict) -> dict | None:
+    """The last build's failure (#1937), as `{"failed_at", "started_by"}`, or None when it did not fail.
+
+    A rebuild runs in the background, so a failed one reached nobody: every tab waiting it out reloaded
+    into a demo the failed seed had wiped (demo_reset.reset wipes what a seed left part way). Told to every
+    demo tab until the next build starts, since the demo stays broken until somebody rebuilds it. Not the
+    "told once" notice: that is about a reset that worked. The recorded error stays off it, for the reason
+    ensure_built keeps it off DEMO_BUILD_FAILED; a UC Nexus Admin reads it under Nexus Admin → Demo."""
+    if building() or build.get("running") or not build.get("error"):
+        return None
+    return {"failed_at": build.get("finished_at"), "started_by": build.get("started_by")}
+
+
 def acknowledge_reset(user_id: str) -> None:
     """`user_id` has been told of the last build (#1697); `reset_notice` stays quiet for them until the next."""
     with SessionLocal() as session:

@@ -2704,14 +2704,24 @@ class DemoResetNotice:
 
 
 @strawberry.type
+class DemoBuildFailure:
+    """The demo's last build, when it failed (#1937): when, and who started it. Why is not here - the
+    recorded error can carry SQL and UBC's values - but under Nexus Admin → Demo, for a UC Nexus Admin."""
+
+    failed_at: datetime | None
+    started_by: str | None
+
+
+@strawberry.type
 class DemoResetStatus:
     """What a demo tab needs to know about resets (#1697): whether one is running - and who started it -
-    and the last one the caller has not been told of."""
+    the last one the caller has not been told of, and whether the last build failed (#1937)."""
 
     building: bool
     build_started_at: datetime | None
     build_started_by: str | None
     notice: DemoResetNotice | None
+    failure: DemoBuildFailure | None = None
 
 
 @strawberry.type

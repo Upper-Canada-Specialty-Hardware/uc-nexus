@@ -3,7 +3,7 @@ import { Alert, Box, Button } from '@mui/material';
 import { FlaskConical } from 'lucide-react';
 import ConfirmDialog from '../components/ConfirmDialog';
 import DemoProgressDialog from './DemoProgressDialog';
-import { DemoResetNoticeDialog, DemoResetWaitDialog } from './DemoResetDialogs';
+import { DemoResetFailedDialog, DemoResetNoticeDialog, DemoResetWaitDialog } from './DemoResetDialogs';
 import { useDemoMode } from './useDemoMode';
 import { useDemoReset } from './useDemoReset';
 
@@ -17,7 +17,8 @@ import { useDemoReset } from './useDemoReset';
  */
 export default function DemoBanner() {
   const { demoMode, busy, running, leave } = useDemoMode();
-  const { status, building, resetting, acknowledging, reset, dismissNotice } = useDemoReset(demoMode);
+  const { status, building, failure, resetting, acknowledging, reset, dismissNotice, closeFailure } =
+    useDemoReset(demoMode);
   const [confirming, setConfirming] = useState(false);
 
   if (!demoMode) return null;
@@ -73,6 +74,12 @@ export default function DemoBanner() {
       />
       <DemoResetWaitDialog status={status} />
       <DemoResetNoticeDialog status={status} busy={acknowledging} onDismiss={() => void dismissNotice()} />
+      {/* #1937: trying again goes through the same confirmation, so the failure steps aside for it. */}
+      <DemoResetFailedDialog
+        failure={confirming ? null : failure}
+        onReset={() => setConfirming(true)}
+        onClose={closeFailure}
+      />
       <DemoProgressDialog running={running} />
     </>
   );

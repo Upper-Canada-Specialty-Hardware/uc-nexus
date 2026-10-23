@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { ACKNOWLEDGE_DEMO_RESET, GET_DEMO_RESET_STATUS, RESET_DEMO } from '../graphql/demo';
 import { userMessage } from '../graphql/userMessage';
@@ -9,6 +9,8 @@ export interface DemoResetStatus {
   buildStartedAt: string | null;
   buildStartedBy: string | null;
   notice: { resetAt: string; resetBy: string | null } | null;
+  /** The last build, when it failed (#1937). Until the next build starts, the demo is broken. */
+  failure: { failedAt: string | null; startedBy: string | null } | null;
 }
 
 // Asked often while a reset runs, so the tab reloads soon after it ends; otherwise once a minute, which is
@@ -29,6 +31,10 @@ export const reloadPage = {
  * and reloads when the reset it saw running has finished, landing everybody in the rebuilt demo with
  * nothing of the old one left in the cache. The notice is the last reset this person has not been told
  * of; acknowledging it means it is not shown again.
+ *
+ * A reset that failed (#1937) is not reloaded into: the failed seed wiped what it had built, so the tab
+ * would land in an empty demo with nothing to say why. The failure is shown instead, to every demo tab
+ * until the next build starts - the demo stays broken until then - and closing it hides it in this tab.
  */
 export function useDemoReset(demoMode: boolean) {
   const { showToast } = useToast();
@@ -39,6 +45,9 @@ export function useDemoReset(demoMode: boolean) {
   });
   const status = demoMode ? (data?.demoResetStatus ?? null) : null;
   const building = !!status?.building;
+  const [closedFailure, setClosedFailure] = useState<string | null>(null);
+  const failureKey = status?.failure ? (status.failure.failedAt ?? '') : null;
+  const failure = !building && status?.failure && failureKey !== closedFailure ? status.failure : null;
 
   const [resetDemo, { loading: resetting }] = useMutation<{ resetDemo: DemoResetStatus }>(RESET_DEMO);
   const [acknowledge, { loading: acknowledging }] = useMutation(ACKNOWLEDGE_DEMO_RESET);
@@ -54,7 +63,7 @@ export function useDemoReset(demoMode: boolean) {
       startPolling(POLL_IDLE_MS);
       if (sawBuilding.current && data) {
         sawBuilding.current = false;
-        reloadPage.run();
+        if (!data.demoResetStatus.failure) reloadPage.run();
       }
     }
   }, [demoMode, building, data, startPolling]);
@@ -77,5 +86,7 @@ export function useDemoReset(demoMode: boolean) {
     }
   }, [acknowledge, refetch, showToast]);
 
-  return { status, building, resetting, acknowledging, reset, dismissNotice };
+  const closeFailure = useCallback(() => setClosedFailure(failureKey), [failureKey]);
+
+  return { status, building, failure, resetting, acknowledging, reset, dismissNotice, closeFailure };
 }
