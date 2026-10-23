@@ -525,8 +525,8 @@ def _release_registration(po_id, key) -> None:
 
 
 # #1950: where the online push keeps the context it sent beside GP's answer in the ledger. Nexus's own key,
-# never GP's; it is taken off again before the answer is saved.
-PUSHED_CONTEXT_KEY = "nexus_persist_context"
+# never GP's; it is taken off again before the answer is saved. The claim reads it too (#1962).
+PUSHED_CONTEXT_KEY = po_repository.REGISTRATION_PUSHED_CONTEXT_KEY
 
 
 def _without_pushed_context(gp_result: dict) -> tuple[dict, dict | None]:
@@ -1156,6 +1156,14 @@ class POMutations:
                 raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
             po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id), tenant_scope(info))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
+        if state is not None and state.relay_result is not None:
+            # #1962: an answer GP gave for another PO is never resumed onto this one. With no held write the
+            # resume saves the context kept with the answer, and that names its own PO: saved as it stood, it
+            # registered that PO - another company's, maybe - and handed it back to this caller. The claim
+            # below refuses the rest: a key whose answer is not this draft's own claim or held write.
+            _, pushed = _without_pushed_context(state.relay_result)
+            if isinstance(pushed, dict) and pushed.get("po_id") is not None and pushed.get("po_id") != str(pid):
+                raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
 
         # #1207: the costs the persist writes are checked before anything reaches GP.
         po_repository.validate_order_costs(shipping_cost=input.shipping_cost, tariff_amount=input.tariff_amount)
@@ -1259,8 +1267,9 @@ class POMutations:
                 gp_result, pushed_context = _without_pushed_context(gp_result)
                 if held is None and pushed_context is not None:
                     # #1950: no held write, so what GP was sent is the context kept with its answer - never
-                    # this call's form, which a dialog reopened on the draft could have edited since.
-                    persist_context = pushed_context
+                    # this call's form, which a dialog reopened on the draft could have edited since. Only ever
+                    # saved onto this caller's own draft, the one the pre-flight scoped and claimed (#1962).
+                    persist_context = {**pushed_context, "po_id": str(pid)}
                 if held is not None and held["status"] in ("PENDING", "IN_FLIGHT"):
                     # The queue is finishing it right now; the queued row holds the draft from here.
                     release = True

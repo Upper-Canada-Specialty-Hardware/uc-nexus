@@ -1655,8 +1655,8 @@ export default function GpPurchaseOrderDialog({
       {isRegister && registerPo?.registeringKey && (
         <Alert severity="warning" sx={{ mb: 2 }} data-testid="unrecorded-registration">
           GP already made PO {registerPo.registeringGpPoNumber} for this draft, but it was not recorded here.
-          Register finishes recording it as GP has it - nothing is sent to GP again, and changes made here are
-          not what is saved.
+          Register finishes recording it - nothing is sent to GP again. Leave the form as it was registered:
+          what GP was sent is saved where Nexus kept it, and otherwise what is entered here is.
         </Alert>
       )}
       {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}

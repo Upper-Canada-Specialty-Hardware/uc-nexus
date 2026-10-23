@@ -503,6 +503,101 @@ def test_a_resume_with_no_held_write_saves_what_gp_was_sent_not_the_reopened_for
     assert [float(li.unit_cost) for li in po.line_items] == [7.25]
 
 
+# --- #1962: a key GP answered resumes only the registration it answered ----------------------------------
+
+
+def test_a_key_gp_answered_for_one_draft_cannot_claim_another(db_session):
+    """Any draft with no claim took a key GP had already answered for another, and the resume then saved that
+    answer onto it. The answer is a draft's only while its claim is under the key or a write is held under it."""
+    from app.errors import ValidationError
+
+    answered = _stock_draft_po(db_session)
+    other = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, answered.id, key)
+    _ledger(db_session, key, po_number="0001962")
+
+    with pytest.raises(ValidationError, match="already used for another PO") as e:
+        po_repository.claim_po_registration(db_session, other.id, key)
+    assert e.value.field == "idempotency_key"
+    db_session.refresh(other)
+    assert other.registering_key is None
+
+    # The draft it answered still takes it again, to resume.
+    po_repository.claim_po_registration(db_session, answered.id, key)
+    assert answered.registering_key == key
+
+
+def test_a_key_whose_kept_context_names_another_po_cannot_claim_this_one(db_session):
+    from app.errors import ValidationError
+    from app.models.gp_write import GpWriteIdempotency
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    db_session.add(
+        GpWriteIdempotency(
+            key=key,
+            op="register_po_in_gp",
+            relay_result={
+                "po_number": "0001962",
+                "company": "TUBC",
+                po_schema.PUSHED_CONTEXT_KEY: {"po_id": str(uuid.uuid4())},
+            },
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match="already used for another PO"):
+        po_repository.claim_po_registration(db_session, draft.id, key)
+
+
+def test_a_resume_whose_answer_belongs_to_another_po_is_refused_and_saves_nothing(monkeypatch, db_session):
+    """The tenant hole (#1962): with no held write the resume saved the context kept with the answer, which
+    names its own PO, so a key from another company's answered attempt, sent with the caller's own PO, marked
+    that company's draft registered and handed it back. Refused before anything is claimed or saved."""
+    from app.errors import ValidationError
+    from app.services.gp_idempotency import IdempotencyState
+
+    theirs = _stock_draft_po(db_session)
+    ours = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes = _resume_world(monkeypatch, db_session, key, "0001962")
+    answered = IdempotencyState(
+        op="register_po_in_gp",
+        relay_result={
+            "po_number": "0001962",
+            "company": "TUBC",
+            po_schema.PUSHED_CONTEXT_KEY: {"po_id": str(theirs.id), "line_items_data": []},
+        },
+        result_id=None,
+    )
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: answered if k == key else None)
+
+    with pytest.raises(ValidationError, match="already used for another PO") as e:
+        _run_register(ours, key)
+
+    assert e.value.field == "idempotency_key"
+    assert pushes == []
+    for draft in (theirs, ours):
+        po = po_repository.reload_po(db_session, draft.id)
+        assert po.status == POStatus.DRAFT
+        assert po.registering_key is None
+
+
+def test_the_unrecorded_answers_refusals_say_to_reopen_register(db_session):
+    """Since #1950 the way out is reopening Register on the PO, not the window that started it (#1962)."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    _ledger(db_session, key, po_number="0001963")
+
+    with pytest.raises(InvalidStateTransitionError, match="Reopen Register on this PO"):
+        po_repository.cancel_po(db_session, draft.id)
+    with pytest.raises(InvalidStateTransitionError, match="Reopen Register on this PO"):
+        po_repository.claim_po_registration(db_session, draft.id, str(uuid.uuid4()))
+
+
 # --- #1849: the draft is claimed before it is read for its digest ----------------------------------------
 
 

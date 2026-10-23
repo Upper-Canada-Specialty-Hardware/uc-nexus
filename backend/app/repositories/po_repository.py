@@ -1906,7 +1906,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if gp_number is not None:
         raise InvalidStateTransitionError(
             f"GP already created PO {gp_number} for this draft, but it was not recorded here, so the draft "
-            "cannot be cancelled. Retry the registration from the window that started it, or have it reconciled."
+            "cannot be cancelled. Reopen Register on this PO to finish recording it, or have it reconciled."
         )
     if _registration_claim_is_live(po, datetime.utcnow()):
         raise InvalidStateTransitionError(
@@ -1990,6 +1990,33 @@ def unrecorded_registration(session: Session, po: PurchaseOrder) -> tuple[str, s
     return (po.registering_key, gp_number) if gp_number is not None else None
 
 
+# #1950: where the online push keeps the context it sent beside GP's answer in the ledger. Nexus's own key,
+# never GP's; the resume takes it off again before the answer is saved (`schemas/po.py`).
+REGISTRATION_PUSHED_CONTEXT_KEY = "nexus_persist_context"
+
+
+def _refuse_a_key_gp_answered_for_another_po(session: Session, po: PurchaseOrder, key: str) -> None:
+    """A key GP already answered resumes only the registration it answered (#1962).
+
+    The resume saves GP's answer onto the draft it claims, from the context kept with the answer where there
+    is one. Any draft with no claim took the key, so one PO's answer - another company's included - could be
+    recorded against a second PO, or the context's own PO registered under the caller's. The key's answer is
+    this PO's only while its claim is still under the key, or a write is held under the key for it, and the
+    context kept with the answer, where there is one, is for this PO."""
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+
+    ledger = session.get(GpWriteIdempotency, key)
+    if ledger is None or ledger.relay_result is None or ledger.result_id is not None:
+        return
+    pushed = (ledger.relay_result or {}).get(REGISTRATION_PUSHED_CONTEXT_KEY)
+    pushed_po_id = pushed.get("po_id") if isinstance(pushed, dict) else None
+    held = gp_outbox_repository.registration_for_key(session, key)
+    ours = po.registering_key == key or (held is not None and held.entity_key == f"po:{po.id}")
+    if not ours or (pushed_po_id is not None and pushed_po_id != str(po.id)):
+        raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
+
+
 def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
     """Take the draft for one registration attempt, under the PO's row lock (#1274).
 
@@ -2012,6 +2039,7 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
         raise InvalidStateTransitionError(
             f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
         )
+    _refuse_a_key_gp_answered_for_another_po(session, po, key)
     held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key)
     if held is not None:
         # #1948: so does a failed one GP took or may have; a second key would make a second GP PO.
@@ -2029,9 +2057,9 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
         gp_number = _unrecorded_gp_po_number(session, po)
         if gp_number is not None:
             raise InvalidStateTransitionError(
-                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Retry the "
-                "registration from the window that started it, or have it reconciled; registering again "
-                "would create a second PO in GP."
+                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Reopen "
+                "Register on this PO to finish recording it, or have it reconciled; registering again under "
+                "a new attempt would create a second PO in GP."
             )
     if _registration_claim_is_live(po, now) and po.registering_key != key:
         raise InvalidStateTransitionError(
