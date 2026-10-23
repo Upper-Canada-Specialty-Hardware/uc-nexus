@@ -25,6 +25,7 @@ in it changes. The nightly sync reads both. A read that fails is recorded and th
 import asyncio
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,7 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.demo import DEMO_COMPANY, demo_reset_running
-from app.errors import ConflictError
+from app.errors import AppError, ConflictError
 from app.models.project import Project
 from app.repositories import demo_mirror_state_repository as state
 from app.services import demo_gp, demo_mirror, demo_reset
@@ -45,6 +46,8 @@ _TORONTO = ZoneInfo("America/Toronto")
 _tasks: set[asyncio.Task] = set()
 # The GP masters read that follows a build, kept apart: it is not a build, and does not hold one up.
 _reads: set[asyncio.Task] = set()
+# Whether the nightly sync holds the build's lock in this process.
+_nightly_running = False
 
 
 def _now() -> str:
@@ -126,6 +129,11 @@ def start_rebuild(started_by: str, *, started_by_id: str | None = None, kind: st
     rebuild or a demo user's reset; either way the starter is the one person not told of it."""
     if building():
         raise ConflictError("The demo is being built already. Wait for it to finish.")
+    if _nightly_running:
+        # Refused here and not in `building()`, which every demo tab reads as "a reset is under way": the
+        # nightly only adds, so the tabs carry on (#1831). Accepted, the reset would tell every tab it was
+        # resetting and then fail on the lock the nightly holds.
+        raise ConflictError("The demo's nightly sync is running. Try again in a few minutes.")
     task = asyncio.create_task(_build(started_by, started_by_id, kind))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
@@ -151,11 +159,26 @@ def reset_notice(user_id: str) -> dict | None:
     return {"reset_at": build["finished_at"], "reset_by": build.get("started_by")}
 
 
+def build_failure(build: dict) -> dict | None:
+    """The last build's failure (#1937), as `{"failed_at", "started_by"}`, or None when it did not fail.
+
+    A rebuild runs in the background, so a failed one reached nobody: every tab waiting it out reloaded
+    into a demo the failed seed had wiped (demo_reset.reset wipes what a seed left part way). Told to every
+    demo tab until the next build starts, since the demo stays broken until somebody rebuilds it. Not the
+    "told once" notice: that is about a reset that worked. The recorded error stays off it, for the reason
+    ensure_built keeps it off DEMO_BUILD_FAILED; a UC Nexus Admin reads it under Nexus Admin → Demo."""
+    if building() or build.get("running") or not build.get("error"):
+        return None
+    return {"failed_at": build.get("finished_at"), "started_by": build.get("started_by")}
+
+
 def acknowledge_reset(user_id: str) -> None:
     """`user_id` has been told of the last build (#1697); `reset_notice` stays quiet for them until the next."""
     with SessionLocal() as session:
         build = state.get(session, state.BUILD) or {}
-        if build.get("started_at"):
+        # A build under way is not the one they were told of (#1814): marking it seen now would keep them
+        # from ever hearing of it once it finishes.
+        if build.get("started_at") and not build.get("running"):
             state.merge_locked(session, state.RESET_SEEN, {user_id: build["started_at"]})
             session.commit()
 
@@ -179,10 +202,31 @@ async def ensure_built(started_by: str) -> None:
             _record(state.BUILD, {"running": False})
     except Exception as e:
         _record(state.BUILD, {"finished_at": _now(), "running": False, "error": str(e) or type(e).__name__})
-        raise
+        if isinstance(e, AppError):
+            raise
+        # #1937: anything else reached the person switching demo mode on as the masked server error, with
+        # nothing to say demo mode stayed off because the build failed - nor why.
+        # The exception's own text stays in the recorded build error and the log: a database error carries
+        # its SQL and UBC's values, a client error internal URLs - not for the person switching it on.
+        raise AppError(
+            "The demo couldn't be built. A UC Nexus Admin can see why under Nexus Admin → Demo.",
+            "DEMO_BUILD_FAILED",
+        ) from e
 
 
 # --- the nightly sync ---------------------------------------------------------------------------------
+
+
+@contextmanager
+def _nightly_holds_the_lock():
+    """The build's lock for the nightly sync, said in this process too, so `start_rebuild` refuses a reset."""
+    global _nightly_running
+    with demo_reset.no_reset_running():
+        _nightly_running = True
+        try:
+            yield
+        finally:
+            _nightly_running = False
 
 
 async def nightly() -> dict:
@@ -193,7 +237,7 @@ async def nightly() -> dict:
         return {"skipped": "There is no demo to sync yet."}
     reads = await demo_mirror.refresh_sources()
     # Under the build's own lock: a rebuild started meanwhile would wipe what this adds half way.
-    with demo_reset.no_reset_running():
+    with _nightly_holds_the_lock():
         with SessionLocal() as session:
             source = demo_mirror.load_source(session)
             demo_gp.update_masters(session, source.masters)

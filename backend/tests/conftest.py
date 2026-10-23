@@ -19,16 +19,29 @@ def _accounts_not_in_demo_mode(monkeypatch):
     a Clerk read. The tests that stub an account's company stub `get_user_company` and nothing more, so
     without this every one of them would go to Clerk for the demo flag.
 
-    The pair read `caller_company` makes is answered from those two, looked up when it is called, so a
-    test that stubs either one is answered by its stub."""
+    The one read the request memos are filled from (`get_user_access`, #1894) is answered from the
+    getters for its three keys, each looked up only when its key is read, so a test that stubs any one
+    of them is answered by its stub and a key a test never reaches never asks Clerk."""
     from app.repositories import user_repository
 
+    class _StubbedAccess:
+        def __init__(self, user_id):
+            self._user_id = user_id
+
+        @property
+        def roles(self):
+            return user_repository.get_user_roles(self._user_id)
+
+        @property
+        def company(self):
+            return user_repository.get_user_company(self._user_id)
+
+        @property
+        def demo_mode(self):
+            return user_repository.get_user_demo_mode(self._user_id)
+
     monkeypatch.setattr(user_repository, "get_user_demo_mode", lambda user_id: False)
-    monkeypatch.setattr(
-        user_repository,
-        "get_user_tenancy",
-        lambda user_id: (user_repository.get_user_company(user_id), user_repository.get_user_demo_mode(user_id)),
-    )
+    monkeypatch.setattr(user_repository, "get_user_access", _StubbedAccess)
 
 
 @pytest.fixture(scope="session")

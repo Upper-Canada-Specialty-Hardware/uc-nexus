@@ -24,6 +24,8 @@ const resetting = vi.hoisted(() => ({
   acknowledging: false,
   reset: vi.fn(),
   dismissNotice: vi.fn(),
+  failure: null as DemoResetStatus['failure'],
+  closeFailure: vi.fn(),
 }));
 
 vi.mock('../useDemoReset', () => ({ useDemoReset: () => resetting }));
@@ -45,6 +47,8 @@ beforeEach(() => {
   resetting.building = false;
   resetting.reset.mockReset();
   resetting.dismissNotice.mockReset();
+  resetting.failure = null;
+  resetting.closeFailure.mockReset();
 });
 
 it('renders nothing out of demo mode', () => {
@@ -78,7 +82,7 @@ it('resets the demo once confirmed', () => {
 
 it('waits out a running reset, naming who started it', () => {
   resetting.building = true;
-  resetting.status = { building: true, buildStartedAt: '2026-10-16T18:40:00', buildStartedBy: 'Rhea Resetter', notice: null };
+  resetting.status = { building: true, buildStartedAt: '2026-10-16T18:40:00', buildStartedBy: 'Rhea Resetter', notice: null, failure: null };
   renderBanner();
   expect(screen.getByRole('dialog', { name: 'The demo is being reset' })).toHaveTextContent('Rhea Resetter started a reset');
   // The page behind the wait is hidden from the accessibility tree, as a modal should leave it.
@@ -91,12 +95,37 @@ it('tells somebody who reset the demo and when, until they say they have seen it
     buildStartedAt: null,
     buildStartedBy: null,
     notice: { resetAt: '2026-10-16T18:41:52', resetBy: 'Rhea Resetter' },
+    failure: null,
   };
   renderBanner();
   const notice = screen.getByRole('dialog', { name: 'The demo was reset' });
   expect(notice).toHaveTextContent('Rhea Resetter reset the demo on');
   fireEvent.click(within(notice).getByRole('button', { name: 'Got it' }));
   expect(resetting.dismissNotice).toHaveBeenCalledTimes(1);
+});
+
+// #1937: a failed rebuild says so, and how to try again, instead of nothing.
+it('says the last rebuild failed and offers a reset through the usual confirmation', () => {
+  resetting.failure = { failedAt: '2026-10-16T18:41:52', startedBy: 'Rhea Resetter' };
+  renderBanner();
+  const failed = screen.getByRole('dialog', { name: "The demo couldn't be rebuilt" });
+  expect(failed).toHaveTextContent('The rebuild Rhea Resetter started failed at');
+  expect(failed).toHaveTextContent('a UC Nexus Admin can see why and rebuild it from Nexus Admin → Demo');
+
+  fireEvent.click(within(failed).getByRole('button', { name: 'Reset demo' }));
+  expect(screen.queryByRole('dialog', { name: "The demo couldn't be rebuilt" })).not.toBeInTheDocument();
+  const confirm = screen.getByRole('dialog', { name: 'Reset the demo?' });
+  fireEvent.click(within(confirm).getByRole('button', { name: 'Reset demo' }));
+  expect(resetting.reset).toHaveBeenCalledTimes(1);
+});
+
+it('closes the failure when asked', () => {
+  resetting.failure = { failedAt: '2026-10-16T18:41:52', startedBy: null };
+  renderBanner();
+  const failed = screen.getByRole('dialog', { name: "The demo couldn't be rebuilt" });
+  expect(failed).toHaveTextContent('The rebuild somebody started failed');
+  fireEvent.click(within(failed).getByRole('button', { name: 'Close' }));
+  expect(resetting.closeFailure).toHaveBeenCalledTimes(1);
 });
 
 // #1653: leaving is quick, but the banner shows a run in progress rather than just greying the button.

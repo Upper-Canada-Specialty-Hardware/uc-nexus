@@ -77,7 +77,7 @@ def _serve(argv: list[str]) -> int:
     import uvicorn
 
     from . import channel
-    from .config import DEFAULT_CONFIG_PATH, get_settings
+    from .config import DEFAULT_CONFIG_PATH, get_settings, is_enrolled_secret
     from .main import app
 
     s = get_settings()
@@ -111,14 +111,16 @@ def _serve(argv: list[str]) -> int:
         # relay that hasn't been reconfigured for it yet. it keeps watching config.toml either way
         # (#456), so a URL added later comes up without a restart.
         #
-        # Skip the channel entirely when unenrolled (no secret): the backend refuses it pre-accept, so
-        # running it would just spam secret-rejected retries. serve still binds the local HTTP server so
-        # /health answers and the app shows "running"; enrolling + restarting serve brings the channel up.
+        # Skip the channel entirely when unenrolled (no secret, or the placeholder a fresh install seeds,
+        # #1929): the backend refuses it pre-accept, so running it would just spam secret-rejected
+        # retries. serve still binds the local HTTP server so /health answers and the app shows "running";
+        # enrolling + restarting serve brings the channel up.
         #
         # run_forever loops indefinitely (reconnect-with-backoff), so it must be cancelled on shutdown:
         # a plain gather() would keep awaiting it after uvicorn's server.serve() returns on SIGINT /
         # service stop, hanging the process. Run it as a task and cancel it once the server exits.
-        channel_task = asyncio.create_task(channel.run_forever()) if s.auth.shared_secret else None
+        enrolled = is_enrolled_secret(s.auth.shared_secret)
+        channel_task = asyncio.create_task(channel.run_forever()) if enrolled else None
         try:
             await server.serve()
         finally:

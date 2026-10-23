@@ -10,6 +10,7 @@ import {
   RELAY_EVENTS,
   ARM_RELAY_ADOPT,
   DELETE_RELAY_INSTALL,
+  DISARM_RELAY_ADOPT,
   PROVISION_RELAY_INSTALL,
 } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
@@ -213,6 +214,44 @@ it('shows no armed banner when no window is open', async () => {
   expect(screen.queryByText(/adopt window open/i)).toBeNull();
 });
 
+// #1869: the window read's error was never read, so a failed read looked exactly like no window - and
+// the re-poll only ran while a window was showing, so it never retried.
+it('says the adopt window state is unknown when its read fails, and offers to cancel it', async () => {
+  let disarmed = false;
+  const disarmMock: MockedResponse = {
+    request: { query: DISARM_RELAY_ADOPT },
+    result: () => {
+      disarmed = true;
+      return { data: { disarmRelayAdopt: false } };
+    },
+  };
+  renderPage([
+    statusMock,
+    installsMock,
+    { request: { query: RELAY_ADOPT_WINDOW }, error: new Error('backend down'), maxUsageCount: Number.POSITIVE_INFINITY },
+    disarmMock,
+  ]);
+
+  expect(await screen.findByText(/the adopt window could not be read/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.queryByText(/adopt window open/i)).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: /cancel window/i }));
+  await waitFor(() => expect(disarmed).toBe(true), GRID_TIMEOUT);
+});
+
+it('keeps re-reading a failed adopt window read until it answers', async () => {
+  renderPage([
+    statusMock,
+    installsMock,
+    { request: { query: RELAY_ADOPT_WINDOW }, error: new Error('backend down') },
+    windowMock(null),
+  ]);
+
+  expect(await screen.findByText(/the adopt window could not be read/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  // The 5s re-poll runs while the read is failing, so the next answer clears the warning.
+  await waitFor(() => expect(screen.queryByText(/the adopt window could not be read/i)).toBeNull(), GRID_TIMEOUT);
+});
+
 // --- removing an install (#366) ---------------------------------------------------------------------
 
 it('requires the confirm dialog before removing an install', async () => {
@@ -241,15 +280,34 @@ it('requires the confirm dialog before removing an install', async () => {
   await waitFor(() => expect(deleted).toBe(true), GRID_TIMEOUT);
 });
 
-it('disables Remove on the install that is currently connected', async () => {
+// #1846: the confirm stays up until the remove answers; without busy a second click sent it again.
+it('holds the remove confirm while the remove is in flight', async () => {
+  const pendingDelete: MockedResponse = {
+    request: { query: DELETE_RELAY_INSTALL, variables: { installId: 'install-1' } },
+    result: { data: { deleteRelayInstall: true } },
+    delay: Number.POSITIVE_INFINITY,
+  };
+
+  renderPage([statusMock, installsMock, windowMock(null), pendingDelete]);
+
+  fireEvent.click(await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT));
+  fireEvent.click(await screen.findByRole('button', { name: /remove install/i }, GRID_TIMEOUT));
+
+  const dialog = await screen.findByRole('dialog', {}, GRID_TIMEOUT);
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: /removing/i })).toBeDisabled(), GRID_TIMEOUT);
+  expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled();
+});
+
+it('disables Remove and Adopt on the install that is currently connected', async () => {
   // Deleting the live install would revoke the secret out from under a running relay and take GP down
   // mid-write. The backend refuses it; the button must not offer it either.
   renderPage([connectedStatusMock, installsMock, windowMock(null)]);
 
   const remove = await screen.findByRole('button', { name: /^remove$/i }, GRID_TIMEOUT);
   await waitFor(() => expect(remove).toBeDisabled(), GRID_TIMEOUT);
-  // The adopt action stays available - it is the recovery path, not a destructive one.
-  expect(screen.getByRole('button', { name: /adopt next connection/i })).not.toBeDisabled();
+  // #1868: nor is there anything to adopt - a window armed on it would bind the next unknown secret over
+  // the one it is connected with, and the backend refuses that too.
+  expect(screen.getByRole('button', { name: /adopt next connection/i })).toBeDisabled();
 });
 
 it('copies the full secret hash', async () => {

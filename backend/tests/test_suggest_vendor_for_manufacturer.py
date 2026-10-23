@@ -89,3 +89,53 @@ def test_no_mapping_ranks_live_vendors_by_fuzzy_score(monkeypatch):
     scores = [c.score for c in suggestion.candidates]
     assert scores == sorted(scores, reverse=True)
     assert gateway.calls == [("TUBC", "list_vendors", None)]
+
+
+# --- the company is the caller's before a saved mapping is read (#1870) ---------------------------
+
+
+class _ScopedInfo:
+    # A plain TUBC user, company memo filled, not in demo mode.
+    context = {"request": None, "_auth_roles": [], "_auth_company": "TUBC", "_auth_demo_mode": False}
+
+
+class _DemoInfo:
+    # A UBC user working in demo mode, so pinned to the demo company.
+    context = {"request": None, "_auth_roles": [], "_auth_company": "UBC", "_auth_demo_mode": True}
+
+
+def _suggest_ubc(monkeypatch, info):
+    """Ask for UBC's suggestion, with UBC holding a saved mapping. The lookup ran on the raw argument,
+    so any caller read UBC's vendor choice before the relay call - the only thing that was resolved."""
+    from app.errors import ValidationError
+
+    read = []
+
+    def fake_lookup(session, gp_company, manufacturer_key):
+        read.append(gp_company)
+        return _FakeMapping("UBC-VENDOR-7", "UBC's Vendor") if gp_company == "UBC" else None
+
+    monkeypatch.setattr(map_repo, "lookup", fake_lookup)
+    monkeypatch.setattr(relay_module, "relay_gateway", FakeGateway({"vendors": []}, companies=("UBC", "TUBC")))
+    monkeypatch.setattr("app.auth.demo_reset_running", lambda: False, raising=False)
+
+    async def run():
+        return await Query().suggest_vendor_for_manufacturer(info(), gp_company="UBC", manufacturer="Acme")
+
+    try:
+        asyncio.run(run())
+    except ValidationError as e:
+        return read, e
+    return read, None
+
+
+def test_a_scoped_caller_cannot_read_another_companys_saved_mapping(monkeypatch):
+    read, refused = _suggest_ubc(monkeypatch, _ScopedInfo)
+    assert refused is not None and refused.field == "company"
+    assert read == []
+
+
+def test_a_demo_caller_cannot_read_the_real_companys_saved_mapping(monkeypatch):
+    read, refused = _suggest_ubc(monkeypatch, _DemoInfo)
+    assert refused is not None and refused.field == "company"
+    assert read == []

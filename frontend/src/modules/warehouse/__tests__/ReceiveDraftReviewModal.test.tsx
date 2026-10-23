@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -10,8 +10,9 @@ import {
   APPROVE_RECEIVE_DRAFT,
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
+  RELEASE_HELD_RECEIVE_APPROVAL,
 } from '../../../graphql/warehouse';
-import { GET_PROJECTS, GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
 import { GraphQLError } from 'graphql';
 import type { ReceiveDraft } from '../receiveDraftTypes';
 
@@ -125,7 +126,8 @@ function warehousesMock(): MockedResponse {
 }
 
 // Pending 3 on the drafted line, so a reviewer raising the count from 2 to 3 is legal and 4 is not.
-function poDetailsMock(): MockedResponse {
+// `project` is the PO's own project as the server reads it (#1877), archived or not.
+function poDetailsMock(project: Record<string, unknown> | null = null): MockedResponse {
   return {
     request: { query: GET_PO_RECEIVING_DETAILS, variables: { poId: 'po-1' } },
     result: {
@@ -135,6 +137,8 @@ function poDetailsMock(): MockedResponse {
           id: 'po-1',
           poNumber: 'PO-123',
           requestNumber: 'RQ-77',
+          projectId: project ? 'proj-1' : null,
+          project,
           gpCompany: 'UCSH',
           gpVendorId: 'GPV-1',
           vendorNameSnapshot: 'Acme Hardware',
@@ -187,10 +191,15 @@ function approveResult(queued: boolean, receiptNumber: string | null) {
   };
 }
 
-function renderModal(extraMocks: MockedResponse[] = [], d: ReceiveDraft = draft(), relayUp = true) {
+function renderModal(
+  extraMocks: MockedResponse[] = [],
+  d: ReceiveDraft = draft(),
+  relayUp = true,
+  poDetails: MockedResponse = poDetailsMock(),
+) {
   const onClose = vi.fn();
   render(
-    <MockedProvider mocks={[relayMock(relayUp), warehousesMock(), poDetailsMock(), ...extraMocks]}>
+    <MockedProvider mocks={[relayMock(relayUp), warehousesMock(), poDetails, ...extraMocks]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveDraftReviewModal open draft={d} onClose={onClose} />
@@ -203,8 +212,13 @@ function renderModal(extraMocks: MockedResponse[] = [], d: ReceiveDraft = draft(
 
 const SLOW = { timeout: 5000 };
 
-async function openModal(extraMocks: MockedResponse[] = [], d?: ReceiveDraft, relayUp = true) {
-  const result = renderModal(extraMocks, d, relayUp);
+async function openModal(
+  extraMocks: MockedResponse[] = [],
+  d?: ReceiveDraft,
+  relayUp = true,
+  poDetails: MockedResponse = poDetailsMock(),
+) {
+  const result = renderModal(extraMocks, d, relayUp, poDetails);
   await screen.findByText('HG-100', undefined, SLOW);
   return result;
 }
@@ -432,6 +446,156 @@ describe('ReceiveDraftReviewModal', () => {
     expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
   });
 
+  describe('a resumed approval refused with its claim held (#1945)', () => {
+    const MAY_BE_IN_GP =
+      'PO-3001 is closed in GP. An earlier attempt at this approval may already have posted the receipt to GP, ' +
+      'so the draft stays claimed: check GP before going on - retry once the cause is fixed, or have the receipt reconciled.';
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: { errors: [new GraphQLError(MAY_BE_IN_GP, { extensions: { code: 'RECEIPT_MAY_BE_IN_GP' } })] },
+    };
+    function rereadMock(status: string): MockedResponse {
+      return {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: {
+          data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status, approvalIdempotencyKey: 'k-1' } },
+        },
+      };
+    }
+
+    it('says GP may hold the receipt and offers only the retry', async () => {
+      await openModal([approveMock, rereadMock('APPROVING')]);
+
+      await approveViaConfirm();
+
+      expect(await screen.findByRole('button', { name: 'Retry posting' }, { timeout: 15_000 })).toBeInTheDocument();
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/may already have posted the receipt/), SLOW);
+      expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+      expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+    });
+
+    it('never says nothing was posted, whatever the re-read finds', async () => {
+      await openModal([approveMock, rereadMock('PENDING_APPROVAL')]);
+
+      await approveViaConfirm();
+
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/may already have posted the receipt/), {
+        timeout: 15_000,
+      });
+      expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+    });
+
+    const RELEASE = "I've checked GP - no receipt was posted: release it";
+
+    it('lets a manager who checked GP release it, behind a confirm that warns of a second receipt', async () => {
+      let released = 0;
+      const releaseMock: MockedResponse = {
+        request: { query: RELEASE_HELD_RECEIVE_APPROVAL, variables: { id: 'draft-1' } },
+        result: () => {
+          released += 1;
+          return { data: { releaseHeldReceiveApproval: { ...draft(), __typename: 'ReceiveDraft' } } };
+        },
+      };
+      await openModal([approveMock, rereadMock('APPROVING'), releaseMock, rereadMock('PENDING_APPROVAL')]);
+
+      await approveViaConfirm();
+      fireEvent.click(await screen.findByRole('button', { name: RELEASE }, { timeout: 15_000 }));
+      const confirm = await screen.findByRole('dialog', { name: 'Release this held approval' }, SLOW);
+      expect(confirm).toHaveTextContent(/posted to GP twice/);
+      expect(released).toBe(0);
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Release it' }));
+
+      await vi.waitFor(() => expect(released).toBe(1), SLOW);
+      expect(await screen.findByRole('button', { name: 'Approve & Post to GP' }, { timeout: 15_000 })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+
+    it('offers the release on reopening a draft still held, and not on a pending one', async () => {
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1' }));
+      expect(screen.getByRole('button', { name: RELEASE })).toBeInTheDocument();
+    });
+
+    // #1945: another manager's attempt may still be out at GP, and the server refuses the release until then.
+    it('does not offer the release on a claimed draft whose attempt may still be running', async () => {
+      const soon = new Date(Date.now() + 60_000).toISOString();
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1', approvalReleasableAt: soon }));
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+
+    it('offers the release once the attempt has run out of time', async () => {
+      const past = new Date(Date.now() - 1_000).toISOString();
+      await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'k-1', approvalReleasableAt: past }));
+      expect(screen.getByRole('button', { name: RELEASE })).toBeEnabled();
+    });
+
+    it('holds the release, saying why, when refused as maybe in GP while an attempt may still be running', async () => {
+      const soon = new Date(Date.now() + 60_000).toISOString();
+      const youngReread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: {
+          data: {
+            receiveDraft: {
+              ...draft(),
+              __typename: 'ReceiveDraft',
+              status: 'APPROVING',
+              approvalIdempotencyKey: 'k-1',
+              approvalReleasableAt: soon,
+            },
+          },
+        },
+      };
+      await openModal([approveMock, youngReread]);
+
+      await approveViaConfirm();
+
+      // The reason first: the button is disabled while the approve is still submitting too, before the
+      // re-read that says an attempt may be running has landed.
+      // Both at once, in the state the modal settles in: read one query apart, the re-read could land
+      // between them and re-render the block under the second.
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('release-wait-reason')).toHaveTextContent(/may still be posting this receipt/);
+          expect(screen.getByRole('button', { name: RELEASE })).toBeDisabled();
+        },
+        { timeout: 15_000 },
+      );
+    });
+
+    it('does not offer the release on a draft awaiting approval', async () => {
+      await openModal();
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+
+    // A queued receipt that may be in GP, cancelled or failed with no answer: the draft stays approved.
+    it('offers the release on an approved draft whose queued receipt stopped, and approves nothing', async () => {
+      let released = 0;
+      const releaseMock: MockedResponse = {
+        request: { query: RELEASE_HELD_RECEIVE_APPROVAL, variables: { id: 'draft-1' } },
+        result: () => {
+          released += 1;
+          return { data: { releaseHeldReceiveApproval: { ...draft(), __typename: 'ReceiveDraft' } } };
+        },
+      };
+      await openModal(
+        [releaseMock, rereadMock('PENDING_APPROVAL')],
+        draft({ status: 'APPROVED', outboxEntryId: 'entry-1', queuedReceiptStopped: true }),
+      );
+
+      expect(document.body.textContent).toMatch(/stays approved until a manager checks GP/);
+      expect(approveButton()).toBeDisabled();
+      expect(screen.queryByTestId('approve-finished-reason')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: RELEASE }));
+      const confirm = await screen.findByRole('dialog', { name: 'Release this held approval' }, SLOW);
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Release it' }));
+      await vi.waitFor(() => expect(released).toBe(1), SLOW);
+    });
+
+    it('does not offer the release on an approved draft whose queued receipt is still going', async () => {
+      await openModal([], draft({ status: 'APPROVED', outboxEntryId: 'entry-1', queuedReceiptStopped: false }));
+      expect(screen.queryByRole('button', { name: RELEASE })).toBeNull();
+    });
+  });
+
   it('says another manager finished it, not "fix or reject", when the re-read is approved (#1582)', async () => {
     const approveMock: MockedResponse = {
       request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
@@ -536,6 +700,131 @@ describe('ReceiveDraftReviewModal', () => {
     expect(captured!.input.idempotencyKey).toBe('held-key-1');
   });
 
+  // #1963: the modal stays mounted, so a key kept from an approval that has since ended would be sent
+  // again by the next one - relinking its dead queued receipt, or booking a receipt GP may have reversed.
+  describe('an approval key lives only as long as its approval (#1963)', () => {
+    function capturingApprove(keys: string[], respond: () => Record<string, unknown>): MockedResponse<
+      Record<string, unknown>,
+      ApproveVars
+    > {
+      return {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          keys.push(vars.input.idempotencyKey);
+          return respond();
+        },
+      };
+    }
+
+    it('mints a new key when a queued approval comes back for review', async () => {
+      const keys: string[] = [];
+      const mocks = [
+        relayMock(false),
+        warehousesMock(),
+        poDetailsMock(),
+        capturingApprove(keys, () => ({ data: approveResult(true, null) })),
+        capturingApprove(keys, () => ({ data: approveResult(true, null) })),
+      ];
+      const tree = (d: ReceiveDraft) => (
+        <MockedProvider mocks={mocks}>
+          <MemoryRouter>
+            <ToastProvider>
+              <ReceiveDraftReviewModal open draft={d} onClose={() => undefined} />
+            </ToastProvider>
+          </MemoryRouter>
+        </MockedProvider>
+      );
+      const { rerender } = render(tree(draft()));
+      await screen.findByText('HG-100', undefined, SLOW);
+      await approveViaConfirm();
+      await screen.findByText(/Queued — the GP relay is offline/, undefined, SLOW);
+
+      // The queued receipt was cancelled, and the list hands the modal the draft back for review.
+      rerender(
+        tree(draft({ rejectionReason: 'Back for review: the queued GP receipt was cancelled', updatedAt: '2026-08-02T10:00:00Z' })),
+      );
+      await approveViaConfirm();
+      await vi.waitFor(() => expect(keys).toHaveLength(2), SLOW);
+
+      expect(keys[0]).toMatch(UUID_RE);
+      expect(keys[1]).toMatch(UUID_RE);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
+    it('mints a new key after a may-be-in-GP refusal whose re-read finds the draft back for review', async () => {
+      // The approval was released while its attempt was out at GP: GP's answer is held under that key.
+      const keys: string[] = [];
+      const refused = capturingApprove(keys, () => ({
+        errors: [
+          new GraphQLError('This approval was released while the attempt was still out at GP.', {
+            extensions: { code: 'RECEIPT_MAY_BE_IN_GP' },
+          }),
+        ],
+      }));
+      const reread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'PENDING_APPROVAL' } } },
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      await openModal([refused, reread, approved]);
+
+      await approveViaConfirm();
+      await vi.waitFor(() => expect(document.body.textContent).toMatch(/released while the attempt/), {
+        timeout: 15_000,
+      });
+      await approveViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
+    it('keeps the key for the retry while the re-read finds the draft still claimed under it', async () => {
+      const keys: string[] = [];
+      const timedOut = capturingApprove(keys, () => ({
+        errors: [new GraphQLError('GP did not answer in time.', { extensions: { code: 'RELAY_TIMEOUT' } })],
+      }));
+      const reread: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: () => ({
+          data: {
+            receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVING', approvalIdempotencyKey: keys[0] },
+          },
+        }),
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      await openModal([timedOut, reread, approved]);
+
+      await approveViaConfirm();
+      await retryViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('keeps the key for the retry when the connection dropped and nothing could be re-read', async () => {
+      const keys: string[] = [];
+      const dropped: MockedResponse<Record<string, unknown>, ApproveVars> = {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          keys.push(vars.input.idempotencyKey);
+          return { errors: [new GraphQLError('connection reset')] };
+        },
+      };
+      const approved = capturingApprove(keys, () => ({ data: approveResult(false, 'RCT0000123') }));
+      // No re-read mock: the re-read fails as the approve did.
+      await openModal([dropped, approved]);
+
+      await approveViaConfirm();
+      await retryViaConfirm();
+      await screen.findByText(/Approved\./, undefined, SLOW);
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0]);
+    });
+  });
+
   it('does not re-send the edit on a retry, so the same-key approve is reachable', async () => {
     // The backend refuses to edit an APPROVING draft. A retry that still thought itself dirty would
     // fail on that refusal every time and never reach the approve that is the actual way out.
@@ -607,41 +896,42 @@ describe('ReceiveDraftReviewModal', () => {
     expect(approveButton()).toBeDisabled();
   });
 
-  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing.
-  function projectsMock(gpJobState: string | null): MockedResponse {
-    return {
-      request: { query: GET_PROJECTS },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-      result: {
-        data: {
-          projects: [
-            {
-              __typename: 'Project',
-              id: 'proj-1',
-              projectId: 'JOB-1',
-              description: 'Riverside Tower',
-              client: null,
-              jobSiteName: null,
-              scheduleFilename: null,
-              company: 'TUBC',
-              openingCount: 4,
-              gpSetupOk: true,
-              gpSetupCheckedAt: null,
-              gpSetupIssues: null,
-              gpJobState,
-            },
-          ],
-        },
-      },
-    };
+  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing. #1877: the
+  // project is the PO's own, off GET_PO_RECEIVING_DETAILS - the projects list left archived jobs out.
+  function poProject(gpJobState: string | null, gpSetupOk = true): MockedResponse {
+    return poDetailsMock({
+      __typename: 'PurchaseOrderProject',
+      id: 'proj-1',
+      projectId: 'JOB-1',
+      description: 'Riverside Tower',
+      gpJobState,
+      gpSetupOk,
+      gpSetupIssues: gpSetupOk ? null : [{ __typename: 'GpSetupIssue', costCode: '08-710', accountIndex: 9999 }],
+    });
   }
 
   it('blocks approval against a job that is inactive in GP, and says why', async () => {
-    await openModal([projectsMock('INACTIVE')]);
+    await openModal([], undefined, true, poProject('INACTIVE'));
 
     const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
     expect(banner).toHaveTextContent('GP job JOB-1: Inactive in GP');
     expect(banner).toHaveTextContent('So approving a receive against it is not possible.');
+    expect(approveButton()).toBeDisabled();
+  });
+
+  it('blocks approval against an archived job closed in GP, which the projects list leaves out (#1877)', async () => {
+    // No projects-list mock at all: the modal reads the PO's own project, so an archived one is still seen.
+    await openModal([], undefined, true, poProject('CLOSED'));
+
+    const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
+    expect(banner).toHaveTextContent('GP job JOB-1');
+    expect(approveButton()).toBeDisabled();
+  });
+
+  it("warns of an archived job's broken GP setup and blocks approval (#1877)", async () => {
+    await openModal([], undefined, true, poProject('ACTIVE', false));
+
+    expect(await screen.findByTestId('gp-setup-quarantine-banner', undefined, SLOW)).toBeInTheDocument();
     expect(approveButton()).toBeDisabled();
   });
 
@@ -654,7 +944,7 @@ describe('ReceiveDraftReviewModal', () => {
         ],
       },
     };
-    await openModal([projectsMock('ACTIVE'), approveMock]);
+    await openModal([approveMock], undefined, true, poProject('ACTIVE'));
     expect(approveButton()).toBeEnabled();
 
     await approveViaConfirm();

@@ -4,6 +4,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_WAREHOUSE_LOCATIONS } from '../../graphql/warehouse';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 import { naturalCompare } from '../../utils/naturalCompare';
+import { LOCATIONS_NOT_LOADED_TEXT } from '../../components/LocationAutocomplete';
 
 export interface DefinedLocationPick {
   aisleOptions: string[];
@@ -14,6 +15,15 @@ export interface DefinedLocationPick {
   /** #1345: the registry has loaded and defines no location in the given warehouse(s), so no pick
    *  can ever validate - the caller says so instead of "pick a defined aisle". */
   registryEmpty: boolean;
+  /** #1878: the registry has been read. Until then an empty list means nothing about what is defined. */
+  registryLoaded: boolean;
+  /** #1878: the registry read's error - the caller says it failed, with a Retry, rather than leaving
+   *  three pickers that offer nothing. */
+  registryError: Error | undefined;
+  refetchRegistry: () => unknown;
+  /** #1878: what the pickers' open list says while the registry hasn't loaded; undefined once it has,
+   *  so the picker's own "none defined" / "no match" texts apply. */
+  noOptionsText: string | undefined;
 }
 
 /**
@@ -29,7 +39,7 @@ export function useDefinedLocationPick(
   bay: string,
   skip = false,
 ): DefinedLocationPick {
-  const { data } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(GET_WAREHOUSE_LOCATIONS, {
+  const { data, error, refetch } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(GET_WAREHOUSE_LOCATIONS, {
     variables: { activeOnly: true },
     fetchPolicy: 'cache-and-network',
     skip,
@@ -75,6 +85,15 @@ export function useDefinedLocationPick(
   }, [definedHere, aisle, row, bay]);
 
   const registryEmpty = !!data && definedHere.length === 0;
+  const registryLoaded = data !== undefined;
 
-  return { ...options, isDefinedPick, registryEmpty };
+  return {
+    ...options,
+    isDefinedPick,
+    registryEmpty,
+    registryLoaded,
+    registryError: error,
+    refetchRegistry: refetch,
+    noOptionsText: registryLoaded ? undefined : LOCATIONS_NOT_LOADED_TEXT,
+  };
 }

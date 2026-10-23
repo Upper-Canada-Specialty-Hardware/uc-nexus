@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.inventory import InventoryLocation
 from app.models.warehouse import Warehouse
+from app.repositories.warehouse.locations import _natural_key
 
 
 def project_rack_locations(session: Session, project_id: uuid.UUID) -> list[dict]:
@@ -46,20 +47,24 @@ def project_rack_locations(session: Session, project_id: uuid.UUID) -> list[dict
             InventoryLocation.bay,
         )
         .having(usable > 0)
-        .order_by(
-            InventoryLocation.hardware_category,
-            InventoryLocation.product_code,
-            Warehouse.code,
-            InventoryLocation.aisle,
-            InventoryLocation.row,
-            InventoryLocation.bay,
-        )
+        .order_by(InventoryLocation.hardware_category, InventoryLocation.product_code)
     ).all()
 
     by_product: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
         by_product[(r.hardware_category, r.product_code)].append(
             {"warehouse_code": r.code, "aisle": r.aisle, "row": r.row, "bay": r.bay, "quantity": int(r.quantity)}
+        )
+    # #1881: racks in natural order (A-1-2 before A-1-10, as the registry since #1569), which SQL's text
+    # ordering can't give; a product's racks are few.
+    for locations in by_product.values():
+        locations.sort(
+            key=lambda loc: (
+                loc["warehouse_code"],
+                _natural_key(loc["aisle"]),
+                _natural_key(loc["row"]),
+                _natural_key(loc["bay"]),
+            )
         )
     return [
         {"hardware_category": category, "product_code": product, "locations": locations}

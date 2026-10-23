@@ -184,6 +184,46 @@ def test_a_job_that_never_answered_still_leaves_the_running_list(monkeypatch, cl
     assert channel._INFLIGHT == 0
 
 
+def test_only_a_write_moves_the_write_counters_health_publishes(monkeypatch, clean_channel_states):
+    """#1927: the update poller waits on GP writes alone, so a read the backend's loops send must leave
+    the write counters where they were, and a write must show while it runs and after it finishes."""
+    gate = {}
+
+    async def fake_handle_job(job, allowed_companies=None):
+        await gate["release"].wait()
+        return {"id": job["id"], "ok": True, "result": {}}
+
+    monkeypatch.setattr(channel, "_handle_job", fake_handle_job)
+    monkeypatch.setattr(channel, "_WRITES_INFLIGHT", 0)
+    monkeypatch.setattr(channel, "_LAST_WRITE_AT", None)
+    monkeypatch.setattr(channel, "_LAST_JOB_AT", None)
+
+    async def run(frames):
+        gate["release"] = release = asyncio.Event()
+        done = asyncio.Event()
+        ws = _FakeWs(frames, done)
+        _fake_connect(monkeypatch, ws)
+        task = asyncio.create_task(channel._run_once(PRODUCTION_BACKEND_URL, "secret", get_settings().channel))
+        await _settle()
+        during = channel.channel_state_snapshot()
+        release.set()
+        await _settle()
+        after = channel.channel_state_snapshot()
+        done.set()
+        await task
+        return during, after
+
+    during, after = asyncio.run(run([{"id": "r1", "op": "sync_pos", "company": "UBC", "background": True}]))
+    assert (during["jobs_in_flight"], during["writes_in_flight"]) == (1, 0)
+    assert after["last_job_finished_ago"] is not None
+    assert after["last_write_finished_ago"] is None
+
+    during, after = asyncio.run(run([{"id": "w1", "op": "create_po", "company": "UBC"}]))
+    assert (during["jobs_in_flight"], during["writes_in_flight"]) == (1, 1)
+    assert after["writes_in_flight"] == 0
+    assert 0 <= after["last_write_finished_ago"] < 5
+
+
 def test_a_job_carries_the_channel_it_arrived_on(monkeypatch, clean_channel_states):
     """A preview backend's job is real GP work, and the tab has to be able to say whose it was."""
     release = asyncio.Event()

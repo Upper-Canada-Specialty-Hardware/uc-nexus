@@ -82,7 +82,10 @@ const requestsMock: MockedResponse = {
 
 
 const rejectedMock: MockedResponse = {
-  request: { query: GET_SHIPPING_OUT_REQUESTS, variables: { projectId: null, status: 'REJECTED' } },
+  request: {
+    query: GET_SHIPPING_OUT_REQUESTS,
+    variables: { projectId: null, status: 'REJECTED', limit: 200, offset: 0, newestFirst: true },
+  },
   maxUsageCount: INFINITE,
   result: {
     data: {

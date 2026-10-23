@@ -397,6 +397,8 @@ def confirm_shipment(
         recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} scheduled for pickup. {item_count} items on it.",
+        # #1942: named by its slip, so a cancel can withdraw it.
+        packing_slip_id=packing_slip.id,
     )
 
     return packing_slip
@@ -453,8 +455,14 @@ def update_shipment_details(
             f"Shipment {ps.packing_slip_number} can only be edited while scheduled; "
             f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
+    stored_pickup = ps.pickup_date
     _apply_site_form(ps, details)
     _apply_driver(ps, driver)
+    if ps.pickup_date != stored_pickup:
+        # #1940: a lone slip's load is its truck, so the load's date follows the slip's.
+        from app.repositories import shipment_loads
+
+        shipment_loads.follow_lone_slip_date(session, ps)
     return ps
 
 
@@ -504,6 +512,8 @@ def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip
             field="id",
         )
     ps.status = ShipmentStatus.CANCELLED
+    # #1942: no truck is coming for it, so the warehouse is no longer told to load one.
+    notification_service.withdraw_shipment_scheduled(session, ps.id)
     return ps
 
 
@@ -756,7 +766,7 @@ def create_shipment_return(
     # 2. Validate destination warehouse: it exists, is active, and is the slip's project's company's own
     # building (#1376) - compared directly, so an unscoped admin cannot book a return into another
     # tenant's warehouse either.
-    from app.repositories import warehouse_admin_repository
+    from app.repositories import inventory_value_repository, warehouse_admin_repository
 
     project_company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == ps.project_id))
     warehouse_admin_repository.assert_usable_destination(
@@ -844,12 +854,14 @@ def create_shipment_return(
         }
 
         # The slip item carries no link back to the rows the units shipped off, so the returned
-        # units' cost is re-resolved: the project's newest effective cost for the combo, else the
-        # schedule's. Without this every return valued at zero from then on - the shipped units'
-        # PO-line or off-PO cost was simply dropped on the floor here.
-        returned_cost, returned_currency = resolve_project_combo_price(
+        # units' cost is re-resolved. Without this every return valued at zero from then on - the
+        # shipped units' PO-line or off-PO cost was simply dropped on the floor here. #1952: the
+        # price the project's units of the combo were picked at - the same pick lines that priced
+        # them on the cart - and only with no priced pick line the project's newest effective cost,
+        # else the schedule's.
+        returned_cost, returned_currency = inventory_value_repository.picked_unit_price(
             session, ps.project_id, psi.hardware_category, psi.product_code
-        )
+        ) or resolve_project_combo_price(session, ps.project_id, psi.hardware_category, psi.product_code)
 
         if disposition == ReturnDisposition.RETURN_TO_PROJECT:
             # Fresh, unlocated inventory for the origin project — re-enters Put-Away.
@@ -920,6 +932,8 @@ def create_shipment_return(
         returnable = [psi for psi in ps.items if not psi.is_manual]
         if returnable and all(returned.get(psi.id, 0) >= psi.quantity for psi in returnable):
             ps.status = ShipmentStatus.CANCELLED
+            # #1942: the same as a cancel - nothing is waiting for pickup any more.
+            notification_service.withdraw_shipment_scheduled(session, ps.id)
 
     return shipment_return
 
@@ -989,6 +1003,9 @@ def get_shipping_out_requests(
     *,
     company: str | None = None,
     open_only: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_first: bool = False,
 ) -> list[ShippingOutRequest]:
     """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
     given. Items are eagerly loaded (shipping_out_request_to_type walks them).
@@ -998,13 +1015,21 @@ def get_shipping_out_requests(
     so it lists exactly the requests Reopen can act on, not every request ever accepted.
 
     open_only (#1551): every open request whatever its status - pending ones and accepted ones whose pull
-    is still in flight - by the clause the project page's tile counts with. `status` is ignored with it."""
+    is still in flight - by the clause the project page's tile counts with. `status` is ignored with it.
+
+    The Accepted and Rejected tabs page here (#1888), as pull history does (#1268): those requests only
+    accumulate, so they read newest first (accepted or rejected at, id as the tiebreak) a page at a time
+    instead of every one and its items on each visit. `limit` None keeps the unpaged, oldest-first read
+    the Pending and Open views rely on."""
     effective_status = status if status is not None else ShippingOutRequestStatus.PENDING
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .order_by(ShippingOutRequest.created_at.asc())
-    )
+    stmt = select(ShippingOutRequest).options(selectinload(ShippingOutRequest.items))
+    if newest_first:
+        decided_at = func.coalesce(
+            ShippingOutRequest.rejected_at, ShippingOutRequest.approved_at, ShippingOutRequest.created_at
+        )
+        stmt = stmt.order_by(decided_at.desc(), ShippingOutRequest.id.desc())
+    else:
+        stmt = stmt.order_by(ShippingOutRequest.created_at.asc())
     if open_only:
         stmt = stmt.outerjoin(PullRequestModel, PullRequestModel.id == ShippingOutRequest.pull_request_id).where(
             open_request_clause()
@@ -1021,6 +1046,8 @@ def get_shipping_out_requests(
         stmt = stmt.join(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id).where(
             PullRequestModel.status == PullRequestStatus.PENDING
         )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 

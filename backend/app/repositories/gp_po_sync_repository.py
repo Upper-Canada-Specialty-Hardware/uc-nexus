@@ -24,7 +24,7 @@ from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.currency import normalize_currency
-from app.models.enums import HardwareItemState, POOrigin, POStatus
+from app.models.enums import POOrigin, POStatus
 from app.models.gp_outbox import GpWriteOutbox
 from app.models.gp_po_sync_state import GpPoSyncState
 from app.models.gp_write import GpWriteIdempotency
@@ -209,8 +209,8 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
     is a job-cost line are GP-owned on every line without exception. hardware_category / product_code
     are the one pair decided per line: a NEXUS REGISTERED LINE keeps the schedule's own, anything else
     takes GP's item number and description. A line the mirror creates here starts unregistered,
-    because nothing has given it a schedule identity yet. Existing lines absent from GP are left
-    untouched rather than deleted, so mirrored inventory is never orphaned.
+    because nothing has given it a schedule identity yet. Existing lines absent from GP are never
+    deleted, so mirrored inventory is never orphaned; a line GP deleted is cancelled instead (#1913).
 
     A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
     one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
@@ -280,6 +280,19 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             li.unit_cost = unit_cost
             _apply_gp_line_identity(li, ln)
             _apply_gp_line_entry_fields(li, ln)
+
+    # #1913: a line deleted in GP is cancelled to what it received, like a line GP cancels to nothing
+    # above. Left alone it kept its ordered_quantity as phantom pending units and its ties held the
+    # schedule's units off every other PO. The read is the whole PO - the relay returns every line of
+    # each PO it names, and a read with no lines never gets here - so an ord missing from it is gone
+    # from GP. Held while a receipt is in flight, as received is (#1300); a line with no ord is not in
+    # GP yet and is not this loop's.
+    if gp_lines and not receipt_in_flight:
+        gp_ords = {ln["ord"] for ln in gp_lines}
+        for ord_, li in existing.items():
+            if ord_ not in gp_ords:
+                li.ordered_quantity = li.received_quantity
+                _release_line_ties_beyond(session, li.id, keep=li.received_quantity)
     return receipt_in_flight
 
 
@@ -302,9 +315,11 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
     """True while a receipt for this PO has reached (or may have reached) GP but not yet Nexus (#1300).
 
     That is a draft mid-approval (a live approval, or one whose relay call went ambiguous and will be
-    resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously (a retry
-    persists it). A queued approval is covered by its outbox row. The sync must not raise
-    received_quantity then: the persist adds its own units on top of what is stored."""
+    resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously or after
+    an attempt that may have reached GP (#1849, an exhausted keyed receipt) - a retry persists either -
+    or one GP answered that Nexus has not saved, in any state (#1946).
+    A queued approval is covered by its outbox row. The sync must not raise received_quantity then:
+    the persist adds its own units on top of what is stored."""
     from app.models.enums import ReceiveDraftStatus
     from app.models.receive_draft import ReceiveDraft
 
@@ -319,35 +334,85 @@ def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
     )
     if draft_hit is not None:
         return True
+    # #1965: a row whose key's ledger is settled holds nothing - booked by another attempt under the key (a
+    # resume of a held receipt), or let go as reconciled - so its units are already counted, or never will
+    # be. A held FAILED row a resume had booked kept the sync held until someone cancelled it.
+    settled = (
+        select(GpWriteIdempotency.key)
+        .where(GpWriteIdempotency.key == GpWriteOutbox.idempotency_key, GpWriteIdempotency.result_id.is_not(None))
+        .exists()
+    )
     outbox_hit = session.scalar(
         select(GpWriteOutbox.id)
         .where(
             GpWriteOutbox.op == "create_receive",
             GpWriteOutbox.entity_key == f"po:{po_id}",
+            ~settled,
             or_(
                 GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
-                and_(GpWriteOutbox.status == "FAILED", GpWriteOutbox.failure_kind == "ambiguous"),
+                and_(
+                    GpWriteOutbox.status == "FAILED",
+                    # A refusal after the relay looked the key up says GP holds no receipt under it
+                    # (#1849), so the flag stands down for a keyed receipt - the same rule as the draft
+                    # release. An unkeyed one was never looked up, so its refusal proves nothing.
+                    or_(
+                        GpWriteOutbox.failure_kind == "ambiguous",
+                        and_(
+                            GpWriteOutbox.maybe_in_gp.is_(True),
+                            or_(
+                                GpWriteOutbox.failure_kind != "gp_rejected",
+                                GpWriteOutbox.payload["idempotency_key"].as_string().is_(None),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         )
         .limit(1)
     )
-    return outbox_hit is not None
+    if outbox_hit is not None:
+        return True
+    # #1946: GP answered with the receipt and Nexus never saved it - a persist that failed, or is still to
+    # be retried. Held whatever the row says, since only the ledger proves GP took it (a row failed or
+    # cancelled before the flag was set on those still holds it). A ledger row whose relay_result is
+    # JSON null recorded nothing, so the test is made here rather than in SQL.
+    taken = session.scalars(
+        select(GpWriteIdempotency.relay_result)
+        .join(GpWriteOutbox, GpWriteOutbox.idempotency_key == GpWriteIdempotency.key)
+        .where(
+            GpWriteOutbox.op == "create_receive",
+            GpWriteOutbox.entity_key == f"po:{po_id}",
+            GpWriteIdempotency.result_id.is_(None),
+        )
+    ).all()
+    return any(result is not None for result in taken)
 
 
 def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
     """Release the schedule hardware a PO's lines claimed back to AVAILABLE - cancel_po's rule and what
     the repair migration 073 encodes. A cancelled PO must not keep HardwareItem rows IN_PO against it, or
     required_quantity rollups double-count and the items can never be recreated as AVAILABLE by a later
-    import."""
+    import.
+
+    Except the units a line already received (#1915), which are on hand and stay tied to it, the rule a
+    line GP cancels keeps (#1228). Releasing them too put arrived hardware back on the schedule as still
+    to purchase. A PO nothing was received on releases every tie, as before."""
     from app.models.hardware import HardwareItem
+    from app.repositories.po_repository import _release_line_ties_beyond
 
     line_ids = [li.id for li in po.line_items]
-    if line_ids:
-        session.execute(
-            update(HardwareItem)
-            .where(HardwareItem.po_line_item_id.in_(line_ids))
-            .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
-        )
+    if not line_ids:
+        return
+    # One read for which lines hold ties at all, so a PO with none - every PO GP reports as cancelled on
+    # arrival - costs one query, not one per line.
+    tied = set(
+        session.scalars(
+            select(HardwareItem.po_line_item_id).where(HardwareItem.po_line_item_id.in_(line_ids)).distinct()
+        ).all()
+    )
+    for li in po.line_items:
+        if li.id in tied:
+            _release_line_ties_beyond(session, li.id, keep=li.received_quantity)
 
 
 def _apply_stage(session: Session, row: PurchaseOrder, stage: POStatus, now: datetime) -> None:
@@ -426,6 +491,12 @@ def _lock_po_for_mirror(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         .unique()
         .one()
     )
+    # #1958: the project between the PO and its lines, in the mode finalize and the tie paths take, so a
+    # tie this pass releases never interleaves with a finalize on the same project (#1398).
+    if row.project_id is not None:
+        from app.models.project import Project
+
+        session.execute(select(Project.id).where(Project.id == row.project_id).with_for_update(key_share=True))
     session.execute(
         select(POLineItem)
         .where(POLineItem.po_id == po_id)
@@ -762,8 +833,9 @@ def note_missing_from_gp(
     first miss only stamps `gp_missing_since` with the pass's start time. A LATER pass that misses the
     same PO again - a stamp older than this pass's start - cancels it through the same routine a
     mirrored GP void goes through (status CANCELLED, soft-deleted, linked hardware released back to
-    AVAILABLE), so a deleted PO stops showing in the register as outstanding, stops double-counting
-    required_quantity, and stops being re-read by number on every pass forever.
+    AVAILABLE but for what each line already received, #1915), so a deleted PO stops showing in the
+    register as outstanding, stops double-counting required_quantity, and stops being re-read by number
+    on every pass forever.
 
     A PO that comes back from GP in between clears its stamp in upsert_mirrored_po, so it starts over
     at the first miss and is never cancelled on the strength of one bad pass. Numbers with no open,

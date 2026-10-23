@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { DocumentNode } from 'graphql';
 import PutAwayTab from '../PutAwayTab';
-import { GET_UNLOCATED_INVENTORY, GET_STOCK_ITEMS } from '../../../graphql/warehouse';
+import { GET_UNLOCATED_INVENTORY, GET_STOCK_ITEMS, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
+import { LOCATIONS_NOT_LOADED_TEXT, NO_DEFINED_LOCATIONS_TEXT } from '../../../components/LocationAutocomplete';
 
 // The tab reads five queries; only the two queues matter here, so each query document answers with a
 // canned result instead of a MockedProvider mock per exact variable set.
@@ -140,5 +141,18 @@ describe('PutAwayTab failed stock read (#1503)', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     // The project queue still renders; only the stock section is replaced by the banner.
     expect(screen.queryByText('Stock Pool')).not.toBeInTheDocument();
+  });
+});
+
+describe('PutAwayTab failed registry read (#1878)', () => {
+  it('says the defined locations failed to load, and no picker claims none are defined', () => {
+    FAILED.add(GET_WAREHOUSE_LOCATIONS);
+    renderTab();
+
+    expect(screen.getByText(/couldn.t load the defined locations/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getAllByRole('combobox', { name: 'Aisle' })[0], { key: 'ArrowDown' });
+    expect(screen.getByText(LOCATIONS_NOT_LOADED_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(NO_DEFINED_LOCATIONS_TEXT)).not.toBeInTheDocument();
   });
 });

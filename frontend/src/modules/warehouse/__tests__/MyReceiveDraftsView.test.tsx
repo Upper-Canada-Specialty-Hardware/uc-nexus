@@ -39,7 +39,8 @@ function draft(overrides: Record<string, unknown> = {}) {
 
 function draftsMock(drafts: Record<string, unknown>[]): MockedResponse {
   return {
-    request: { query: GET_RECEIVE_DRAFTS, variables: { mine: true } },
+    // #1889: only the two states the view shows are asked for, so every test here proves the request.
+    request: { query: GET_RECEIVE_DRAFTS, variables: { mine: true, statuses: ['REJECTED', 'PENDING_APPROVAL'] } },
     result: { data: { receiveDrafts: drafts } },
     maxUsageCount: Number.POSITIVE_INFINITY,
   };
@@ -127,6 +128,32 @@ describe('MyReceiveDraftsView', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!);
 
     await vi.waitFor(() => expect(deleted).toEqual({ id: 'draft-1' }), SLOW);
+  });
+
+  it('holds the confirm while the delete is in flight, so a double click sends it once (#1846)', async () => {
+    let calls = 0;
+    const deleteMock: MockedResponse<Record<string, unknown>, { id: string }> = {
+      request: { query: DELETE_RECEIVE_DRAFT, variables: () => true },
+      result: () => {
+        calls += 1;
+        return { data: { deleteReceiveDraft: true } };
+      },
+      delay: 200,
+      // Served twice if asked twice, so a second send would be counted rather than refused by the mock.
+      maxUsageCount: 2,
+    };
+    renderView([deleteMock]);
+    await screen.findByText('PO-123', undefined, SLOW);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await screen.findByText(/The count of 4 units against PO-123 is lost/, undefined, SLOW);
+    const confirm = screen.getAllByRole('button', { name: 'Delete' }).at(-1)!;
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(await screen.findByRole('button', { name: 'Deleting…' })).toBeDisabled();
+    await vi.waitFor(() => expect(screen.queryByText(/The count of 4 units/)).not.toBeInTheDocument(), SLOW);
+    expect(calls).toBe(1);
   });
 
   it('says so when the user has nothing waiting', async () => {

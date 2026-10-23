@@ -23,6 +23,9 @@ import { type ReceiveDraft, draftLastChanged } from './receiveDraftTypes';
 
 const DASH = '—';
 
+// Module scope, so the query's variables keep one reference across renders.
+const MY_DRAFT_STATUSES = ['REJECTED', 'PENDING_APPROVAL'];
+
 function formatDateTime(value: string | null): string {
   if (!value) return DASH;
   const d = parseServerDate(value);
@@ -88,11 +91,16 @@ export default function MyReceiveDraftsView() {
   const [editing, setEditing] = useState<ReceiveDraft | null>(null);
   const [deleting, setDeleting] = useState<ReceiveDraft | null>(null);
 
+  // Only the two states this view shows (#1889): an author's approved drafts only accumulate, and
+  // reading them with their lines just to drop them here grew with every truck they ever counted.
   const { data, loading, error } = useQuery<{ receiveDrafts: ReceiveDraft[] }>(GET_RECEIVE_DRAFTS, {
-    variables: { mine: true },
+    variables: { mine: true, statuses: MY_DRAFT_STATUSES },
     fetchPolicy: 'cache-and-network',
   });
   const [deleteDraft] = useMutation(DELETE_RECEIVE_DRAFT);
+  // #1846: the confirm is held from the click until the dialog closes - through the refetch after the
+  // delete too, which the mutation's own loading flag does not cover - so a second click can't send it twice.
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const drafts = data?.receiveDrafts ?? [];
   const rejected = drafts.filter((d) => d.status === 'REJECTED');
@@ -100,6 +108,7 @@ export default function MyReceiveDraftsView() {
 
   const handleDelete = async () => {
     if (!deleting) return;
+    setDeleteBusy(true);
     try {
       await deleteDraft({ variables: { id: deleting.id } });
       showToast('Draft deleted.', 'success');
@@ -108,6 +117,7 @@ export default function MyReceiveDraftsView() {
       showToast(err instanceof Error ? userMessage(err) : 'Deleting this draft failed', 'error');
     } finally {
       setDeleting(null);
+      setDeleteBusy(false);
     }
   };
 
@@ -172,8 +182,9 @@ export default function MyReceiveDraftsView() {
         open={deleting !== null}
         title="Delete this draft?"
         message={`The count of ${deleting?.totalQuantity ?? 0} units against ${deleting?.poNumber ?? 'this PO'} is lost, and its packing slip comes off the PO unless another count uses it. Nothing has been posted to GP, so you can re-enter it from Receiving.`}
-        confirmLabel="Delete"
+        confirmLabel={deleteBusy ? 'Deleting…' : 'Delete'}
         onConfirm={handleDelete}
+        busy={deleteBusy}
         onCancel={() => setDeleting(null)}
       />
     </Box>

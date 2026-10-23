@@ -64,8 +64,11 @@ async def _adopt_existing(job_number: str, company: str) -> Project:
 
     Runs a full sync pass rather than adopting the one job: the pass reads GP's own job master, so the
     project gets GP's name rather than whatever the caller typed, and it is the same code path that
-    would have created this project a few minutes later anyway."""
-    await gp_job_sync.run_once()
+    would have created this project a few minutes later anyway.
+
+    Narrowed to the caller's company (#1876): a pass over every company the relay serves spent GP
+    reads on the others and waited on them, all to adopt one job in this one."""
+    await gp_job_sync.run_once(only_company=company)
     return await asyncio.to_thread(_load_project, job_number.strip(), company)
 
 
@@ -107,6 +110,19 @@ class ProjectQueries:
             return project_to_type(p)
 
     @strawberry.field
+    def project(self, info: strawberry.Info, id: strawberry.ID) -> Project | None:
+        """One project by its UUID, archived included (#1877) - for a screen scoped to a project by a
+        link, whose picker read it off `projects` and so showed an archived one as blank. Built without
+        its openings, with the count from one COUNT. Null when it is not the caller's."""
+        with SessionLocal() as session:
+            p = project_repository.get_project(session, uuid.UUID(str(id)), company=tenant_scope(info))
+            if p is None:
+                return None
+            return project_to_type(
+                p, include_openings=False, opening_count=project_repository.count_project_openings(session, p.id)
+            )
+
+    @strawberry.field
     def admin_project_detail(self, info: strawberry.Info, id: strawberry.ID) -> AdminProjectDetail | None:
         """What the Tenant Owner module's Projects page shows when a row is opened (#637) - the
         project plus the three rollups that answer "is anything still live on this job" before
@@ -121,7 +137,9 @@ class ProjectQueries:
             if detail is None:
                 return None
             return AdminProjectDetail(
-                project=project_to_type(detail["project"], include_openings=False),
+                project=project_to_type(
+                    detail["project"], include_openings=False, opening_count=detail["opening_count"]
+                ),
                 po_counts_by_status=[
                     POStatusCount(status=status, count=count) for status, count in detail["po_counts_by_status"]
                 ],
@@ -370,7 +388,12 @@ class ProjectMutations:
             project = project_repository.set_project_archived(session, uuid.UUID(str(id)), archived)
             session.commit()
             session.refresh(project)
-            return project_to_type(project, include_openings=False)
+            # #1874: the real count, not the converter's 0, so no client that asks for it caches a 0.
+            return project_to_type(
+                project,
+                include_openings=False,
+                opening_count=project_repository.count_project_openings(session, project.id),
+            )
 
 
 # The GP-held text fields a job edit may change (#730): the input attribute, which is also the project
@@ -492,4 +515,9 @@ def _save_project_edit(pid: uuid.UUID, input: UpdateProjectInput, record: dict |
         )
         session.commit()
         session.refresh(project)
-        return project_to_type(project)
+        # #1874: the edit dialog reads the count, never the openings, so a save builds none of them.
+        return project_to_type(
+            project,
+            include_openings=False,
+            opening_count=project_repository.count_project_openings(session, project.id),
+        )

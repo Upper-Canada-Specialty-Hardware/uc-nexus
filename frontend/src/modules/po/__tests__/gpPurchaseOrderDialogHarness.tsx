@@ -18,6 +18,7 @@ import {
   GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
+  GET_PROJECT_SHIP_TO,
 } from '../../../graphql/po';
 import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
 
@@ -239,6 +240,8 @@ export function baseMocks(connected = true): MockedResponse[] {
       },
       maxUsageCount: INFINITE,
     },
+    projectByIdMock('p1', 'JOB-100'),
+    projectByIdMock('p2', 'JOB-200'),
     entryOptionsMock(),
     vendorAddressesMock('V-ACE', ['PRIMARY', 'REMIT']),
     vendorAddressesMock('V-ALL', ['PRIMARY', 'REMIT']),
@@ -247,6 +250,28 @@ export function baseMocks(connected = true): MockedResponse[] {
   ];
 }
 
+
+/** #1843: register mode reads the draft's project by its id, archived included, not off the picker list. */
+export function projectByIdMock(id: string, jobNumber: string): MockedResponse {
+  return {
+    request: { query: GET_PROJECT_SHIP_TO, variables: { projectId: id } },
+    result: {
+      data: {
+        projectShipTo: {
+          __typename: 'ProjectShipTo',
+          id,
+          projectId: jobNumber,
+          jobSiteName: null,
+          address: null,
+          city: null,
+          state: null,
+          zip: null,
+        },
+      },
+    },
+    maxUsageCount: INFINITE,
+  };
+}
 
 // The two codes GP has active on the job. Both are offered - there is no per-buyer narrowing.
 export function costCodesMock(): MockedResponse {

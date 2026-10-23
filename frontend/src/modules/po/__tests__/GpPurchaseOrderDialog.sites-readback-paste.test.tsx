@@ -352,6 +352,26 @@ it('refuses to register a draft whose project has since closed in GP, and says w
 
 
 
+// #1877: an archived job is left off the projects list, so the verdict is read off the draft's own project.
+it('refuses to register a draft whose archived project is closed in GP, though the list does not hold it', async () => {
+  const archivedClosed = {
+    ...projectDraft,
+    project: {
+      id: 'p1',
+      projectId: 'JOB-100',
+      description: 'Main St Job',
+      gpJobState: 'CLOSED' as const,
+      gpSetupOk: null,
+      gpSetupIssues: [],
+    },
+  };
+  renderDialog({ registerPo: archivedClosed }, [...withJobStates({ p1: null }), costCodesMock()]);
+
+  const banner = await screen.findByTestId('gp-job-not-open-banner');
+  expect(banner).toHaveTextContent('GP job JOB-100: Closed in GP');
+  expect(screen.getByRole('button', { name: 'Register in GP' })).toBeDisabled();
+});
+
 it('pastes spreadsheet rows into the blank row first, flags what needs fixing, and undoes the paste', async () => {
   const { onSubmitted } = renderDialog();
   // GP's units have loaded once the unit pick is live, which is what a pasted unit is matched against.

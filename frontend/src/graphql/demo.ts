@@ -18,6 +18,7 @@ const DEMO_RESET_STATUS_FIELDS = `
   buildStartedAt
   buildStartedBy
   notice { resetAt resetBy }
+  failure { failedAt startedBy }
 `;
 
 export const GET_DEMO_RESET_STATUS = gql`

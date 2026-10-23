@@ -12,6 +12,7 @@ excludes exactly what the SQL predicate excluded, and a schedule-sized request c
 """
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from app.models.enums import (
@@ -19,12 +20,15 @@ from app.models.enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
+    ReturnDisposition,
+    ShipmentStatus,
 )
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.repositories import import_repository
+from app.models.shipping import PackingSlip, PackingSlipItem, ShipmentReturn, ShipmentReturnItem
+from app.repositories import import_repository, warehouse_admin_repository
 
 CATEGORY = "HINGE"
 
@@ -312,3 +316,151 @@ def test_a_line_ordered_beyond_the_schedule_still_splits_its_receipts_in_proport
     received = sum(_by_status(results, n, "HG-100").get("RECEIVED", 0) for n in numbers)
     ordered = sum(_by_status(results, n, "HG-100").get("ORDERED", 0) for n in numbers)
     assert (received, ordered) == (10, 10)
+
+
+def _slip(session, project, *, quantity, manual=0, status=ShipmentStatus.DELIVERED) -> PackingSlipItem:
+    """A slip carrying `quantity` of A01's HG-100, plus `manual` units on a manual line of the same code."""
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        shipped_by="shipper",
+        shipped_at=datetime.utcnow(),
+        status=status,
+    )
+    session.add(slip)
+    session.flush()
+    line = PackingSlipItem(
+        id=uuid.uuid4(),
+        packing_slip_id=slip.id,
+        opening_number="A01",
+        hardware_category=CATEGORY,
+        product_code="HG-100",
+        quantity=quantity,
+    )
+    session.add(line)
+    if manual:
+        session.add(
+            PackingSlipItem(
+                id=uuid.uuid4(),
+                packing_slip_id=slip.id,
+                opening_number="A01",
+                hardware_category=CATEGORY,
+                product_code="HG-100",
+                quantity=manual,
+                is_manual=True,
+            )
+        )
+    session.flush()
+    return line
+
+
+def _return(session, line: PackingSlipItem, quantity: int, disposition: ReturnDisposition) -> None:
+    ret = ShipmentReturn(
+        id=uuid.uuid4(),
+        packing_slip_id=line.packing_slip_id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
+        returned_by="receiver",
+        returned_at=datetime.utcnow(),
+    )
+    session.add(ret)
+    session.flush()
+    session.add(
+        ShipmentReturnItem(
+            id=uuid.uuid4(),
+            shipment_return_id=ret.id,
+            packing_slip_item_id=line.id,
+            disposition=disposition,
+            quantity=quantity,
+            hardware_category=CATEGORY,
+            product_code="HG-100",
+            opening_number="A01",
+        )
+    )
+    session.flush()
+
+
+def test_shipped_out_leaves_manual_lines_out_and_nets_a_return_to_the_project(db_session):
+    """#1941: a manual line is free text that never came off inventory, and a unit returned to the
+    project is back on its shelf. Counted as shipped, both read as the opening's hardware gone out."""
+    project = _make_project(db_session)
+    a01 = _make_opening(db_session, project, "A01")
+    closed = _po_line(db_session, project, status=POStatus.CLOSED, ordered=5, received=5)
+    _schedule_item(db_session, project, a01, "HG-100", 5, line=closed)
+    line = _slip(db_session, project, quantity=3, manual=2)
+    _return(db_session, line, 1, ReturnDisposition.RETURN_TO_PROJECT)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 5)])
+
+    assert _by_status(results, "A01", "HG-100") == {"RECEIVED": 3, "SHIPPED_OUT": 2}
+
+
+def test_a_cancelled_slips_return_to_stock_is_owed_again(db_session):
+    """#1941: everything came back before pickup and went to stock - it never reached the site, and the
+    project no longer holds it, so the opening is owed it again, as the shipping workspace says."""
+    project = _make_project(db_session)
+    a01 = _make_opening(db_session, project, "A01")
+    closed = _po_line(db_session, project, status=POStatus.CLOSED, ordered=5, received=5)
+    _schedule_item(db_session, project, a01, "HG-100", 5, line=closed)
+    line = _slip(db_session, project, quantity=5, status=ShipmentStatus.CANCELLED)
+    _return(db_session, line, 5, ReturnDisposition.NON_STOCK)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 5)])
+
+    assert _by_status(results, "A01", "HG-100") == {"NOT_COVERED": 5}
+
+
+def _shipping_pull(session, project, quantity) -> None:
+    """A completed SHIPPING_OUT pull of `quantity` of A01's HG-100."""
+    pr = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"SOR-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        requested_by="tester",
+    )
+    session.add(pr)
+    session.flush()
+    session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            opening_number="A01",
+            hardware_category=CATEGORY,
+            product_code="HG-100",
+            requested_quantity=quantity,
+        )
+    )
+    session.flush()
+
+
+def _ten_shipped_four_back(db_session):
+    project = _make_project(db_session)
+    a01 = _make_opening(db_session, project, "A01")
+    closed = _po_line(db_session, project, status=POStatus.CLOSED, ordered=10, received=10)
+    _schedule_item(db_session, project, a01, "HG-100", 10, line=closed)
+    _shipping_pull(db_session, project, 10)
+    line = _slip(db_session, project, quantity=10)
+    _return(db_session, line, 4, ReturnDisposition.RETURN_TO_PROJECT)
+    return project
+
+
+def test_a_return_shipped_again_counts_as_shipped(db_session):
+    """#1941: 10 received and shipped, 4 back to the project and shipped again - all 10 are out. The
+    pull was capped at what was received before the return was netted, so 4 read as on the shelf."""
+    project = _ten_shipped_four_back(db_session)
+    _shipping_pull(db_session, project, 4)
+    _slip(db_session, project, quantity=4)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 10)])
+
+    assert _by_status(results, "A01", "HG-100") == {"SHIPPED_OUT": 10}
+
+
+def test_a_return_not_yet_shipped_again_is_back_on_the_shelf(db_session):
+    project = _ten_shipped_four_back(db_session)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 10)])
+
+    assert _by_status(results, "A01", "HG-100") == {"SHIPPED_OUT": 6, "RECEIVED": 4}

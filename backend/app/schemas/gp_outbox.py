@@ -11,6 +11,7 @@ from app.auth import PO_MANAGERS, TENANT_OWNERS, WAREHOUSE_MANAGERS, require_any
 from app.database import SessionLocal
 from app.errors import AppError, ConflictError, NotFoundError
 from app.repositories import gp_outbox_repository, user_repository
+from app.repositories.warehouse import receive_drafts
 
 from .converters import gp_outbox_entry_to_type, gp_outbox_summary_to_type
 from .enums import GpOutboxStatus
@@ -97,6 +98,7 @@ class GpOutboxQueries:
         limit: int = 100,
         ops: list[str] | None = None,
         statuses: list[GpOutboxStatus] | None = None,
+        holding_drafts: bool | None = None,
     ) -> list[GpOutboxEntry]:
         """The queue itself. Readable by any signed-in user because the PO and receiving lists join
         pending entries onto their rows client-side; retry and cancel are decided per entry.
@@ -107,17 +109,51 @@ class GpOutboxQueries:
 
         Company-scoped (#729). The row carries the GP company its write is for, so this stays on
         the caller's side of the GP COMPANY NEXUS TENANT line however the field is called; only an
-        unscoped UC NEXUS ADMIN sees every company's queue."""
+        unscoped UC NEXUS ADMIN sees every company's queue.
+
+        `holdingDrafts` (#1948) answers with the PO registrations that still hold their draft instead -
+        waiting ones, and FAILED ones GP took or may have - in place of the status and op filters, so a
+        pile of finished failures can't push a held one past the limit."""
         with SessionLocal() as session:
-            rows = gp_outbox_repository.list_entries(
-                session,
-                status=status.value if status else None,
-                limit=max(1, min(limit, 500)),
-                ops=ops or None,
-                company=tenant_scope(info),
-                statuses=[s.value for s in statuses] if statuses else None,
-            )
-            return [gp_outbox_entry_to_type(r) for r in rows]
+            if holding_drafts:
+                rows = gp_outbox_repository.list_registrations_holding_drafts(
+                    session, company=tenant_scope(info), limit=max(1, min(limit, 500))
+                )
+            else:
+                rows = gp_outbox_repository.list_entries(
+                    session,
+                    status=status.value if status else None,
+                    limit=max(1, min(limit, 500)),
+                    ops=ops or None,
+                    company=tenant_scope(info),
+                    statuses=[s.value for s in statuses] if statuses else None,
+                )
+            # One ledger read for the list: which registrations hold their draft, and which writes GP took
+            # (#1948), so the screen offers no Cancel the backend would refuse.
+            ledgers = gp_outbox_repository.ledgers_for(session, rows)
+            holding = gp_outbox_repository.registrations_holding_drafts(session, rows, ledgers)
+            took = gp_outbox_repository.writes_gp_took(rows, ledgers)
+            # One read of the receipts' drafts, for every rule that asks whether a draft moved on (#1965): the
+            # flag the cancel warning reads, which receipts GP took can be let go, and the disabled Retry.
+            unfinished = [r for r in rows if r.status != "SUCCEEDED"]
+            moved_on = receive_drafts.receipts_whose_draft_moved_on(session, unfinished)
+            # A registration GP took whose PO is already in Nexus can be let go, so Cancel is offered on it,
+            # as it is on a receipt GP took whose draft has moved on (#1961).
+            in_nexus = gp_outbox_repository.registrations_already_in_nexus(session, rows, ledgers)
+            let_go = gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers, moved_on)
+            refusals = gp_outbox_repository.retry_refusals(session, rows, ledgers, moved_on)
+            return [
+                gp_outbox_entry_to_type(
+                    r,
+                    holds_draft=r.id in holding,
+                    gp_took=r.id in took and r.id not in in_nexus and r.id not in let_go,
+                    gp_answered=r.id in took,
+                    already_in_nexus_as=in_nexus.get(r.id),
+                    receipt_draft_moved_on=r.id in moved_on,
+                    retry_refusal=refusals.get(r.id),
+                )
+                for r in rows
+            ]
 
 
 @strawberry.type
@@ -139,7 +175,11 @@ class GpOutboxMutations:
             row = gp_outbox_repository.retry_entry(session, uuid.UUID(str(id)))
             if row is None:
                 raise _refusal(session, uuid.UUID(str(id)), "retry", _NO_RETRYABLE_ENTRY)
-            entry = gp_outbox_entry_to_type(row)
+            entry = gp_outbox_entry_to_type(
+                row,
+                holds_draft=gp_outbox_repository.registration_holds_draft(session, row),
+                gp_took=gp_outbox_repository.write_gp_took(session, row),
+            )
             session.commit()
         # Drain immediately rather than waiting for the next poll tick.
         from app.services import gp_outbox_worker
@@ -160,6 +200,8 @@ class GpOutboxMutations:
             row = gp_outbox_repository.cancel_entry(session, uuid.UUID(str(id)))
             if row is None:
                 raise _refusal(session, uuid.UUID(str(id)), "cancel", _NO_CANCELLABLE_ENTRY)
-            entry = gp_outbox_entry_to_type(row)
+            entry = gp_outbox_entry_to_type(
+                row, holds_draft=gp_outbox_repository.registration_holds_draft(session, row)
+            )
             session.commit()
             return entry

@@ -1,3 +1,5 @@
+import { parseMoney } from '../../utils/money';
+
 /**
  * Line items pasted from a spreadsheet (#833).
  *
@@ -115,9 +117,10 @@ function cleanQuantity(raw: string): string {
   return isNumeric(cleaned) ? cleaned : raw;
 }
 
+// #1912: read by the money rule, so a pasted "12,50" stays as pasted for the box to flag, rather than
+// filling it as 1250.
 function cleanUnitCost(raw: string): string {
-  const cleaned = raw.replace(/[$,\s]/g, '');
-  return isNumeric(cleaned) ? cleaned : raw;
+  return Number.isFinite(parseMoney(raw)) ? raw.replace(/[$,\s]/g, '') : raw;
 }
 
 function isHeaderRow(cells: string[]): boolean {

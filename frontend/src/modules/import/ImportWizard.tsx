@@ -65,7 +65,14 @@ import {
   type DraftGroup,
   type DraftInfoField,
 } from './types';
-import { buildPoDrafts, toPoDraftInput } from './poDrafts';
+import {
+  buildPoDrafts,
+  describeDraftShortfalls,
+  describeStrandedDocuments,
+  poIdByDraft,
+  toPoDraftInput,
+  type PODraftOutcomeData,
+} from './poDrafts';
 import * as draftOps from './draftOps';
 import { carryDraftEdits, describeUnattached, mergeAddedProducts, unattachedDocuments } from './draftOps';
 import type { Project } from '../../types/project';
@@ -351,6 +358,11 @@ export default function ImportWizard({
   const canStartFromLatest = isReimport && persistedHardwareItemCount > 0;
   const [hydratedFromPersisted, setHydratedFromPersisted] = useState(false);
   const replaceSchedule = sendsScheduleReplace(isReimport, hydratedFromPersisted);
+  // #1918: the schedule revision this run started from, which finalize refuses once it has moved - a tab
+  // left open across someone else's replace used to put its stale rows back. A first import expects no
+  // schedule (null); a re-import sends what the read on open loaded, and goes unchecked (omitted) only
+  // when that read never answered, as #1562 lets it finalize then.
+  const startedFromRevision = isReimport ? scheduleData?.projectHardwareSchedule?.revision : null;
 
   const [finalizeImport] = useMutation<{
     finalizeImportSession: {
@@ -358,6 +370,7 @@ export default function ImportWizard({
       purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
       shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
       shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+      poDraftOutcomes: PODraftOutcomeData[];
     };
   }>(FINALIZE_IMPORT_SESSION, {
     // The request this creates RESERVES inventory (#342), so the availability the wizard gates on
@@ -563,7 +576,11 @@ export default function ImportWizard({
   // can never disagree. Runs for every re-import purpose (PO, shop assembly, shipping) - the breakdown
   // is informational everywhere; the purpose-specific gates (over-order for PO, available-to-pull for
   // the requests) live in other columns.
-  const { data: hardwareStatusData } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
+  const {
+    data: hardwareStatusData,
+    error: hardwareStatusError,
+    refetch: refetchHardwareStatus,
+  } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
     GET_HARDWARE_STATUS_BY_PRODUCT,
     {
       variables: { projectIds: existingProjectId ? [existingProjectId] : [] },
@@ -590,7 +607,11 @@ export default function ImportWizard({
   // number that decides nothing - and inviting them to trim a request over stock that may well
   // arrive before the shop needs it. Availability belongs to the manager's batch screen now.
   const requestPurposeActive = open && purpose === 'po' && isReimport;
-  const { data: availabilityData } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+  const {
+    data: availabilityData,
+    error: availabilityError,
+    refetch: refetchAvailability,
+  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
     GET_PROJECT_INVENTORY_AVAILABILITY,
     {
       variables: { projectId: existingProjectId },
@@ -598,6 +619,19 @@ export default function ImportWizard({
       fetchPolicy: 'cache-and-network',
     },
   );
+
+  // #1844: the PO step's Ordered / Received / Available figures and finalize's over-buying check are built
+  // from these two reads, and a failed one read as zero everywhere - a project with stock on the shelf
+  // looked empty, and nothing warned that the drafts might re-buy it. A failed read is said on the PO and
+  // finalize steps, and finishing without the figures is ticked for this file rather than happening quietly.
+  const inventoryReadFailed =
+    purpose === 'po' && isReimport && (hardwareStatusError !== undefined || availabilityError !== undefined);
+  const [inventoryWaivedFor, setInventoryWaivedFor] = useState<typeof parsed | null>(null);
+  const inventoryBlocksFinalize = inventoryReadFailed && !(parsed && inventoryWaivedFor === parsed);
+  const retryInventoryReads = () => {
+    if (hardwareStatusError) void refetchHardwareStatus().catch(() => undefined);
+    if (availabilityError) void refetchAvailability().catch(() => undefined);
+  };
 
   const availabilityByCombo = useMemo(() => {
     const map = new Map<string, InventoryAvailabilityRow>();
@@ -1217,11 +1251,12 @@ export default function ImportWizard({
     purchaseOrders: Array<{ id: string; poNumber: string; status: string }>;
     shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
     shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
+    poDraftOutcomes: PODraftOutcomeData[];
   }
 
   // #570/#588: the PO drafts to create, built once. Carries sourceDraftId (stripped before the
-  // mutation) so #588 can map each returned PO back to its draft's pre-attached documents - the
-  // backend creates POs in this exact order.
+  // mutation) so #588 can map each returned PO back to its draft's pre-attached documents - through
+  // the draft index finalize reports per PO (#1884), as a draft that claims nothing makes none.
   const poDraftBuild = useMemo(
     () => (purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null),
     [purpose, draftGroups, vendorGroups, orderAsValues],
@@ -1329,11 +1364,12 @@ export default function ImportWizard({
       // #627: the source file name, sent only when the schedule came from a fresh parse. A hydrate
       // run leaves this null, so the backend keeps the stored name.
       scheduleFilename: uploadedFileName,
+      expectedScheduleRevision: startedFromRevision,
       // The exact lines the wizard gated on (#342), not a second derivation of them - carrying both
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, replaceSchedule, uploadedFileName]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, replaceSchedule, uploadedFileName, startedFromRevision]);
 
   const handleFinalize = useCallback(async () => {
     // #1313: one finalize per click. The confirm closes on this call but its button still takes clicks
@@ -1362,20 +1398,26 @@ export default function ImportWizard({
       const data = result.data?.finalizeImportSession as FinalizeResultData;
 
       // #588: the request(s) are created; now land each draft's pre-attached documents on its PO.
-      // Positional map: data.purchaseOrders[i] is poDraftBuild[i]'s PO (both in included-draft
-      // order), and sourceDraftId ties that back to the draft holding the files. The PO already
+      // #1884: matched by the draft index finalize reports for each PO, not by position - the backend
+      // skips a draft that claims nothing (#640), which shifted every later draft's documents onto the
+      // next draft's PO. A skipped draft's documents have no PO and are not uploaded. The PO already
       // exists, so a failed upload does not undo the finalize - it just leaves that doc off, which
       // the user re-uploads on the PO. Collect the names that failed rather than throwing.
       const attachFailures: string[] = [];
-      if (poDraftBuild && data.purchaseOrders.length > 0) {
-        const jobs = data.purchaseOrders.flatMap((po, i) => {
-          const draft = draftGroups.find((g) => g.id === poDraftBuild[i]?.sourceDraftId);
+      const poByDraft = poDraftBuild
+        ? poIdByDraft(poDraftBuild, data.poDraftOutcomes ?? [])
+        : new Map<string, string>();
+      if (poDraftBuild && poByDraft.size > 0) {
+        const jobs = poDraftBuild.flatMap((built) => {
+          const poId = poByDraft.get(built.sourceDraftId);
+          if (!poId) return [];
+          const draft = draftGroups.find((g) => g.id === built.sourceDraftId);
           return (draft?.attachments ?? []).map((att) =>
             (async () => {
               try {
                 await uploadPoDocument({
                   variables: {
-                    poId: po.id,
+                    poId,
                     fileName: att.file.name,
                     contentType: att.file.type || 'application/octet-stream',
                     documentType: att.documentType,
@@ -1394,12 +1436,31 @@ export default function ImportWizard({
       setFinalizeResult(data);
       setFinalizeLoading(false);
 
+      // #1883: a draft can come back with fewer units than its lines showed, or not be made at all -
+      // the backend claims only what is not yet on a PO (#1186). Said by name, not as a plain success.
+      const shortfall = poDraftBuild
+        ? describeDraftShortfalls(
+            poDraftBuild,
+            data.poDraftOutcomes ?? [],
+            (id) => draftGroups.find((g) => g.id === id)?.label || 'Untitled draft',
+          )
+        : null;
+      const warnings: string[] = [];
+      if (shortfall) warnings.push(shortfall);
+      // #1884: a draft finalize did not make has no PO for its documents, so they were not uploaded.
+      const stranded = describeStrandedDocuments(
+        (poDraftBuild ?? []).filter((built) => !poByDraft.has(built.sourceDraftId)),
+        draftGroups,
+      );
+      if (stranded) warnings.push(stranded);
       if (attachFailures.length > 0) {
         const noun = attachFailures.length === 1 ? 'document' : 'documents';
-        showToast(
-          `Request created, but ${attachFailures.length} ${noun} could not be attached (${attachFailures.join(', ')}). Re-upload on the PO.`,
-          'warning',
+        warnings.push(
+          `${attachFailures.length} ${noun} could not be attached (${attachFailures.join(', ')}). Re-upload on the PO.`,
         );
+      }
+      if (warnings.length > 0) {
+        showToast(`Request created, but ${warnings.join(' ')}`, 'warning');
       } else {
         showToast('Import session finalized successfully!', 'success');
       }
@@ -1493,7 +1554,12 @@ export default function ImportWizard({
   // definition, and carries no job number to read, so it was always "can't be checked".
   const jobCheck = hydratedFromPersisted ? 'match' : checkJobNumber(parsed?.project?.submittal_job_no, project.projectId);
   const mismatchConfirmed = parsed != null && mismatchConfirmedFor === parsed;
-  const canProceedStep0 = parser.state === 'done' && (jobCheck !== 'mismatch' || mismatchConfirmed);
+  // #1917: a contract with no openings or no hardware (a wrong export, a cut-off file) parsed "fine",
+  // and a schedule replace from it deleted every unordered opening and row. Nothing goes on from it.
+  const parsedEmpty =
+    parser.state === 'done' && parsed != null && (parsed.openings.length === 0 || parsed.hardwareItems.length === 0);
+  const canProceedStep0 =
+    parser.state === 'done' && !parsedEmpty && (jobCheck !== 'mismatch' || mismatchConfirmed);
   const canProceedStep2 = selectedOpenings.size > 0;
   // #565: hardware mode's step-2 gate - at least one product picked.
   const canProceedHardware = selectedProductKeys.size > 0;
@@ -1540,6 +1606,12 @@ export default function ImportWizard({
   switch (effectiveStepId) {
     case 'upload':
       canProceedCurrentStep = canProceedStep0;
+      if (parsedEmpty) {
+        navHint =
+          parsed?.openings.length === 0
+            ? 'This file has no openings - check it is the right export.'
+            : 'This file has no hardware - check it is the right export.';
+      }
       break;
     case 'openings':
       canProceedCurrentStep = canProceedStep2;
@@ -1665,6 +1737,36 @@ export default function ImportWizard({
             >
               Couldn't load this project's By Others items. Finishing now would clear them, so it waits until
               they load.
+            </Alert>
+          )}
+
+          {/* #1844: on the two steps that show or check the project's inventory figures. */}
+          {inventoryReadFailed && (effectiveStepId === 'purchase-orders' || effectiveStepId === 'finalize') && (
+            <Alert
+              severity="error"
+              sx={{ mb: 2 }}
+              action={
+                <Button color="inherit" size="small" onClick={retryInventoryReads}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn't load this project's inventory figures, so Ordered, Received and Available read as zero and
+              the over-buying check can't see what the project already has.{' '}
+              {userMessage(hardwareStatusError ?? availabilityError, { reading: true })}
+              {effectiveStepId === 'finalize' && (
+                <FormControlLabel
+                  sx={{ display: 'flex', mt: 0.5 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={!inventoryBlocksFinalize}
+                      onChange={(e) => setInventoryWaivedFor(e.target.checked ? parsed : null)}
+                    />
+                  }
+                  label="Finish without the inventory figures"
+                />
+              )}
             </Alert>
           )}
 
@@ -2171,7 +2273,13 @@ export default function ImportWizard({
                   variant="contained"
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
-                  disabled={finalizeLoading || isGpSetupBroken(project) || exclusionsBlockFinalize || assemblyHold !== null}
+                  disabled={
+                    finalizeLoading ||
+                    isGpSetupBroken(project) ||
+                    exclusionsBlockFinalize ||
+                    assemblyHold !== null ||
+                    inventoryBlocksFinalize
+                  }
                   onClick={() => (finalizeOverBuy.length > 0 ? setOverBuyOpen(true) : setConfirmOpen(true))}
                 >
                   Finish Import Session

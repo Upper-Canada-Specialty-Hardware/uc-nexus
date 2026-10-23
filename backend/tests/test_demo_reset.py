@@ -89,6 +89,18 @@ def test_anybody_in_demo_mode_resets_it(stored, monkeypatch):
     assert started == [("Otto Other", {"started_by_id": "u_other", "kind": demo_build.DEMO_RESET})]
 
 
+def test_a_reset_is_refused_while_the_nightly_runs_and_no_tab_is_told_of_one(monkeypatch):
+    """#1831: refused up front, not accepted and failed on the lock; and the nightly only adds, so the
+    demo tabs, which read `building()`, are not put behind the reset dialog."""
+    from app.errors import ConflictError
+
+    monkeypatch.setattr(demo_build, "_nightly_running", True)
+
+    with pytest.raises(ConflictError, match="nightly"):
+        demo_build.start_rebuild("Otto Other", started_by_id="u_other", kind=demo_build.DEMO_RESET)
+    assert demo_build.building() is False
+
+
 # --- being told --------------------------------------------------------------------------------
 
 
@@ -109,6 +121,19 @@ def test_they_are_told_once(stored):
     assert ack.errors is None, ack.errors
     assert ack.data["acknowledgeDemoReset"]["notice"] is None
     assert _run(_STATUS, _as("u_other")).data["demoResetStatus"]["notice"] is None
+
+
+def test_a_reset_still_running_is_not_marked_seen(stored):
+    """#1814: a "Got it" on the last reset while the next one runs must not count for the next one."""
+    stored(_finished(started_at="2026-10-17T09:00:00", finished_at=None, running=True), {"u_other": "x"})
+
+    _run("mutation { acknowledgeDemoReset { notice { resetBy } } }", _as("u_other"))
+
+    from app.database import SessionLocal
+    from app.repositories import demo_mirror_state_repository as state
+
+    with SessionLocal() as session:
+        assert state.get(session, state.RESET_SEEN) == {"u_other": "x"}
 
 
 def test_a_later_reset_is_told_again(stored):
@@ -136,6 +161,69 @@ def test_a_failed_build_tells_nobody(stored):
     stored(_finished(error="boom"))
 
     assert _run(_STATUS, _as("u_other")).data["demoResetStatus"]["notice"] is None
+
+
+_FAILURE = "{ demoResetStatus { building notice { resetAt } failure { failedAt startedBy } } }"
+
+
+def test_a_failed_build_is_told_to_every_demo_tab_without_its_error(stored):
+    """#1937: a failed rebuild reached nobody, and the waiting tabs reloaded into the demo the failed seed
+    wiped. Every demo tab is told it failed, when and whose it was - the person who started it too - and
+    the recorded error, which can carry SQL and UBC's values, stays for the admin page."""
+    stored(_finished(error="psycopg.errors.UniqueViolation: Key (job)=(UBC-1234)"))
+
+    for user_id in ("u_other", "u_resetter"):
+        result = _run(_FAILURE, _as(user_id))
+        assert result.errors is None, result.errors
+        assert result.data["demoResetStatus"] == {
+            "building": False,
+            "notice": None,
+            "failure": {"failedAt": "2026-10-16T18:41:52", "startedBy": "Rhea Resetter"},
+        }
+
+
+def test_a_build_that_worked_has_no_failure(stored):
+    stored(_finished())
+
+    assert _run(_FAILURE, _as("u_other")).data["demoResetStatus"]["failure"] is None
+
+
+def test_a_failure_is_not_told_while_the_next_build_runs(monkeypatch):
+    """Answered while a rebuild after it runs: the new record has no error yet, and the build in this
+    process says it is under way even before the record is written."""
+    failed = {"finished_at": "2026-10-16T18:41:52", "started_by": "Rhea", "running": False, "error": "boom"}
+    assert demo_build.build_failure(failed) == {"failed_at": "2026-10-16T18:41:52", "started_by": "Rhea"}
+    assert demo_build.build_failure({**failed, "error": None}) is None
+    assert demo_build.build_failure({**failed, "running": True}) is None
+    monkeypatch.setattr(demo_build, "building", lambda: True)
+    assert demo_build.build_failure(failed) is None
+
+
+def test_a_background_rebuild_whose_seed_fails_records_the_failure(monkeypatch):
+    """The background rebuild never raises to anybody, so its record is what the tabs are told from."""
+    from app.services import demo_mirror, demo_reset
+
+    records: dict = {}
+
+    def record(key, changes, *, replace=False):
+        if replace:
+            records.clear()
+        records.update(changes)
+
+    async def list_read():
+        return None
+
+    async def failing_reset():
+        raise RuntimeError("seed failed")
+
+    monkeypatch.setattr(demo_build, "_record", record)
+    monkeypatch.setattr(demo_mirror, "refresh_legacy_list", list_read)
+    monkeypatch.setattr(demo_reset, "reset", failing_reset)
+
+    asyncio.run(demo_build._build("Rhea Resetter", "u_resetter", demo_build.DEMO_RESET))
+
+    assert records["running"] is False and records["error"] == "seed failed"
+    assert demo_build.build_failure(records) == {"failed_at": records["finished_at"], "started_by": "Rhea Resetter"}
 
 
 def test_a_running_reset_is_answered_with_who_started_it(stored, monkeypatch):

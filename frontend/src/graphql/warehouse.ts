@@ -153,10 +153,22 @@ export const GET_PO_RECEIVING_DETAILS = gql`
       id
       poNumber
       requestNumber
-      # #425: the receive modal joins this to the projects list to find out whether the PO's GP job is
-      # quarantined. A broken job's receipt is rejected by eConnect with "Invalid Account Index", so
-      # the modal has to say so before the warehouse user finishes counting.
       projectId
+      # #425: whether the PO's GP job is quarantined. A broken job's receipt is rejected by eConnect
+      # with "Invalid Account Index", so the modal has to say so before the warehouse user finishes
+      # counting. #730: and whether GP's job is closed to receipts. Off the PO's own project (#1877):
+      # the projects list it used to be joined to leaves archived jobs out.
+      project {
+        id
+        projectId
+        description
+        gpJobState
+        gpSetupOk
+        gpSetupIssues {
+          costCode
+          accountIndex
+        }
+      }
       gpCompany
       gpVendorId
       vendorNameSnapshot
@@ -493,6 +505,11 @@ const RECEIVE_DRAFT_FIELDS = `
   approvalIdempotencyKey
   receiveRecordId
   outboxEntryId
+  # #1945: approved, nothing booked, and its queued receipt cancelled or failed with no answer from GP -
+  # held until a manager checks GP and releases it.
+  queuedReceiptStopped
+  # #1945: on a claimed draft, when the attempt holding the claim has run out of time - not released before.
+  approvalReleasableAt
   # #632: the counter's remark for the approver ("box crushed"). Carried onto the record at approval.
   notes
   totalQuantity
@@ -509,8 +526,16 @@ const RECEIVE_DRAFT_FIELDS = `
 `;
 
 export const GET_RECEIVE_DRAFTS = gql`
-  query GetReceiveDrafts($status: ReceiveDraftStatus, $poId: ID, $mine: Boolean) {
-    receiveDrafts(status: $status, poId: $poId, mine: $mine) { ${RECEIVE_DRAFT_FIELDS} }
+  query GetReceiveDrafts(
+    $status: ReceiveDraftStatus
+    $statuses: [ReceiveDraftStatus!]
+    $poId: ID
+    $mine: Boolean
+    $heldOnGp: Boolean
+  ) {
+    receiveDrafts(status: $status, statuses: $statuses, poId: $poId, mine: $mine, heldOnGp: $heldOnGp) {
+      ${RECEIVE_DRAFT_FIELDS}
+    }
   }
 `;
 
@@ -556,6 +581,13 @@ export const RESUBMIT_RECEIVE_DRAFT = gql`
 export const REJECT_RECEIVE_DRAFT = gql`
   mutation RejectReceiveDraft($input: RejectReceiveDraftInput!) {
     rejectReceiveDraft(input: $input) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
+// #1945: a manager's word, after checking GP, that a held approval posted no receipt - back to pending.
+export const RELEASE_HELD_RECEIVE_APPROVAL = gql`
+  mutation ReleaseHeldReceiveApproval($id: ID!) {
+    releaseHeldReceiveApproval(id: $id) { ${RECEIVE_DRAFT_FIELDS} }
   }
 `;
 
@@ -840,6 +872,7 @@ export const GET_RECEIVES = gql`
       rejectionReason
       receiptNumber
       batchNumber
+      gpWriteState
     }
   }
 `;

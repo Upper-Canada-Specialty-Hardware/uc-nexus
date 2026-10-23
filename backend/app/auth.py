@@ -291,6 +291,7 @@ _ROSTER_KEY = "_auth_user_roster"
 _COMPANY_KEY = "_auth_company"
 _ACTING_COMPANY_KEY = "_auth_acting_company"
 _DEMO_KEY = "_auth_demo_mode"
+_ACCESS_KEY = "_auth_access"
 # The request header a UC NEXUS ADMIN names the one GP company they are working in with (#845).
 ACTING_COMPANY_HEADER = "X-Nexus-Company"
 # Distinguishes "not looked up yet" from "looked up and there is none", which None cannot: an
@@ -330,33 +331,44 @@ def authenticated_user_id(context) -> str:
     return user_id
 
 
+def _caller_access(context) -> user_repository.UserAccess:
+    """The caller's roles, company and demo flag, read from Clerk once per request (#1894).
+
+    The three memos below are each filled from this one read, when they are first asked for. Roles and
+    the company used to be read apart, so every scoped request made two Clerk calls in series."""
+    access = context.get(_ACCESS_KEY)
+    if access is None:
+        access = context[_ACCESS_KEY] = user_repository.get_user_access(authenticated_user_id(context))
+    return access
+
+
 def caller_roles(context) -> list[str]:
     """The caller's Clerk roles, looked up once per request.
 
     Roles are in publicMetadata, not in the session token, so this is a Clerk Backend API call. Under
     #415 every `require_admin(info)` made its own, meaning the admin landing page paid one per admin
-    query it fired; now the whole request shares this one.
+    query it fired; now the whole request shares this one, with the company's (#1894).
     """
     roles = context.get(_ROLES_KEY)
     if roles is None:
-        roles = context[_ROLES_KEY] = user_repository.get_user_roles(authenticated_user_id(context))
+        roles = context[_ROLES_KEY] = _caller_access(context).roles
     return roles
 
 
 def caller_company(context) -> str | None:
     """The caller's GP company (their tenant) from Clerk publicMetadata, looked up once per request.
 
-    Same storage and the same round trip as `caller_roles` - roles and company are two keys of one
-    metadata object - so this is memoised for the same reason: a query naming eight root fields would
-    otherwise make eight `GET /users/{id}` calls to answer the same question.
+    The same round trip as `caller_roles` - roles and company are two keys of one metadata object, read
+    once by `_caller_access` (#1894) - so a query naming eight root fields makes one `GET /users/{id}`
+    call to answer both questions, not eight, nor two.
     """
     cached = context.get(_COMPANY_KEY, _UNRESOLVED)
     if cached is _UNRESOLVED:
         # The demo flag (#1608) is a key of the same metadata object, so one read fills both memos.
-        cached, demo = user_repository.get_user_tenancy(authenticated_user_id(context))
-        context[_COMPANY_KEY] = cached
+        access = _caller_access(context)
+        cached = context[_COMPANY_KEY] = access.company
         if context.get(_DEMO_KEY) is None:
-            context[_DEMO_KEY] = demo
+            context[_DEMO_KEY] = access.demo_mode
     return cached
 
 
@@ -581,14 +593,13 @@ def require_admin_request(request) -> dict:
     the GraphQL path makes - identity from the Clerk JWT, roles from the Clerk Backend API - so a
     route and a root field cannot drift apart on what "admin" means. Returns {user_id, roles}.
 
-    The cross-tenant role and not the tenant-level one (#729): both routes behind this gate act on
-    the whole deployment. `/admin/reset-data` empties every company's data at once, and
-    `/testing/clerk-sign-in` mints a real Clerk session for any staff account.
+    The cross-tenant role and not the tenant-level one (#729): the route behind this gate acts on
+    the whole deployment. `/admin/reset-data` empties every company's data at once.
 
     Deliberately un-memoised: a plain route handles one request and makes one check, so there is no
     second call to save, and taking the per-request store would mean inventing one for a Request that
-    never goes through `get_context`. `/testing/clerk-sign-in` and `/admin/reset-data` depend on this
-    path staying exactly as it was (#422)."""
+    never goes through `get_context`. `/admin/reset-data` depends on this path staying exactly as it
+    was (#422)."""
     token = _bearer_token(request)
     if not token:
         raise AuthError("Authentication required")

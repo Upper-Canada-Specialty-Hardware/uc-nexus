@@ -215,7 +215,51 @@ def test_resubmitting_the_same_key_returns_the_first_draft(db_session):
     assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == po.id).count() == 1
 
 
-# --- one pending count per PO (#641) --------------------------------------------------------------
+def test_a_create_key_already_used_on_another_po_is_refused(db_session):
+    """#1871: the key is global, so the same key on another PO answered with the first PO's draft -
+    another purchase order's count handed to a caller who never asked for it."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    other_po, other_li = _make_po(db_session, project.id)
+
+    warehouse_repository.create_receive_draft(
+        db_session,
+        po.id,
+        _lines(li, 3),
+        AUTHOR,
+        AUTHOR_NAME,
+        idempotency_key="k-shared",
+        packing_slip_document_id=_packing_slip(db_session, po).id,
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match="another purchase order") as excinfo:
+        warehouse_repository.create_receive_draft(
+            db_session,
+            other_po.id,
+            _lines(other_li, 3),
+            AUTHOR,
+            AUTHOR_NAME,
+            idempotency_key="k-shared",
+            packing_slip_document_id=_packing_slip(db_session, other_po).id,
+        )
+    assert excinfo.value.field == "idempotency_key"
+    assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == other_po.id).count() == 0
+
+
+def test_a_create_key_replays_only_on_its_own_po():
+    """The same guard without a database: both of create's early returns go through it."""
+    from app.repositories.warehouse.receive_drafts import _replayed_on_this_po
+
+    po_id = uuid.uuid4()
+    draft = ReceiveDraft(id=uuid.uuid4(), po_id=po_id)
+
+    assert _replayed_on_this_po(draft, po_id) is draft
+    with pytest.raises(ValidationError, match="another purchase order"):
+        _replayed_on_this_po(draft, uuid.uuid4())
+
+
+# --- one pending count per PO (#641)--------------------------------------------------------------
 #
 # A pending draft is the claim on a delivery. It used to be advisory - the receiving queue still
 # offered the PO and the modal only warned - so two people counting the same truck produced two
@@ -443,6 +487,27 @@ def test_deleting_is_open_to_the_author_and_a_manager_but_not_after_approval(db_
     assert excinfo.value.code == "INVALID_STATE_TRANSITION"
 
 
+def test_deleting_a_draft_withdraws_its_waiting_for_approval_notice(db_session):
+    """#1898: the notice stayed in every manager's bell, sending them to a queue the draft had left. A
+    draft still waiting keeps its own."""
+    project = _make_project(db_session)
+    # One pending draft per PO (#641), so each on its own.
+    po, li = _make_po(db_session, project.id)
+    other_po, other_li = _make_po(db_session, project.id)
+    kept = _draft(db_session, po, li, 1)
+    doomed = _draft(db_session, other_po, other_li, 2)
+
+    submitted = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_SUBMITTED)
+    assert {n.receive_draft_id for n in submitted} == {kept.id, doomed.id}
+
+    warehouse_repository.delete_receive_draft(db_session, doomed.id, AUTHOR, actor_is_manager=False)
+    db_session.flush()
+    db_session.expire_all()
+
+    left = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_SUBMITTED)
+    assert [n.receive_draft_id for n in left] == [kept.id]
+
+
 def _claim_behind_the_session(session, draft) -> None:
     """Flip a draft to APPROVING without touching the session's copy of it - what an approval claim
     committed by another request looks like to a session that loaded the draft before it landed."""
@@ -542,6 +607,7 @@ def test_claiming_a_draft_blocks_a_second_approver_but_lets_a_retry_resume(db_se
 
     ctx = warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-a")
     assert ctx.author_name == AUTHOR_NAME, "the GP receipt is posted in the counter's name, not the approver's"
+    assert ctx.resumed is False
     assert draft.status == ReceiveDraftStatus.APPROVING
 
     with pytest.raises(AppError) as excinfo:
@@ -552,6 +618,7 @@ def test_claiming_a_draft_blocks_a_second_approver_but_lets_a_retry_resume(db_se
     # The same key is the same approval, resuming after a dropped connection.
     resumed = warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-a")
     assert resumed.po_id == po.id
+    assert resumed.resumed is True, "#1945: the resolver must know an earlier attempt may have reached GP"
 
 
 @pytest.mark.parametrize("change", ["deactivated", "moved"])
@@ -840,12 +907,20 @@ def test_approving_while_the_relay_is_down_queues_the_receipt_and_still_closes_t
     assert result.draft.outbox_entry_id is not None
     assert result.draft.receive_record_id is None, "nothing is in inventory until the outbox drains"
 
+    from app.repositories import warehouse_admin_repository
+
     with SessionLocal() as session:
         row = session.get(GpWriteOutbox, uuid.UUID(str(result.draft.outbox_entry_id)))
+        primary = warehouse_admin_repository.get_primary_warehouse_id(
+            session, company=session.get(PurchaseOrder, f.po_id).company
+        )
     assert row.persist_context["receive_draft_id"] == str(f.draft_id)
+    # #1946: the building the receipt named to GP, resolved at approval, not left for the drain to pick.
+    assert primary is not None and row.persist_context["warehouse_id"] == str(primary)
     assert row.persist_context["received_by"] == AUTHOR_NAME, (
         "the queued receipt must post in the counter's name too, not the approver's"
     )
+    assert row.maybe_in_gp is False, "it never left the backend, so GP cannot hold it"
 
 
 def test_a_failure_after_queueing_saves_neither_the_row_nor_the_draft(committed, monkeypatch, approve_env):
@@ -900,6 +975,85 @@ def test_a_failure_before_the_relay_call_releases_the_claim(committed, monkeypat
     assert relay.calls == [], "nothing should have reached GP"
 
 
+def test_a_finished_key_answers_again_only_for_its_own_draft(committed, monkeypatch, approve_env):
+    """#1851: a retry under a key that already finished returns that receive, but the early return used
+    to skip every check the claim makes. Sent with another draft, it answered with the first draft's
+    receive and left the second untouched; now it is refused, and nothing reaches GP."""
+    first, second = committed(), committed()
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    key = str(uuid.uuid4())
+    done = _approve(first.draft_id, key=key)
+
+    again = _approve(first.draft_id, key=key)
+    assert again.receive_record.id == done.receive_record.id
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(second.draft_id, key=key)
+    assert excinfo.value.field == "idempotency_key"
+    assert len(relay.calls) == 1
+    assert _read_draft(second.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_finished_key_is_refused_to_a_caller_outside_the_drafts_company(committed, monkeypatch, approve_env):
+    """#1851: the tenant check the claim runs now runs ahead of the finished-key answer too."""
+    from app.errors import NotFoundError
+
+    f = committed()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    key = str(uuid.uuid4())
+    _approve(f.draft_id, key=key)
+
+    monkeypatch.setattr(warehouse_module, "tenant_scope", lambda info: "SOMEONE-ELSE")
+    with pytest.raises(NotFoundError):
+        _approve(f.draft_id, key=key)
+
+
+def test_a_bin_that_is_not_defined_is_refused_before_gp(committed, monkeypatch, approve_env):
+    """#1850: the persist refuses an undefined or retired bin, but only after GP has taken the receipt -
+    which left the receipt in GP, the draft stuck approving and the PO's GP sync held behind it. The
+    approval's pre-flight refuses it first, and the draft goes back in the queue."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.receive_draft import ReceiveDraftLineItem
+
+    f = committed()
+    with SessionLocal() as session:
+        line = session.scalars(
+            select(ReceiveDraftLineItem).where(ReceiveDraftLineItem.receive_draft_id == f.draft_id)
+        ).one()
+        line.locations = [{"aisle": "ZZ1850", "row": "9", "bay": "9", "quantity": line.quantity_received}]
+        session.commit()
+
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(f.draft_id)
+
+    assert excinfo.value.field == "location"
+    assert relay.calls == [], "nothing should have reached GP"
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_count_may_name_a_bin_that_is_defined_before_it_is_approved(db_session):
+    """#1850 holds the approval to the registry, not the count: a bin can still be defined in between."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    lines = [
+        {
+            "po_line_item_id": li.id,
+            "quantity_received": 2,
+            "locations": [{"aisle": "ZZ1850", "row": "9", "bay": "9", "quantity": 2}],
+        }
+    ]
+    warehouse_repository.validate_receive_eligibility(db_session, po.id, AUTHOR_NAME, lines)
+    with pytest.raises(ValidationError) as excinfo:
+        warehouse_repository.validate_receive_eligibility(db_session, po.id, AUTHOR_NAME, lines, check_bins=True)
+    assert excinfo.value.field == "location"
+
+
 def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeypatch, approve_env):
     """GP said no, which means GP did not commit - so the draft belongs back where somebody can act
     on it once the cause is fixed (#425's broken job being the usual one).
@@ -918,6 +1072,34 @@ def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeyp
 
     assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
     assert len(relay.calls) == 1, "the refusal has to come from GP, not from skipping the call"
+
+
+def test_a_relay_internal_error_keeps_the_claim_as_maybe_in_gp(committed, monkeypatch, approve_env):
+    """#1857: an unplanned relay exception can come after GP committed the receipt, and the GP write queue
+    holds it as maybe in GP. Released as GP refusing, the next approval went out under a fresh key and GP
+    took a second receipt. The claim is kept, the refusal says GP may hold it, and the retry asks GP again
+    under the same key."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    relay = _StubRelay(fail_with=RelayCallError("unhandled relay exception", detail={"error": "internal_error"}))
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert "This approval may already have posted the receipt to GP" in excinfo.value.message
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING
+    assert parked.approval_idempotency_key == key
+
+    relay.fail_with = None
+    result = _approve(f.draft_id, key=key)
+
+    assert [payload["idempotency_key"] for (_, _, payload) in relay.calls] == [key, key]
+    assert result.draft.status.value == "APPROVED"
 
 
 def _queued_row(result):
@@ -955,6 +1137,8 @@ def test_an_ambiguous_relay_failure_queues_the_receipt_under_its_key(committed, 
     row = _queued_row(result)
     assert row.idempotency_key == key
     assert row.payload["idempotency_key"] == key, "the retry must carry the key GP got on the first attempt"
+    # #1849: and the row says GP may hold it, so running out or a cancel never hands the draft back.
+    assert row.maybe_in_gp is True
 
 
 def test_the_receipt_payload_carries_the_approvals_key(committed, monkeypatch, approve_env):
@@ -997,8 +1181,11 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
 
     f = committed()
     key = str(uuid.uuid4())
+    # #1963: the attempt GP answered still holds the claim - only that is a resume. A fresh claim under a key
+    # with GP's answer on it is refused (see the #1963 tests after the #1961 ones).
+    _claim_as_an_attempt_that_died(f.draft_id, key)
     gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT000777"})
-    # Close the PO so any re-validation would refuse. The relay must also never be called again.
+    # The relay must never be called again.
     relay = _StubRelay()
     monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
 
@@ -1007,6 +1194,25 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
     assert relay.calls == [], "GP already ran under this key; calling again is the duplicate receipt"
     assert result.receive_record.receipt_number == "RCT000777"
     assert result.draft.status.value == "APPROVED"
+
+
+def test_a_resume_refuses_a_ledger_row_another_kind_of_write_made(committed, monkeypatch, approve_env):
+    """#1873: the resume persisted any row's relay_result as this approval's receipt - a registration's
+    answer included - booking a receipt GP never posted. Refused before a claim is taken."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    key = str(uuid.uuid4())
+    gp_idempotency.record_relay_result(key, "register_po_in_gp", {"po_number": "0001234", "company": "TEST"})
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert relay.calls == []
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
 
 
 def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_reposting(
@@ -1045,6 +1251,807 @@ def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_r
     assert result.receive_record is not None
     assert result.receive_record.receipt_number == "RCT000123"
     assert result.draft.status.value == "APPROVED"
+
+
+def _claim_as_an_attempt_that_died(draft_id, key) -> None:
+    """The claim an earlier approval committed before it sent its keyed receipt and died before the
+    relay's answer was recorded: the draft APPROVING under the key, and nothing in the ledger."""
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        warehouse_repository.claim_for_approval(session, draft_id, MANAGER, MANAGER_NAME, key)
+        session.commit()
+
+
+def _set_po_status(po_id, status) -> None:
+    from app.database import SessionLocal
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        session.get(POModel, po_id).status = status
+        session.commit()
+
+
+def test_a_resumed_approval_refused_before_gp_keeps_its_claim(committed, monkeypatch, approve_env):
+    """#1945: GP may hold the receipt the dead attempt sent. Releasing the claim on the re-check's refusal
+    put the draft back pending with its key cleared, and the next approval posted a second receipt under a
+    fresh key. The claim is kept, the refusal says GP may hold it, and the retry under the key goes on once
+    the cause is fixed."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert "may already have posted the receipt to GP" in excinfo.value.message
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING
+    assert parked.approval_idempotency_key == key
+    assert relay.calls == []
+
+    _set_po_status(f.po_id, POStatus.GP_REGISTERED)
+    result = _approve(f.draft_id, key=key)
+
+    ((_, _, payload),) = relay.calls
+    assert payload["idempotency_key"] == key, "the retry asks GP under the key the dead attempt used"
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_a_fresh_approval_refused_before_gp_still_releases(committed, monkeypatch, approve_env):
+    """#1945 holds only a resumed claim: a first attempt refused before the relay call sent nothing."""
+    f = committed()
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+
+    with pytest.raises(AppError) as excinfo:
+        _approve(f.draft_id)
+
+    assert excinfo.value.code != warehouse_module.RECEIPT_MAY_BE_IN_GP
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_resumed_approval_that_queues_is_queued_as_maybe_in_gp(committed, monkeypatch, approve_env):
+    """#1945: nothing left the backend on the resume, but the dead attempt's receipt may have, so the
+    queued row never hands the draft back if it later runs out or is cancelled (#1849)."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayUnavailableError("no relay", dispatched=False))
+    )
+
+    result = _approve(f.draft_id, key=key)
+
+    assert result.queued is True
+    assert _queued_row(result).maybe_in_gp is True
+
+
+def test_a_resumed_approval_gp_refuses_after_its_key_lookup_is_released(committed, monkeypatch, approve_env):
+    """#1945: the relay looks the key up before anything else, so its refusal says GP holds no receipt
+    under it - the draft may go back in the queue."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    relay = _StubRelay(fail_with=RelayCallError("eConnect 4612 Invalid Account Index", detail={"error": "x"}))
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    assert len(relay.calls) == 1
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def _release(draft_id):
+    return warehouse_module.WarehouseMutations().release_held_receive_approval(_Info(), str(draft_id))
+
+
+def test_a_manager_who_checked_gp_releases_a_held_approval(committed, monkeypatch, approve_env):
+    """#1945: a resumed approval refused on its re-check kept its claim, and nothing released it. A manager
+    who checked GP lets it go: the draft is pending again with the reason on it, and approves afresh."""
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _set_po_status(f.po_id, POStatus.CLOSED)
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    _age_the_claim(f.draft_id)  # #1945: past any attempt that may still be running
+    released = _release(f.draft_id)
+
+    assert released.status.value == "PENDING_APPROVAL"
+    draft = _read_draft(f.draft_id)
+    assert draft.approval_idempotency_key is None
+    assert MANAGER_NAME in draft.rejection_reason and "checked GP" in draft.rejection_reason
+    assert relay.calls == []
+
+    _set_po_status(f.po_id, POStatus.GP_REGISTERED)
+    result = _approve(f.draft_id)
+    ((_, _, payload),) = relay.calls
+    assert payload["idempotency_key"] != key
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_only_a_held_approval_gp_never_answered_can_be_released(committed, monkeypatch, approve_env):
+    from app.errors import ConflictError, InvalidStateTransitionError
+    from app.services import gp_idempotency
+
+    f = committed()
+    with pytest.raises(InvalidStateTransitionError):
+        _release(f.draft_id)  # pending: nothing is held
+
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    # GP answered under the claim's key: the receipt is in GP, and the same-key retry books it.
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001945"})
+    _age_the_claim(f.draft_id)
+    with pytest.raises(ConflictError, match="GP already took this receipt"):
+        _release(f.draft_id)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVING
+
+
+def _age_the_claim(draft_id) -> None:
+    """The claim as an attempt long since dead left it: older than any attempt could still be running."""
+    from datetime import datetime, timedelta
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        draft = session.get(ReceiveDraft, draft_id)
+        draft.reviewed_at = datetime.utcnow() - timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS + 1)
+        session.commit()
+
+
+def test_a_held_approval_is_not_released_while_its_attempt_may_still_be_running(committed, approve_env):
+    """#1945: a second manager could release a claim while the first's relay call was still out; the receipt
+    that call posted then had no claim to book against, and the count could be approved and posted again."""
+    from datetime import timedelta
+
+    from app.errors import ConflictError
+
+    f = committed()
+    _claim_as_an_attempt_that_died(f.draft_id, str(uuid.uuid4()))
+
+    with pytest.raises(ConflictError, match="may still be posting the receipt"):
+        _release(f.draft_id)
+    held = _read_draft(f.draft_id)
+    assert held.status == ReceiveDraftStatus.APPROVING
+    shown = warehouse_module.WarehouseQueries().receive_draft(_Info(), str(f.draft_id))
+    window = timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS)
+    assert shown.approval_releasable_at == held.reviewed_at + window
+
+    _age_the_claim(f.draft_id)
+    assert _release(f.draft_id).status.value == "PENDING_APPROVAL"
+
+
+def test_a_resumed_approval_stamps_its_claim_again_and_leaves_the_count_version(committed):
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    _age_the_claim(f.draft_id)
+    aged = _read_draft(f.draft_id)
+
+    _claim_as_an_attempt_that_died(f.draft_id, key)  # the same key, resuming
+
+    resumed = _read_draft(f.draft_id)
+    assert resumed.reviewed_at > aged.reviewed_at
+    assert resumed.updated_at == aged.updated_at  # #1497: no count changed
+
+
+def _release_while_the_call_is_out(f, relay_result=None, fail_with=None):
+    """A relay whose call, while it is out, sees the claim aged and released by a second manager."""
+
+    class _ReleasedMeanwhile(_StubRelay):
+        async def relay_call(self, company, op, payload=None, timeout=30.0):
+            self.calls.append((company, op, payload))
+            _age_the_claim(f.draft_id)
+            _release(f.draft_id)
+            if self.fail_with is not None:
+                raise self.fail_with
+            return self.result
+
+    return _ReleasedMeanwhile(result=relay_result, fail_with=fail_with)
+
+
+def _held_rows(po_id):
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        return list(session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.entity_key == f"po:{po_id}")).all())
+
+
+def test_an_attempt_whose_claim_was_released_meanwhile_books_nothing_and_holds_the_receipt(
+    committed, monkeypatch, approve_env
+):
+    """#1945: the late-returning attempt booked GP's receipt over a draft that was no longer its. It books
+    nothing now, and the receipt GP took is held on the GP write queue as maybe in GP, linked to no draft."""
+    f = committed()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _release_while_the_call_is_out(f))
+    key = str(uuid.uuid4())
+
+    with pytest.raises(AppError) as e:
+        _approve(f.draft_id, key=key)
+
+    assert e.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.receive_record_id is None
+    (row,) = _held_rows(f.po_id)
+    assert (row.idempotency_key, row.status, row.failure_kind, row.maybe_in_gp) == (
+        key,
+        "FAILED",
+        "persist_failed",
+        True,
+    )
+    assert draft.approved_outbox_entry_id is None
+
+
+def test_a_timed_out_attempt_whose_claim_was_released_meanwhile_is_held_not_queued_onto_the_draft(
+    committed, monkeypatch, approve_env
+):
+    from app.errors import RelayTimeoutError
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, fail_with=RelayTimeoutError())
+    )
+    key = str(uuid.uuid4())
+
+    with pytest.raises(AppError) as e:
+        _approve(f.draft_id, key=key)
+
+    assert e.value.code == warehouse_module.RECEIPT_MAY_BE_IN_GP
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.approved_outbox_entry_id is None
+    (row,) = _held_rows(f.po_id)
+    assert (row.idempotency_key, row.status, row.failure_kind, row.maybe_in_gp) == (key, "FAILED", "ambiguous", True)
+
+
+def test_a_receipt_held_for_an_approval_released_meanwhile_can_be_let_go(committed, monkeypatch, approve_env):
+    """#1961: the held receipt could be neither retried (its draft no longer links to it) nor cancelled (GP
+    took it), and its ledger row held the PO's received-quantity sync for good. Its draft has moved on, so
+    Cancel lets it go and settles the ledger; GP's answer stays on it."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, {"receipt_number": "RCT001961"})
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="went back for review"):
+            gp_outbox_repository.retry_entry(session, row.id)
+        session.rollback()
+        rows = [gp_outbox_repository.get_entry(session, row.id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.writes_gp_took(rows, ledgers) == {row.id}
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == {row.id}
+
+        assert gp_outbox_repository.cancel_entry(session, row.id).status == "CANCELLED"
+        session.commit()
+
+    with SessionLocal() as session:
+        ledger = session.get(GpWriteIdempotency, key)
+        assert ledger.result_id == gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+        assert ledger.relay_result["receipt_number"] == "RCT001961"
+        assert not gp_outbox_repository.write_gp_took(session, gp_outbox_repository.get_entry(session, row.id))
+        assert not _receipt_in_flight(session, f.po_id)
+        # Let go, it is not put back: the worker would read the settled ledger and call it SUCCEEDED.
+        with pytest.raises(ConflictError, match="let go after GP took it"):
+            gp_outbox_repository.retry_entry(session, row.id)
+    draft = _read_draft(f.draft_id)
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert draft.receive_record_id is None
+
+
+def test_a_receipt_gp_took_whose_draft_still_links_to_it_is_not_let_go(committed, monkeypatch, approve_env):
+    """#1961 lets go only a receipt whose draft has moved on. One its draft still waits on is finished with
+    Retry: cancelled, GP would hold a receipt the approved draft never books."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    key = _queued_row_key(row_id)
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001961"})
+    with SessionLocal() as session:
+        row = gp_outbox_repository.get_entry_locked(session, row_id)
+        gp_outbox_repository.mark_failed(session, row, kind="persist_failed", error="save failed", maybe_in_gp=True)
+        session.commit()
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == set()
+        with pytest.raises(ConflictError, match="GP already took this write"):
+            gp_outbox_repository.cancel_entry(session, row_id)
+    assert _read_draft(f.draft_id).approved_outbox_entry_id == row_id
+
+
+# --- #1963: a fresh approval under a spent key ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ending", ["CANCELLED", "gp_rejected"])
+def test_a_fresh_approval_under_the_key_of_a_queued_receipt_that_ended_is_refused(
+    committed, monkeypatch, approve_env, ending
+):
+    """#1963 path A: approved offline, the receipt queued under K, then cancelled or refused by GP, and the
+    draft back for review. The modal kept K, and the next approval under it was handed the dead row by
+    `enqueue`: the draft linked to it, the toast said it would post, and a Retry posted the pre-review
+    count. A fresh claim under a spent key is refused now, before anything is queued or sent."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayUnavailableError("no relay", dispatched=False))
+    )
+    key = str(uuid.uuid4())
+    row_id = _queued_row(_approve(f.draft_id, key=key)).id
+    with SessionLocal() as session:
+        if ending == "CANCELLED":
+            gp_outbox_repository.cancel_entry(session, row_id)
+        else:
+            row = gp_outbox_repository.get_entry_locked(session, row_id)
+            gp_outbox_repository.mark_failed(session, row, kind="gp_rejected", error="PO line is closed")
+        session.commit()
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+    with pytest.raises(ConflictError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert "Nothing was sent to GP" in excinfo.value.message
+    draft = _read_draft(f.draft_id)
+    assert (draft.status, draft.approved_outbox_entry_id, draft.approval_idempotency_key) == (
+        ReceiveDraftStatus.PENDING_APPROVAL,
+        None,
+        None,
+    )
+    (row,) = _held_rows(f.po_id)
+    assert row.status == ("CANCELLED" if ending == "CANCELLED" else "FAILED")
+
+    # A new key is a new approval: a row of its own, linked to the draft.
+    result = _approve(f.draft_id)
+    assert result.queued is True
+    assert uuid.UUID(str(result.outbox_entry_id)) != row_id
+
+
+def test_a_fresh_approval_under_a_key_gp_answered_after_its_claim_was_released_is_refused(
+    committed, monkeypatch, approve_env
+):
+    """#1963 path B: GP took the receipt after a manager released the claim, so it is held under K, booked
+    nowhere. Reversed in GP and approved again in the same tab, K resumed from the ledger and booked a GP
+    receipt that no longer exists. A draft awaiting approval is a fresh approval and never resumes."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.receiving import ReceiveRecord
+
+    f = committed()
+    relay = _release_while_the_call_is_out(f, {"receipt_number": "RCT001963"})
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    with pytest.raises(ConflictError) as excinfo:
+        _approve(f.draft_id, key=key)
+
+    assert excinfo.value.field == "idempotency_key"
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+    with SessionLocal() as session:
+        assert session.scalars(select(ReceiveRecord).where(ReceiveRecord.po_id == f.po_id)).all() == []
+
+
+def test_a_resume_after_a_reload_mid_approval_still_finishes_from_the_ledger(committed, monkeypatch, approve_env):
+    """#1963 leaves the genuine resume alone: the draft APPROVING under K (the page reloaded mid-approval,
+    and the modal read K off the draft) books GP's answer under K, without calling GP again."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    key = str(uuid.uuid4())
+    _claim_as_an_attempt_that_died(f.draft_id, key)
+    gp_idempotency.record_relay_result(key, "create_receive", {"receipt_number": "RCT001963"})
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    result = _approve(f.draft_id, key=key)
+
+    assert relay.calls == []
+    assert result.receive_record.receipt_number == "RCT001963"
+
+
+def test_a_key_that_only_met_a_refusal_approves_again(committed, monkeypatch, approve_env):
+    """#1963 spends a key only once something was written under it. GP refusing the receipt releases the
+    claim with nothing recorded, so the same press retried - the modal keeps its key after a dropped
+    connection it could not re-read - is a fresh approval like any other."""
+    from app.errors import RelayCallError
+
+    f = committed()
+    key = str(uuid.uuid4())
+    monkeypatch.setattr(
+        warehouse_module,
+        "relay_gateway",
+        _StubRelay(fail_with=RelayCallError("eConnect 4612 Invalid Account Index", detail={"error": "x"})),
+    )
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.PENDING_APPROVAL
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    assert _approve(f.draft_id, key=key).draft.status.value == "APPROVED"
+
+
+# --- #1964: a draft approving under the row's own key has not moved on ----------------------------------
+
+
+def _held_receipt_gp_took(f, monkeypatch) -> tuple[uuid.UUID, str]:
+    """A receipt GP answered after its approval was released meanwhile: held under its key, booked nowhere."""
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, {"receipt_number": "RCT001964"})
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+    return row.id, key
+
+
+def _claimed_again_under(draft_id, key) -> None:
+    """The draft claimed again under the held row's own key, as a fresh claim under a spent key could before
+    #1963, and its attempt long since dead: APPROVING under the key, linked to no row, nothing booked."""
+    from datetime import datetime, timedelta
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        draft = session.get(ReceiveDraft, draft_id)
+        draft.status = ReceiveDraftStatus.APPROVING
+        draft.approval_idempotency_key = key
+        draft.reviewed_at = datetime.utcnow() - timedelta(seconds=warehouse_repository.APPROVAL_ATTEMPT_SECONDS + 1)
+        session.commit()
+
+
+def test_a_receipt_whose_draft_is_approving_under_its_own_key_is_not_let_go(committed, monkeypatch, approve_env):
+    """#1964: the moved-on test read only the draft's link, which a claim under the row's key never sets, so
+    Cancel was offered and let the row go - stamping its ledger as reconciled. The draft was then stuck
+    APPROVING for good: approve found the key finished as another receive's, release found GP's answer, and
+    delete found a claim. It has not moved on: Cancel is refused as for any receipt GP took, and the claim's
+    own retry under the key books GP's answer."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    _claimed_again_under(f.draft_id, key)
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == set()
+        with pytest.raises(ConflictError, match="GP already took this write"):
+            gp_outbox_repository.cancel_entry(session, row_id)
+        session.rollback()
+        # Retry is not refused as a draft that went back for review: the drain books it for the claim.
+        assert gp_outbox_repository.retry_entry(session, row_id).status == "PENDING"
+        session.rollback()
+    (shown,) = [e for e in _gp_queue() if e.id == str(row_id)]
+    assert (shown.gp_took, shown.receipt_draft_moved_on) == (True, False)
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+    result = _approve(f.draft_id, key=key)
+
+    assert result.receive_record.receipt_number == "RCT001964"
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_a_receipt_whose_draft_was_approved_again_under_another_key_has_moved_on(committed, monkeypatch, approve_env):
+    """#1964 narrows the rule to the row's own key: a draft claimed under any other key is a new approval."""
+    from app.database import SessionLocal
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id, _key = _held_receipt_gp_took(f, monkeypatch)
+    _claimed_again_under(f.draft_id, str(uuid.uuid4()))
+
+    with SessionLocal() as session:
+        rows = [gp_outbox_repository.get_entry(session, row_id)]
+        ledgers = gp_outbox_repository.ledgers_for(session, rows)
+        assert gp_outbox_repository.receipts_gp_took_whose_draft_moved_on(session, rows, ledgers) == {row_id}
+
+
+def _gp_queue():
+    from app.schemas.gp_outbox import GpOutboxQueries
+
+    return GpOutboxQueries().gp_outbox(_Info(), ops=["create_receipt"])
+
+
+def _shown(row_id):
+    (shown,) = [e for e in _gp_queue() if e.id == str(row_id)]
+    return shown
+
+
+# --- #1965: a receipt whose draft was deleted, and retries that can only fail ----------------------------
+
+
+def _delete_draft(draft_id) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        warehouse_repository.delete_receive_draft(session, draft_id, AUTHOR, True)
+        session.commit()
+
+
+def test_a_receipt_gp_took_whose_draft_was_deleted_can_be_let_go_and_is_never_retried(
+    committed, monkeypatch, approve_env
+):
+    """#1965: the moved-on test skipped a row whose draft no longer exists, so Cancel was refused as a write
+    GP took, Retry was allowed and failed as released meanwhile on every drain, and the ledger held the PO's
+    received sync for good. A deleted draft has moved on: Retry is refused saying so, and Cancel lets it go."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+
+    f = committed()
+    row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    _delete_draft(f.draft_id)
+
+    shown = _shown(row_id)
+    assert (shown.gp_took, shown.gp_answered, shown.receipt_draft_moved_on) == (False, True, True)
+    assert "was deleted" in shown.retry_refusal
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="was deleted"):
+            gp_outbox_repository.retry_entry(session, row_id)
+        session.rollback()
+        assert gp_outbox_repository.cancel_entry(session, row_id).status == "CANCELLED"
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(GpWriteIdempotency, key).result_id == gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+        assert not _receipt_in_flight(session, f.po_id)
+        with pytest.raises(ConflictError, match="let go after GP took it"):
+            gp_outbox_repository.retry_entry(session, row_id)
+    assert "let go after GP took it" in _shown(row_id).retry_refusal
+
+
+def test_a_receipt_gp_may_hold_whose_draft_was_deleted_is_flagged_and_cancelled_plainly(
+    committed, monkeypatch, approve_env
+):
+    """#1965: held as maybe in GP with no answer, its draft deleted. The queue flags the draft as moved on,
+    not as approved, so its cancel warning is true of it, and Retry is off; Cancel settles nothing in the
+    ledger, there being no answer of GP's to settle."""
+    from app.database import SessionLocal
+    from app.errors import RelayTimeoutError
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module, "relay_gateway", _release_while_the_call_is_out(f, fail_with=RelayTimeoutError())
+    )
+    key = str(uuid.uuid4())
+    with pytest.raises(AppError):
+        _approve(f.draft_id, key=key)
+    (row,) = _held_rows(f.po_id)
+    _delete_draft(f.draft_id)
+
+    shown = _shown(row.id)
+    assert (shown.maybe_in_gp, shown.gp_answered, shown.receipt_draft_moved_on) == (True, False, True)
+    assert "was deleted" in shown.retry_refusal
+    with SessionLocal() as session:
+        assert gp_outbox_repository.cancel_entry(session, row.id).status == "CANCELLED"
+        session.commit()
+        assert session.get(GpWriteIdempotency, key) is None
+
+
+def test_a_receipt_whose_draft_still_waits_on_it_is_flagged_as_not_moved_on(committed, monkeypatch, approve_env):
+    """#1965: the may-be-in-GP warning that says the draft stays approved is for this one only."""
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, "FAILED")
+
+    shown = _shown(row_id)
+    assert (shown.maybe_in_gp, shown.receipt_draft_moved_on, shown.retry_refusal) == (True, False, None)
+
+
+def test_a_cancelled_receipt_whose_key_a_booking_finished_is_not_said_to_be_let_go(committed, monkeypatch, approve_env):
+    """#1965: the let-go refusal fired on any cancelled row with a settled ledger, and said it was let go
+    after GP took it - false for one whose key another attempt really booked."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, "CANCELLED")
+    with SessionLocal() as session:
+        gp_idempotency.stamp_result_id(
+            session, _queued_row_key(row_id), "create_receive", {"receipt_number": "RCT001965"}, str(uuid.uuid4())
+        )
+        session.commit()
+
+    with SessionLocal() as session, pytest.raises(ConflictError) as excinfo:
+        gp_outbox_repository.retry_entry(session, row_id)
+    assert excinfo.value.message == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    assert "let go" not in excinfo.value.message
+    assert _shown(row_id).retry_refusal == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+
+
+def test_a_held_receipt_whose_key_was_booked_since_no_longer_holds_the_received_sync(
+    committed, monkeypatch, approve_env
+):
+    """#1965 near miss: `_receipt_in_flight` held the sync on any FAILED row maybe in GP, whatever its ledger
+    said, so one whose key a resume had booked held it until somebody cancelled it."""
+    from app.database import SessionLocal
+    from app.repositories.gp_po_sync_repository import _receipt_in_flight
+    from app.services import gp_idempotency
+
+    f = committed()
+    _row_id, key = _held_receipt_gp_took(f, monkeypatch)
+    with SessionLocal() as session:
+        assert _receipt_in_flight(session, f.po_id)
+        gp_idempotency.stamp_result_id(session, key, "create_receive", None, str(uuid.uuid4()))
+        session.commit()
+
+    with SessionLocal() as session:
+        assert not _receipt_in_flight(session, f.po_id)
+
+
+def test_the_moved_on_rule_and_the_retry_refusals_read_as_one_table():
+    """#1964, #1965: the two rules every button asks, as the state table they settle - no database needed."""
+    from types import SimpleNamespace
+
+    from app.repositories import gp_outbox_repository
+    from app.repositories.warehouse import receive_drafts
+
+    row_id = uuid.uuid4()
+    entry = SimpleNamespace(id=row_id, idempotency_key="k-1")
+
+    def draft(status, key=None, link=None):
+        return SimpleNamespace(status=status, approval_idempotency_key=key, approved_outbox_entry_id=link)
+
+    moved_on = receive_drafts._draft_moved_on
+    assert moved_on(entry, None) is True  # deleted
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVED, "k-1", row_id)) is False  # linked
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVING, "k-1")) is False  # claimed under its key
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVED, "k-1")) is False  # booked under its key
+    assert moved_on(entry, draft(ReceiveDraftStatus.APPROVING, "k-2")) is True  # another approval
+    assert moved_on(entry, draft(ReceiveDraftStatus.PENDING_APPROVAL)) is True  # back for review
+    assert moved_on(entry, draft(ReceiveDraftStatus.PENDING_APPROVAL, "k-1")) is True  # pending is never in flight
+
+    po_id = uuid.uuid4()
+
+    def row(status, op="create_receive"):
+        return SimpleNamespace(status=status, op=op, entity_key=f"po:{po_id}")
+
+    def ledger(result_id):
+        return SimpleNamespace(relay_result={"x": 1}, result_id=result_id)
+
+    refusal = gp_outbox_repository._retry_refusal
+    let_go = gp_outbox_repository.RECEIPT_LET_GO_RESULT_ID
+    assert refusal(row("CANCELLED"), ledger(let_go), None) == gp_outbox_repository.LET_GO_RETRY_REFUSAL
+    assert refusal(row("CANCELLED"), ledger(str(uuid.uuid4())), None) == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    registration = row("CANCELLED", op="register_po_in_gp")
+    assert refusal(registration, ledger(str(po_id)), None) == gp_outbox_repository.SETTLED_RETRY_REFUSAL
+    assert (
+        refusal(registration, ledger(str(uuid.uuid4())), None) == gp_outbox_repository.REGISTRATION_LET_GO_RETRY_REFUSAL
+    )
+    assert refusal(row("FAILED"), None, True) == receive_drafts.DRAFT_DELETED_RETRY_REFUSAL
+    assert refusal(row("FAILED"), ledger(None), False) == receive_drafts.DRAFT_MOVED_ON_RETRY_REFUSAL
+    assert refusal(row("FAILED"), ledger(None), None) is None  # GP took it and its draft waits: Retry books it
+
+
+def _queue_as_maybe_in_gp(f, monkeypatch):
+    """An approval whose relay call timed out: the receipt queued under its key, as maybe in GP."""
+    from app.errors import RelayTimeoutError
+
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayTimeoutError()))
+    return _queued_row(_approve(f.draft_id)).id
+
+
+def _end_queued_row(row_id, ending) -> None:
+    from app.database import SessionLocal
+    from app.repositories import gp_outbox_repository
+
+    with SessionLocal() as session:
+        if ending == "CANCELLED":
+            gp_outbox_repository.cancel_entry(session, row_id)
+        else:
+            row = gp_outbox_repository.get_entry_locked(session, row_id)
+            gp_outbox_repository.mark_failed(session, row, kind="exhausted", error="timed out", maybe_in_gp=True)
+        session.commit()
+
+
+@pytest.mark.parametrize("ending", ["CANCELLED", "FAILED"])
+def test_a_manager_releases_an_approved_draft_whose_queued_receipt_stopped(committed, monkeypatch, approve_env, ending):
+    """#1945: a queued receipt that may be in GP never hands its draft back, so cancelled or run out it left
+    the draft APPROVED with nothing booked for good, its units blocking every re-count. It is held on GP
+    now, and a manager who checked GP releases it like a held claim."""
+    from app.database import SessionLocal
+    from app.errors import ConflictError
+    from app.repositories import gp_outbox_repository
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    _end_queued_row(row_id, ending)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVED
+
+    held = warehouse_module.WarehouseQueries().receive_drafts(_Info(), held_on_gp=True)
+    (mine,) = [d for d in held if d.id == str(f.draft_id)]
+    assert mine.queued_receipt_stopped is True
+
+    released = _release(f.draft_id)
+
+    assert released.status.value == "PENDING_APPROVAL"
+    assert released.queued_receipt_stopped is False
+    draft = _read_draft(f.draft_id)
+    assert draft.approved_outbox_entry_id is None
+    assert "checked GP" in draft.rejection_reason
+    # The ended row can't be put back: its draft is no longer its, and a fresh approval posts instead.
+    with SessionLocal() as session, pytest.raises(ConflictError, match="went back for review"):
+        gp_outbox_repository.retry_entry(session, row_id)
+
+
+def test_an_approved_draft_is_not_released_while_its_receipt_is_queued_or_once_gp_answered(
+    committed, monkeypatch, approve_env
+):
+    from app.errors import ConflictError
+    from app.services import gp_idempotency
+
+    f = committed()
+    row_id = _queue_as_maybe_in_gp(f, monkeypatch)
+    with pytest.raises(ConflictError, match="still queued"):
+        _release(f.draft_id)
+    assert [d.id for d in warehouse_module.WarehouseQueries().receive_drafts(_Info(), held_on_gp=True)].count(
+        str(f.draft_id)
+    ) == 0
+
+    _end_queued_row(row_id, "CANCELLED")
+    gp_idempotency.record_relay_result(_queued_row_key(row_id), "create_receive", {"receipt_number": "RCT01945"})
+    with pytest.raises(ConflictError, match="GP already took this receipt"):
+        _release(f.draft_id)
+    assert _read_draft(f.draft_id).status == ReceiveDraftStatus.APPROVED
+
+
+def _queued_row_key(row_id) -> str:
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        return session.get(GpWriteOutbox, row_id).idempotency_key
 
 
 def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):

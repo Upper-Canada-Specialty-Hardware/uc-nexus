@@ -174,10 +174,27 @@ export function buildRelayInstallColumns({
         const live = isLive(row);
         return (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ height: '100%' }}>
-            <Tooltip title="Adopt the next connection: the next relay to connect is bound to this install" arrow>
-              <Button size="small" variant="outlined" aria-label="Adopt next connection" onClick={() => onAdopt(row)}>
-                Adopt
-              </Button>
+            {/* A connected relay has nothing to recover, and a window armed on it would bind the next
+                unknown secret over the one it is connected with. The backend refuses it too (#1868). */}
+            <Tooltip
+              title={
+                live
+                  ? 'This relay is connected right now, so there is nothing to adopt.'
+                  : 'Adopt the next connection: the next relay to connect is bound to this install'
+              }
+              arrow
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  aria-label="Adopt next connection"
+                  disabled={live}
+                  onClick={() => onAdopt(row)}
+                >
+                  Adopt
+                </Button>
+              </span>
             </Tooltip>
             {/* Deleting the row revokes its secret, so doing it to the install currently holding the
                 connection would take GP down mid-write. The backend refuses it too (#366); this only

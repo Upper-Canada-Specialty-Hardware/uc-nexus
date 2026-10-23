@@ -38,6 +38,19 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
     # "Nexus registered" chip reads.
     nexusRegistered
     projectId
+    # #1877: the PO's own project, archived included - the projects list leaves archived jobs out. With
+    # the GP verdict the register dialog warns and blocks on, off the project's own columns (no query).
+    project {
+      id
+      projectId
+      description
+      gpJobState
+      gpSetupOk
+      gpSetupIssues {
+        costCode
+        accountIndex
+      }
+    }
     # #832: Stock or Overhead - which half of the pool a PO with no project receives into.
     poolKind
     status
@@ -58,6 +71,10 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
     orderedAt
     createdAt
     updatedAt
+    # #1950: set only on a draft GP already made a PO for that Nexus never recorded - the key Register
+    # reuses to finish it, and GP's number for it.
+    registeringKey
+    registeringGpPoNumber
     documentData {
       id
       poId
@@ -266,6 +283,18 @@ export const SUGGEST_VENDOR_FOR_MANUFACTURER = gql`
 export const GET_GP_BUYERS = gql`
   query GetGpBuyers($company: String!) {
     gpBuyers(company: $company)
+  }
+`;
+
+// #1885: the PO's own currency, as the mirror holds it - what the document falls back to when GP's
+// header cannot be read, before CAD. Its own read rather than a detail field, so it costs the detail
+// query and its many mocks nothing.
+export const GET_PO_CURRENCY = gql`
+  query GetPoCurrency($id: ID!) {
+    purchaseOrder(id: $id) {
+      id
+      currency
+    }
   }
 `;
 

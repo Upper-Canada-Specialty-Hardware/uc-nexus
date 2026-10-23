@@ -7,6 +7,7 @@ import {
   GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_VENDORS,
   GET_GP_COST_CODES,
+  GET_PROJECT_SHIP_TO,
 } from '../../../graphql/po';
 import {
   INFINITE,
@@ -16,6 +17,7 @@ import {
   projectDraft,
   baseMocks,
   costCodesMock,
+  projectByIdMock,
   registerData,
   queuedRegisterData,
   renderDialog,
@@ -153,6 +155,39 @@ describe('GpPurchaseOrderDialog', () => {
     expect(await screen.findByText('Cost codes could not be read from GP - refresh to try again')).toBeInTheDocument();
     expect(screen.queryByText('No cost codes defined for this job in GP')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Refresh cost codes' })).toBeEnabled();
+  });
+
+  // #1843: a job draft read its project off the picker list, so while that list was loading or had
+  // failed it registered as a stock PO - no cost codes, no line booked to the job. The project is read by
+  // its id now, and registering waits for that read, offering it again when it fails.
+  it('does not register a job draft while its project could not be read', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_PROJECT_SHIP_TO, variables: { projectId: 'p1' } },
+      result: { errors: [new GraphQLError('Database timeout')] },
+    };
+    renderDialog({ registerPo: projectDraft }, [failing, ...baseMocks().filter((m) => m.request.query !== GET_PROJECT_SHIP_TO)]);
+
+    expect(await screen.findByText(/couldn't read this draft's project, so its job can't be checked/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Register in GP' })).toBeDisabled();
+  });
+
+  // #1843: the picker list leaves archived projects out, and an archived job's drafts keep working.
+  it('registers an archived job draft as a job, its project read by id', async () => {
+    const archivedDraft = { ...projectDraft, projectId: 'p-archived' };
+    const mocks = [
+      ...baseMocks(),
+      projectByIdMock('p-archived', 'JOB-100'),
+      costCodesMock(),
+    ];
+    renderDialog({ registerPo: archivedDraft }, mocks);
+
+    await waitForVendorPreselect();
+
+    // Not on the picker list, yet still the job: its line books to the job and asks for a cost code.
+    expect(screen.queryByText(/this draft's project/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(await screen.findByText('Cost code required on a job cost line')).toBeInTheDocument();
   });
 
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
@@ -364,6 +399,44 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxScheduleId: null } });
+  });
+
+  it('keeps a draft custom-item line locked to its catalog entry and registers it with the link (#1910)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const registerMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const mocksNoTax = baseMocks().map((m) =>
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES ? { ...m, result: { data: { gpPurchaseTaxSchedules: [] } } } : m,
+    );
+    const catalogDraft = {
+      ...stockDraft,
+      lineItems: [
+        {
+          ...stockDraft.lineItems[0],
+          hardwareCategory: 'FRAME',
+          productCode: 'HMF-3070',
+          orderAs: null,
+          customInventoryItemId: 'cat-1',
+        },
+      ],
+    };
+    const { onRegistered } = renderDialog({ registerPo: catalogDraft }, [...mocksNoTax, registerMock]);
+    await waitForVendorPreselect();
+
+    // The catalog's pair is the one the warehouse receives the stock under, so it stays read-only.
+    expect(screen.getByLabelText('Item number line 1')).toBeDisabled();
+    expect(screen.getByText('From catalog')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({
+      input: { lineItems: [{ hardwareCategory: 'FRAME', productCode: 'HMF-3070', customInventoryItemId: 'cat-1' }] },
+    });
   });
 
   it('auto-switches to manual tax-schedule entry when the relay is out of date (issue #315)', async () => {
@@ -692,6 +765,53 @@ describe('GpPurchaseOrderDialog', () => {
     expect(retryKey).toBe(firstKey);
   });
 
+  // #1950: GP answered, and the save and its queueing both failed - the key lived only in the dialog
+  // that pushed it. The PO hands it back now, and a reopened dialog registers under it to finish.
+  it('reuses the key of a GP answer Nexus never saved, and says GP already made the PO', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const okMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const held = { ...stockDraft, registeringKey: 'held-attempt-1950', registeringGpPoNumber: '0001950' };
+    const { onRegistered } = renderDialog({ registerPo: held }, [...baseMocks(), okMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    expect(screen.getByTestId('unrecorded-registration')).toHaveTextContent(
+      'GP already made PO 0001950 for this draft',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+
+    expect((calls[0].input as Record<string, unknown>).idempotencyKey).toBe('held-attempt-1950');
+  });
+
+  it('starts a fresh key on a draft with no unrecorded answer, and shows no such banner', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const okMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return { data: registerData() };
+      },
+    };
+    const { onRegistered } = renderDialog({ registerPo: { ...stockDraft, registeringKey: null } }, [
+      ...baseMocks(),
+      okMock,
+    ]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    expect(screen.queryByTestId('unrecorded-registration')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+    expect((calls[0].input as Record<string, unknown>).idempotencyKey).toMatch(UUID_RE);
+  });
+
   it('makes no no-duplicate promise when the relay call timed out', async () => {
     // A timeout leaves GP possibly holding the PO, so the toast must not say a retry is free of
     // duplicates. Register puts a timed-out write on the outbox instead of failing, so this code
@@ -713,6 +833,27 @@ describe('GpPurchaseOrderDialog', () => {
       await screen.findByText('Could not complete the PO in GP - see the error detail below.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/A retry won't create a duplicate/)).toBeNull();
+    expect(onSubmitted).not.toHaveBeenCalled();
+  });
+
+  it('makes no no-duplicate promise and names the connection when it drops mid-register (#1933)', async () => {
+    // The write may have reached GP before the answer was lost, so a retry is not promised to be safe,
+    // and the detail reads as the connection rather than fetch's own "Failed to fetch".
+    const droppedMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      error: new TypeError('Failed to fetch'),
+    };
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), droppedMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(
+      await screen.findByText('Could not complete the PO in GP - see the error detail below.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/A retry won't create a duplicate/)).toBeNull();
+    expect(screen.getByText(/Couldn't reach Nexus/)).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch')).toBeNull();
     expect(onSubmitted).not.toHaveBeenCalled();
   });
 

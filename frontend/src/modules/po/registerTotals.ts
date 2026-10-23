@@ -9,6 +9,8 @@
  * per detail, so it can land a cent or two off the amount GP calculates.
  */
 
+import { parseUnitCost } from './unitCost';
+
 export interface RegisterTotalsInput {
   lines: { orderedQuantity: string; unitCost: string }[];
   freight: string;
@@ -33,9 +35,13 @@ export interface RegisterTotals {
   total: number;
 }
 
-/** A money box's text as a number: blank or not a number counts as nothing entered. */
+/**
+ * A money box's text as a number: blank or not a number counts as nothing entered. Read whole, the way
+ * the line's cost is checked and sent (#1912): parseFloat read "1,250.00" as 1, so the totals showed a
+ * fraction of what Register then sent GP.
+ */
 function amount(text: string): number {
-  const n = parseFloat(text);
+  const n = parseUnitCost(text);
   return Number.isFinite(n) ? n : 0;
 }
 

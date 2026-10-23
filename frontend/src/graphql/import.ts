@@ -67,6 +67,8 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         productCode
         classification
       }
+      # #1918: sent back on finalize, which refuses it if the schedule has changed since.
+      revision
     }
   }
 `;
@@ -118,6 +120,13 @@ export const FINALIZE_IMPORT_SESSION = gql`
         id
         requestNumber
         status
+      }
+      # #1883: per draft sent, the PO it made (null when skipped) and the units it got of those asked.
+      poDraftOutcomes {
+        draftIndex
+        purchaseOrderId
+        requestedQuantity
+        claimedQuantity
       }
     }
   }

@@ -24,14 +24,6 @@ TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes
 # the deny inert.
 E2E_CLERK_USER_ID = os.getenv("E2E_CLERK_USER_ID", "")
 
-# SHA-256 hex of the shared testing sign-in secret (#422). /testing/clerk-sign-in mints a REAL Clerk
-# session - every environment shares the production Clerk instance - so TESTING_ENABLED alone is an
-# environment switch, not an auth gate. A caller must either already hold a UC Nexus Admin session or
-# present this digest's preimage in X-Testing-Secret, the bootstrap path for a deployment where no
-# session exists yet. A hash is a verifier, not a credential, so Railway stores nothing
-# replayable. Blank disables the secret path, leaving only the admin path.
-TESTING_SIGN_IN_SECRET_HASH = os.getenv("TESTING_SIGN_IN_SECRET_HASH", "")
-
 # Railway sets this to the environment's name ("production", ...). Empty off Railway. Everything that
 # must behave differently on production is named off it.
 RAILWAY_ENVIRONMENT_NAME = os.getenv("RAILWAY_ENVIRONMENT_NAME", "")
@@ -92,11 +84,3 @@ def db_direct_access_enabled() -> bool:
 
     Read off the module constant (not os.getenv) so a test can flip it with monkeypatch."""
     return bool(PG_DIRECT_HOST.strip())
-
-
-def testing_sign_in_secret_hash() -> str:
-    """The digest /testing/clerk-sign-in accepts, or "" when the secret path is closed.
-
-    Read off the module constant at call time, so a test can set it with monkeypatch.
-    """
-    return TESTING_SIGN_IN_SECRET_HASH.strip()

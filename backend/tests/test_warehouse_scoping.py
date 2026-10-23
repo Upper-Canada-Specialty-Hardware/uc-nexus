@@ -232,3 +232,44 @@ def test_an_empty_row_does_not_make_a_duplicate_group(db_session):
     groups = warehouse_repository.get_location_duplicates(db_session)
 
     assert not [g for g in groups if g["canonical_aisle"] == canonical]
+
+
+def test_a_merge_moves_and_counts_only_project_rows_that_hold_something(db_session):
+    """#1882: an emptied project row on the variant was moved, audited and counted as merged, though it
+    holds nothing and is hidden everywhere else - as the pool side already skipped (#1587)."""
+    from sqlalchemy import select
+
+    from app.models.audit_log import InventoryAuditLog
+
+    wh = wh_id(db_session)
+    canonical = f"MZ{uuid.uuid4().hex[:6].upper()}"
+    variant = canonical.lower()
+    define_location(db_session, wh, canonical, "R1", "B1")
+    project = make_project(db_session)
+    full = make_il(db_session, project, quantity=3, aisle=variant, row="R1", bay="B1", warehouse_id=wh)
+    empty = make_il(db_session, project, quantity=0, aisle=variant, row="R1", bay="B1", warehouse_id=wh)
+
+    counts = warehouse_repository.merge_locations(
+        db_session,
+        warehouse_id=wh,
+        from_aisle=variant,
+        from_row="R1",
+        from_bay="B1",
+        to_aisle=canonical,
+        to_row="R1",
+        to_bay="B1",
+        performed_by="admin",
+    )
+    db_session.flush()
+
+    assert counts["inventory_locations"] == 1
+    assert full.aisle == canonical
+    assert empty.aisle == variant, "the empty row stays hidden where it is"
+    moves = db_session.scalars(
+        select(InventoryAuditLog).where(
+            InventoryAuditLog.entity_type == AuditEntityType.INVENTORY_LOCATION,
+            InventoryAuditLog.entity_id == empty.id,
+            InventoryAuditLog.action == AuditAction.MOVE,
+        )
+    ).all()
+    assert moves == []

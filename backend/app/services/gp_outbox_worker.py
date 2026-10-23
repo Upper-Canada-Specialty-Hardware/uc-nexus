@@ -94,10 +94,11 @@ def _job_number_of(payload: dict) -> str | None:
     return None
 
 
-def _persist_register_po_from_context(context: dict, relay_result: dict, key: str) -> None:
+def _persist_register_po_from_context(context: dict, relay_result: dict, key: str):
+    """Also the online resolver's save (#1950), so a resume writes what GP was sent the way the queue does."""
     from app.schemas.po import _persist_register_po
 
-    _persist_register_po(
+    return _persist_register_po(
         key=key,
         po_id=uuid.UUID(context["po_id"]),
         gp_vendor_id=context["gp_vendor_id"],
@@ -116,10 +117,8 @@ def _persist_register_po_from_context(context: dict, relay_result: dict, key: st
     )
 
 
-def _persist_create_receive_from_context(context: dict, relay_result: dict, key: str) -> None:
-    from app.schemas.warehouse import _persist_create_receive
-
-    line_items_data = [
+def _receive_lines_from_context(context: dict) -> list[dict]:
+    return [
         {
             "po_line_item_id": uuid.UUID(li["po_line_item_id"]),
             "quantity_received": li["quantity_received"],
@@ -127,12 +126,37 @@ def _persist_create_receive_from_context(context: dict, relay_result: dict, key:
         }
         for li in context["line_items_data"]
     ]
+
+
+def _receive_warehouse_from_context(context: dict) -> uuid.UUID | None:
+    return uuid.UUID(context["warehouse_id"]) if context.get("warehouse_id") else None
+
+
+def _recheck_queued_receipt(context: dict) -> None:
+    """Run the approval's own pre-flight again on a queued receipt about to be sent for the first time
+    (#1946): bins defined and active in the warehouse the persist will book into, the PO receivable, the
+    job open. The world can move while a receipt waits for the relay, and the persist only refuses once
+    GP has taken it - leaving the receipt in GP, its draft approved and the PO's sync held behind it.
+    Raises the approval's refusal."""
+    from app.schemas.warehouse import _prepare_create_receive
+
+    _prepare_create_receive(
+        po_id=uuid.UUID(context["po_id"]),
+        received_by=context["received_by"],
+        line_items_data=_receive_lines_from_context(context),
+        warehouse_id=_receive_warehouse_from_context(context),
+    )
+
+
+def _persist_create_receive_from_context(context: dict, relay_result: dict, key: str) -> None:
+    from app.schemas.warehouse import _persist_create_receive
+
     _persist_create_receive(
         key=key,
         po_id=uuid.UUID(context["po_id"]),
         received_by=context["received_by"],
-        line_items_data=line_items_data,
-        warehouse_id=uuid.UUID(context["warehouse_id"]) if context.get("warehouse_id") else None,
+        line_items_data=_receive_lines_from_context(context),
+        warehouse_id=_receive_warehouse_from_context(context),
         relay_result=relay_result,
         # The draft this receipt was approved from, so the drain closes the loop the approval opened.
         # .get() so a row queued before receives had drafts replays exactly as it used to.
@@ -191,6 +215,12 @@ def _notify_failure(row_id: uuid.UUID) -> None:
 REGISTRATION_CHANGED_REASON = (
     "The purchase order changed after its registration was queued - register it again; nothing was sent to GP"
 )
+# #1849: the same refusal on a row an earlier attempt may have left in GP. Nothing is sent this time, but that
+# attempt may have made a PO, so neither "nothing was sent" nor "register it again" holds.
+REGISTRATION_CHANGED_MAYBE_IN_GP_REASON = (
+    "The draft changed after a registration that may have reached GP - check GP for a PO under this draft "
+    "before cancelling this write"
+)
 
 
 def _registration_stale_reason(context: dict) -> str | None:
@@ -226,6 +256,15 @@ def _registration_stale_reason(context: dict) -> str | None:
         if queued_digest and po_repository.registration_digest(session, po_id) != queued_digest:
             return REGISTRATION_CHANGED_REASON
     return None
+
+
+# #1857: relay refusals that are not GP saying no, and pass on their own. `sql_error` is any database
+# error on the relay's side (a connect failure, a network blip, a deadlock victim), `internal_error` an
+# exception nothing on the relay planned for, and `company_not_allowed` a relay that could not read GP's
+# company list just then. Each is asked again under the attempt budget rather than held as GP refusing.
+_TRANSIENT_RELAY_ERRORS = ("sql_error", "internal_error", "company_not_allowed")
+# Which of them can come after the commit is `MAYBE_COMMITTED_RELAY_ERRORS` in app.errors, shared with the
+# online paths (#1857).
 
 
 def _load_row(row_id: uuid.UUID):
@@ -290,8 +329,9 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         row = await asyncio.to_thread(_load_row, row_id)
         if row is None or row.status != "IN_FLIGHT":
             return
+        # #1849: the error may have come after GP took the write, so the row says it may be there.
         if gp_outbox_repository.retry_is_safe(row.relay_op, row.payload):
-            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True, maybe_in_gp=True)
             await _fail_if_exhausted(row_id)
         else:
             applied = await asyncio.to_thread(
@@ -300,6 +340,7 @@ async def _drain_one(row_id: uuid.UUID) -> None:
                 "mark_failed",
                 kind="ambiguous",
                 error=f"Unexpected error while sending; check GP before retrying: {e}",
+                maybe_in_gp=True,
             )
             if applied:
                 await asyncio.to_thread(_notify_failure, row_id)
@@ -323,6 +364,38 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await asyncio.to_thread(_finish, row_id, "mark_succeeded")
         return
 
+    if (
+        op == "create_receive"
+        and row.attempts == 0
+        and not row.maybe_in_gp
+        and (state is None or state.relay_result is None)
+    ):
+        # #1946: a receipt never sent cannot be in GP, so it is checked again before it is sent. A refusal
+        # is failed like GP's own: nothing was sent, so its draft goes back for review. Never sent is no
+        # attempt counted - a relay that is simply not there counts none - as well as not maybe in GP: a
+        # keyed sql_error is retried with maybe_in_gp left False, though its commit may have landed, and
+        # a refusal of it here would send back the draft of a receipt GP may hold. A row that counted an
+        # attempt without sending (a relay too old for the op) is sent as before, unchecked.
+        try:
+            await asyncio.to_thread(_recheck_queued_receipt, context)
+        except AppError as e:
+            logger.warning("gp outbox: queued receipt no longer passes approval, not sent", extra={"label": label})
+            await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="gp_rejected",
+                error=f"Not sent to GP - this receipt no longer passes the approval's checks: {e.message}",
+                error_code=e.code,
+            )
+            await asyncio.to_thread(_notify_failure, row_id)
+            return
+        except Exception as e:  # noqa: BLE001 - nothing was sent; a transient DB error comes back around
+            logger.exception("gp outbox: re-checking a queued receipt raised; will retry", extra={"label": label})
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await _fail_if_exhausted(row_id)
+            return
+
     try:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
@@ -333,6 +406,9 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                     # Still a draft that wants registering: held where the buyer will see it. A retry checks
                     # again and is held again, and the reason says to register it again.
                     logger.warning("gp outbox: registration held, po changed since queued", extra={"label": label})
+                    # Never sent stale (GP would take the old snapshot); worded for what an earlier attempt left.
+                    if row.maybe_in_gp:
+                        stale = REGISTRATION_CHANGED_MAYBE_IN_GP_REASON
                     await asyncio.to_thread(_finish, row_id, "mark_failed", kind="po_changed", error=stale)
                     await asyncio.to_thread(_notify_failure, row_id)
                     return
@@ -374,7 +450,8 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 # The job was on the wire when the socket died, so GP may already hold this PO or
                 # receipt - but it holds it under this key, and the relay hands that same one back
                 # instead of writing a second. Asking again is safe; the attempt budget still bounds a
-                # GP that is permanently too slow to answer.
+                # GP that is permanently too slow to answer. The row is marked as maybe in GP (#1849), so
+                # however it ends, its draft is never sent back to be approved again under a new key.
                 await asyncio.to_thread(
                     _finish,
                     row_id,
@@ -383,13 +460,20 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                     error_code=e.code,
                     bump_attempts=True,
                     retry_in_seconds=POLL_SECONDS,
+                    maybe_in_gp=True,
                 )
                 await _fail_if_exhausted(row_id)
                 return
             # The job was on the wire when the socket died: GP may hold the write. Retrying could
             # duplicate it, so this needs a human who can look in GP.
             await asyncio.to_thread(
-                _finish, row_id, "mark_failed", kind="ambiguous", error=str(e.message), error_code=e.code
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="ambiguous",
+                error=str(e.message),
+                error_code=e.code,
+                maybe_in_gp=True,
             )
             await asyncio.to_thread(_notify_failure, row_id)
             return
@@ -417,13 +501,20 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 error_code=e.code,
                 bump_attempts=True,
                 retry_in_seconds=POLL_SECONDS,
+                maybe_in_gp=True,
             )
             await _fail_if_exhausted(row_id)
             return
         # Same ambiguity as a dispatched disconnect - the job reached the relay and we do not know
         # what GP did with it.
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="ambiguous", error=str(e.message), error_code=e.code
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="ambiguous",
+            error=str(e.message),
+            error_code=e.code,
+            maybe_in_gp=True,
         )
         await asyncio.to_thread(_notify_failure, row_id)
         return
@@ -435,6 +526,36 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await _fail_if_exhausted(row_id)
         return
     except RelayCallError as e:
+        relay_error = str((e.detail or {}).get("error") or "")
+        if relay_error in _TRANSIENT_RELAY_ERRORS:
+            # A database error can also be the commit itself failing, and then the write may be in GP. A
+            # keyed write's retry finds it by its key; one with no key could post twice, so it waits for a
+            # person like a timeout (#1857).
+            maybe_in_gp = e.may_have_committed or (relay_error == "sql_error" and not retry_safe)
+            if maybe_in_gp and not retry_safe:
+                # Like a timeout: the write may be in GP and asking again could post it twice.
+                await asyncio.to_thread(
+                    _finish,
+                    row_id,
+                    "mark_failed",
+                    kind="ambiguous",
+                    error=str(e.message),
+                    error_code=e.code,
+                    maybe_in_gp=True,
+                )
+                await asyncio.to_thread(_notify_failure, row_id)
+                return
+            await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_retry",
+                error=str(e.message),
+                error_code=e.code,
+                bump_attempts=True,
+                maybe_in_gp=maybe_in_gp,
+            )
+            await _fail_if_exhausted(row_id)
+            return
         # GP itself said no. Deterministic - retrying never helps. A refusal because the job is
         # inactive, closed or not in GP (#730) is recorded in the words and code the online paths use,
         # so the held write reads the same as the error the person would have seen at the time.
@@ -444,10 +565,17 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         await asyncio.to_thread(_notify_failure, row_id)
         return
 
+    # #1946: from here GP holds the write, so every outcome short of success marks the row as maybe in
+    # GP - the flag the draft release and the PO's sync hold read, as they do for #1849's.
     handler = _HANDLERS.get(op)
     if handler is None:
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="persist_failed", error=f"unknown outbox op {op!r}"
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="persist_failed",
+            error=f"unknown outbox op {op!r}",
+            maybe_in_gp=True,
         )
         return
 
@@ -458,13 +586,19 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         # receive is no longer eligible, ...). No retry can fix a state disagreement; a human must.
         logger.exception("gp outbox: persist failed after GP committed", extra={"label": label})
         await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="persist_failed", error=str(e.message), error_code=e.code
+            _finish,
+            row_id,
+            "mark_failed",
+            kind="persist_failed",
+            error=str(e.message),
+            error_code=e.code,
+            maybe_in_gp=True,
         )
         await asyncio.to_thread(_notify_failure, row_id)
         return
     except Exception as e:  # noqa: BLE001 - a transient DB error should come back around
         logger.exception("gp outbox: persist raised; will retry", extra={"label": label})
-        await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+        await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True, maybe_in_gp=True)
         await _fail_if_exhausted(row_id)
         return
 

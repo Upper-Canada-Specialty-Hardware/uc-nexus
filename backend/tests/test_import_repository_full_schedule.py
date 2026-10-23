@@ -6,7 +6,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import ValidationError
+from app.errors import ConflictError, ValidationError
 from app.models.enums import (
     Classification,
     HardwareItemState,
@@ -364,6 +364,46 @@ def test_refinalize_whole_combo_ref_orders_only_the_unordered_remainder(db_sessi
     assert ordered == [1, 3]
 
 
+def test_refinalize_a_buy_again_line_on_a_covered_product_says_it_got_nothing(db_session):
+    """#1883: a whole-combo ref on a product every unit of which is on a PO claims nothing (#1186), so
+    no PO is made - and finalize says so, the units asked for against none got, for the wizard to warn."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]})
+    db_session.flush()
+    result = import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]}
+    )
+
+    assert result["purchase_orders"] == []
+    [outcome] = result["po_draft_outcomes"]
+    assert (outcome["purchase_order"], outcome["requested_quantity"], outcome["claimed_quantity"]) == (None, 4, 0)
+
+
+def test_refinalize_a_partly_covered_whole_combo_ref_says_it_came_back_short(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 1))]})
+    db_session.flush()
+    result = import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]}
+    )
+
+    [outcome] = result["po_draft_outcomes"]
+    assert outcome["purchase_order"] is result["purchase_orders"][0]
+    assert (outcome["requested_quantity"], outcome["claimed_quantity"]) == (4, 3)
+
+
 def _classes(session, project_id) -> dict[tuple[str, HardwareItemState], set]:
     rows = session.scalars(select(HardwareItem).where(HardwareItem.project_id == project_id)).all()
     out: dict[tuple[str, HardwareItemState], set] = {}
@@ -437,6 +477,96 @@ def test_classifying_a_product_updates_its_rows_already_on_a_po(db_session):
     classes = _classes(db_session, project.id)
     assert classes[("HG-100", HardwareItemState.IN_PO)] == {Classification.SHOP_HARDWARE}
     assert classes[("HG-100", HardwareItemState.AVAILABLE)] == {Classification.SHOP_HARDWARE}
+
+
+def test_whole_product_classifications_are_one_update_per_value(db_session):
+    """#1890: the #1264 whole-product write is one UPDATE per classification value, not one per product,
+    and the rows this session already holds read the new value (`_classes` reads through the identity
+    map, so a stale object would show here)."""
+    from sqlalchemy import event
+
+    project = _make_project(db_session)
+    db_session.commit()
+    codes = [f"HG-{n}" for n in range(100, 105)]
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", code, item_quantity=4) for code in codes],
+    }
+    import_repository.finalize_import_session(
+        db_session, {**base, "po_drafts": [_po_draft(*(_ref("A01", code, 2) for code in codes))]}
+    )
+    db_session.flush()
+    _classes(db_session, project.id)  # the session now holds every row
+
+    value = {code: "SHOP_HARDWARE" if code < "HG-103" else "SITE_HARDWARE" for code in codes}
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        import_repository.finalize_import_session(
+            db_session,
+            {
+                **base,
+                "classifications": [
+                    {"hardware_category": "HINGE", "product_code": c, "unit_cost": 10.0, "classification": v}
+                    for c, v in value.items()
+                ],
+            },
+        )
+        db_session.flush()
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+
+    whole_product_writes = [
+        s
+        for s in statements
+        if s.startswith("UPDATE hardware_items SET classification") and "hardware_items.project_id" in s
+    ]
+    assert len(whole_product_writes) == 2, whole_product_writes
+    classes = _classes(db_session, project.id)
+    for code, v in value.items():
+        assert classes[(code, HardwareItemState.IN_PO)] == {Classification(v)}
+        assert classes[(code, HardwareItemState.AVAILABLE)] == {Classification(v)}
+
+
+def test_the_finalize_response_builds_no_openings_and_keeps_the_count(monkeypatch, db_session):
+    """#1890: the wizard reads a few of the project's scalars off the finalize response, so it goes back
+    without its openings, carrying the real count (#1874). The POs keep their lines: the demo build
+    reads them off this response."""
+    from types import SimpleNamespace
+
+    from app.schemas import imports as imports_schema
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    project = _make_project(db_session)
+    db_session.commit()
+    payload = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01"), _opening_input("A02")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=2)],
+        "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))],
+    }
+    monkeypatch.setattr(imports_schema, "SessionLocal", _Borrowed)
+    monkeypatch.setattr(imports_schema, "current_user", lambda info: {"user_id": "user_1"})
+    monkeypatch.setattr(imports_schema, "resolve_display_name", lambda user_id: "Dana Planner")
+    monkeypatch.setattr(imports_schema, "tenant_scope", lambda info: None)
+    monkeypatch.setattr(imports_schema, "finalize_payload", lambda input, **k: payload)
+
+    result = imports_schema.ImportMutations().finalize_import_session(None, SimpleNamespace(project_id=project.id))
+
+    assert result.project.openings == []
+    assert result.project.opening_count == 2
+    assert [len(po.line_items) for po in result.purchase_orders] == [1]
 
 
 def test_finalize_refuses_a_category_that_is_a_company_type_code(db_session):
@@ -534,6 +664,176 @@ def test_replace_schedule_keeps_ordered_hardware(db_session):
     status = _status(db_session, project.id, "HG-100")
     assert status["required_quantity"] == 5
     assert status["not_purchased"] == 3
+
+
+def test_replace_schedule_with_no_openings_is_refused_before_anything_is_read():
+    """#1917: a replace drops every opening it isn't sent, so one with none is refused outright."""
+    with pytest.raises(ValidationError, match="has no openings, so it can't replace") as exc:
+        import_repository.finalize_import_session(
+            None,
+            {"project_id": str(uuid.uuid4()), "openings": [], "hardware_items": None, "replace_schedule": True},
+        )
+    assert exc.value.field == "openings"
+
+
+def test_a_schedule_price_too_large_for_its_column_is_refused_naming_its_row():
+    """#1938: prices and markup are Numeric(10,4); a row past 999,999.9999 overflowed at flush as the masked
+    server error. Refused before anything is read, naming the opening and product."""
+    rows = [
+        _hardware_item_input("A01", "HG-100", unit_cost=999_999.9999),
+        _hardware_item_input("A02", "HG-200", list_price=1_000_000, markup_pct="2500000"),
+    ]
+    with pytest.raises(ValidationError) as exc:
+        import_repository.finalize_import_session(
+            None, {"project_id": str(uuid.uuid4()), "openings": [_opening_input("A01")], "hardware_items": rows}
+        )
+    assert exc.value.field == "hardware_items"
+    assert "opening A02 HG-200 (list price 1000000, markup 2500000)" in exc.value.message
+    assert "HG-100" not in exc.value.message
+
+
+def test_replace_schedule_with_no_openings_leaves_the_schedule_alone(db_session):
+    """#1917: a contract with no assignments (a wrong export, a cut-off file) deleted every opening with
+    nothing ordered and wiped every unordered row. Refused, the schedule is as it was."""
+    project = _make_project(db_session)
+    db_session.commit()
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A02")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+        },
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError, match="has no openings"):
+        import_repository.finalize_import_session(
+            db_session, {"project_id": str(project.id), "openings": [], "replace_schedule": True}
+        )
+
+    openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
+    assert {o.opening_number for o in openings} == {"A01", "A02"}
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 1,
+        ("A02", "HG-200", HardwareItemState.AVAILABLE): 1,
+    }
+
+
+def test_a_finalize_from_an_older_schedule_revision_is_refused(db_session):
+    """#1918: a tab working from the schedule it loaded, finalized after someone else replaced it, put
+    its stale rows back and recreated the openings the newer revision dropped. It names the revision it
+    started from, and a moved one is refused with nothing written."""
+    project = _make_project(db_session)
+    db_session.commit()
+    assert project.schedule_revision == 0
+
+    # A first import expects no schedule yet.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A02")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+            "expected_schedule_revision": None,
+        },
+    )
+    db_session.flush()
+    assert project.schedule_revision == 1
+
+    # Someone replaces it from revision 1: A02 goes.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+            "replace_schedule": True,
+            "expected_schedule_revision": 1,
+        },
+    )
+    db_session.flush()
+    assert project.schedule_revision == 2
+
+    # The stale tab still holds revision 1, and a tab opened before the first import holds none.
+    stale = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01"), _opening_input("A02")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A02", "HG-200")],
+    }
+    for expected in (1, None):
+        with pytest.raises(ConflictError, match="The schedule changed since you opened this"):
+            import_repository.finalize_import_session(db_session, {**stale, "expected_schedule_revision": expected})
+
+    openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
+    assert {o.opening_number for o in openings} == {"A01"}
+    assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.AVAILABLE): 4}
+    assert project.schedule_revision == 2
+
+    # A caller that doesn't name one (the demo build) is not checked. Not a replace, it writes no new
+    # schedule, so it doesn't move the revision another open tab works from.
+    import_repository.finalize_import_session(db_session, stale)
+    db_session.flush()
+    assert project.schedule_revision == 2
+
+
+def test_a_po_import_opened_before_a_classification_page_change_is_refused(db_session):
+    """#1918: a PO import sends the exclusions it loaded and deletes every one it wasn't sent. A tab opened
+    before someone marked a product By Others on the classification page undid the mark, since that save
+    never moved the revision the import checks. It does now, so the stale tab is refused and the mark stays."""
+    from app.models.enums import HardwareClassificationChoice
+    from app.models.project_excluded_item import ProjectExcludedItem
+    from app.repositories import classification_override_repository
+
+    project = _make_project(db_session)
+    db_session.commit()
+    schedule = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+    }
+    import_repository.finalize_import_session(db_session, {**schedule, "expected_schedule_revision": None})
+    db_session.flush()
+    assert project.schedule_revision == 1
+
+    # Tab A opens the PO import wizard at revision 1. Tab B marks HG-200 By Others.
+    classification_override_repository.set_product_classifications(
+        db_session, project.id, [("HINGE", "HG-200", HardwareClassificationChoice.BY_OTHERS)], changed_by="Greg"
+    )
+    db_session.flush()
+    assert project.schedule_revision == 2
+
+    def exclusions() -> set[str]:
+        return set(
+            db_session.scalars(
+                select(ProjectExcludedItem.product_code).where(ProjectExcludedItem.project_id == project.id)
+            )
+        )
+
+    assert exclusions() == {"HG-200"}
+
+    # Tab A finalizes with the exclusions it loaded: none.
+    with pytest.raises(ConflictError, match="The schedule changed since you opened this"):
+        import_repository.finalize_import_session(
+            db_session,
+            {
+                **schedule,
+                "excluded_items": [],
+                "po_drafts": [_po_draft(_ref("A01", "HG-100"))],
+                "expected_schedule_revision": 1,
+            },
+        )
+    assert exclusions() == {"HG-200"}
+    assert project.schedule_revision == 2
+
+    # Setting the value a product already has writes nothing, so it moves nothing either.
+    assert (
+        classification_override_repository.set_product_classifications(
+            db_session, project.id, [("HINGE", "HG-200", HardwareClassificationChoice.BY_OTHERS)], changed_by="Greg"
+        )
+        == []
+    )
+    assert project.schedule_revision == 2
 
 
 def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):

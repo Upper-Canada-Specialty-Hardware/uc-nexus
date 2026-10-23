@@ -7,7 +7,7 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
-import { GET_COMPANY_LETTERHEAD, GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
+import { GET_COMPANY_LETTERHEAD, GET_PO_CURRENCY, GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { letterheadBlock, type CompanyLetterhead } from '../../company/letterhead';
 import { useToast } from '../../components/Toast';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -19,6 +19,7 @@ import { monoSx, microLabelSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
 import { documentCurrencyFromGp, formatGpAddress, type GpPoHeader } from './gpPoHeader';
+import { canUploadPoDocuments } from './poDocumentGate';
 
 /** Section separator for this form: a 2px ink rule under a micro-label. */
 function SectionHeading({ children }: { children: ReactNode }) {
@@ -69,10 +70,14 @@ interface GpPoTotals {
  * shows what GP holds, then the fallback, until the buyer types - and from then on it is theirs,
  * even if they clear it. Derived rather than copied in an effect, so GP's answer arriving after the
  * form is up fills the empty fields without ever overwriting one the buyer has touched.
+ *
+ * #1885: the third value says whether the field is the buyer's (saved or typed). Only those are
+ * saved; the rest go as null, so a document generated on GP's figures or a fallback does not freeze
+ * them as if typed, and the next open reads GP again.
  */
 function useGpPrefilled(saved: string | null | undefined, gp: string | null | undefined, fallback = '') {
   const [edit, setEdit] = useState<string | null>(saved ? saved : null);
-  return [edit ?? gp ?? fallback, setEdit] as const;
+  return [edit ?? gp ?? fallback, setEdit, edit !== null] as const;
 }
 
 function formatDocDate(dateStr: string | null | undefined): string {
@@ -118,6 +123,10 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
     GET_GP_PO_TOTALS,
     { variables: { company, poNumber }, skip: !open || !company || !poNumber, fetchPolicy: 'network-only' },
   );
+  // #1885: the PO's own currency, the fallback before CAD when GP's header is not there to say.
+  const { data: currencyData } = useQuery<{ purchaseOrder: { id: string; currency: string | null } | null }>(
+    GET_PO_CURRENCY, { variables: { id: po.id }, skip: !open },
+  );
   // Only for the document's Project Number field (the job number); ship-to is now free text.
   const { data: projectData, loading: pLoading } = useQuery<{ projectShipTo: { projectId: string } | null }>(
     GET_PROJECT_SHIP_TO, { variables: { projectId: po.projectId }, skip: !open || !po.projectId },
@@ -154,6 +163,7 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           gpTotals={totalsData?.gpPoTotals ?? null}
           gpLoading={tLoading}
           gpError={tError ? tError.message : null}
+          poCurrency={currencyData?.purchaseOrder?.currency ?? null}
           projectNumber={projectData?.projectShipTo?.projectId ?? null}
           onClose={onClose}
           onRefetch={onRefetch}
@@ -203,51 +213,60 @@ interface GenerateFormProps {
   gpLoading: boolean;
   /** Why GP's totals and header could not be read, when they could not. */
   gpError: string | null;
+  /** The PO's own currency as the mirror holds it (GP's CURNCYID), null when it has none (#1885). */
+  poCurrency: string | null;
   projectNumber: string | null;
   onClose: () => void;
   onRefetch: () => void;
 }
 
 function GenerateForm({
-  po, settings, letterhead, buyers, buyersNote, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
+  po, settings, letterhead, buyers, buyersNote, gpTotals, gpLoading, gpError, poCurrency, projectNumber, onClose,
+  onRefetch,
 }: GenerateFormProps) {
   const { showToast } = useToast();
   const dd = po.documentData;
   const gp = gpTotals?.header ?? null;
 
   // #858: saved document values first, then what GP holds on the PO, then the old fallbacks.
-  const [vendorAddress, setVendorAddress] = useGpPrefilled(
+  const [vendorAddress, setVendorAddress, vendorAddressTyped] = useGpPrefilled(
     dd?.vendorAddress, formatGpAddress(gp?.vendorAddress, poVendorName(po) || null),
   );
-  const [buyerName, setBuyerName] = useGpPrefilled(dd?.buyerName, gp?.buyerId, po.buyerId ?? '');
-  const [currency, setCurrency] = useGpPrefilled(
-    dd?.currency, gp ? documentCurrencyFromGp(gp.currency) : null, 'CAD',
+  const [buyerName, setBuyerName, buyerNameTyped] = useGpPrefilled(dd?.buyerName, gp?.buyerId, po.buyerId ?? '');
+  // #1885: with no GP header to say, the PO's own currency before CAD.
+  const fallbackCurrency = (poCurrency ? documentCurrencyFromGp(poCurrency) : null) ?? 'CAD';
+  const [currency, setCurrency, currencyTyped] = useGpPrefilled(
+    dd?.currency, gp ? documentCurrencyFromGp(gp.currency) : null, fallbackCurrency,
   );
-  const [shipTo, setShipTo] = useGpPrefilled(dd?.shipTo, formatGpAddress(gp?.shipTo));
-  const [shippingMethod, setShippingMethod] = useGpPrefilled(dd?.shippingMethod, gp?.shippingMethod);
+  const [shipTo, setShipTo, shipToTyped] = useGpPrefilled(dd?.shipTo, formatGpAddress(gp?.shipTo));
+  const [shippingMethod, setShippingMethod, shippingMethodTyped] = useGpPrefilled(
+    dd?.shippingMethod, gp?.shippingMethod,
+  );
   // #970: the saved document's quote #, else the vendor quote # the PO already carries.
   const [quotationNumber, setQuotationNumber] = useState(dd?.quotationNumber ?? po.vendorQuoteNumber ?? '');
   // Required-by: saved override, else the vendor's expected date, else the PM's preferred date
   // (issue #216 - pre-send, expected doesn't exist yet, so the doc asks for the preferred date).
-  const [requiredBy, setRequiredBy] = useState(
-    dd?.requiredByOverride ?? po.expectedDeliveryDate ?? po.preferredDeliveryDate ?? '',
+  // #1885: an override only once the buyer types one - saving the expected date as one froze it.
+  const [requiredBy, setRequiredBy, requiredByTyped] = useGpPrefilled(
+    dd?.requiredByOverride, null, po.expectedDeliveryDate ?? po.preferredDeliveryDate ?? '',
   );
   // Totals: saved override if this PO was generated before, else GP's own figures (#858: GP holds
   // the PO, so its freight comes ahead of the order-time value Nexus kept, issue #156), else 0.
-  const gpAmount = (n: number | undefined) => (n == null ? null : String(n));
-  const [freight, setFreight] = useGpPrefilled(
-    dd ? String(dd.freight) : null, gpAmount(gpTotals?.freight), String(po.shippingCost ?? 0),
+  // #1885: a saved null is "never typed", so GP's figure fills it.
+  const gpAmount = (n: number | null | undefined) => (n == null ? null : String(n));
+  const [freight, setFreight, freightTyped] = useGpPrefilled(
+    gpAmount(dd?.freight), gpAmount(gpTotals?.freight), String(po.shippingCost ?? 0),
   );
-  const [miscellaneous, setMiscellaneous] = useGpPrefilled(
-    dd ? String(dd.miscellaneous) : null, gpAmount(gpTotals?.miscellaneous), '0',
+  const [miscellaneous, setMiscellaneous, miscellaneousTyped] = useGpPrefilled(
+    gpAmount(dd?.miscellaneous), gpAmount(gpTotals?.miscellaneous), '0',
   );
-  const [taxAmount, setTaxAmount] = useGpPrefilled(
-    dd ? String(dd.taxAmount) : null, gpAmount(gpTotals?.taxAmount), '0',
+  const [taxAmount, setTaxAmount, taxAmountTyped] = useGpPrefilled(
+    gpAmount(dd?.taxAmount), gpAmount(gpTotals?.taxAmount), '0',
   );
   // #1236: GP's trade discount comes off the order total. A document saved before the field existed
   // holds null, so it takes GP's figure rather than a saved 0.
-  const [tradeDiscount, setTradeDiscount] = useGpPrefilled(
-    dd?.tradeDiscount != null ? String(dd.tradeDiscount) : null, gpAmount(gpTotals?.tradeDiscount ?? undefined), '0',
+  const [tradeDiscount, setTradeDiscount, tradeDiscountTyped] = useGpPrefilled(
+    gpAmount(dd?.tradeDiscount), gpAmount(gpTotals?.tradeDiscount), '0',
   );
   const [taxLabel, setTaxLabel] = useState(dd?.taxLabel ?? 'Taxes');
   const [tariffAmount, setTariffAmount] = useState(String(dd?.tariffAmount ?? po.tariffAmount ?? 0));
@@ -272,28 +291,31 @@ function GenerateForm({
     return isNaN(n) ? 0 : n;
   };
 
+  // #1885: a field GP fills is saved only when it is the buyer's; one showing GP's figure or a fallback
+  // goes as null, which the backend stores as "not typed", so the next open reads GP again.
   const docInput = useCallback(
     () => ({
-      vendorAddress: vendorAddress || null,
-      buyerName: buyerName || null,
-      currency,
-      shipTo: shipTo || null,
-      shippingMethod: shippingMethod || null,
+      vendorAddress: vendorAddressTyped ? vendorAddress || null : null,
+      buyerName: buyerNameTyped ? buyerName || null : null,
+      currency: currencyTyped ? currency : null,
+      shipTo: shipToTyped ? shipTo || null : null,
+      shippingMethod: shippingMethodTyped ? shippingMethod || null : null,
       quotationNumber: quotationNumber || null,
-      freight: num(freight),
-      miscellaneous: num(miscellaneous),
-      taxAmount: num(taxAmount),
+      freight: freightTyped ? num(freight) : null,
+      miscellaneous: miscellaneousTyped ? num(miscellaneous) : null,
+      taxAmount: taxAmountTyped ? num(taxAmount) : null,
       taxLabel: taxLabel || 'Taxes',
       tariffAmount: num(tariffAmount),
-      tradeDiscount: num(tradeDiscount),
-      requiredByOverride: requiredBy || null,
+      tradeDiscount: tradeDiscountTyped ? num(tradeDiscount) : null,
+      requiredByOverride: requiredByTyped ? requiredBy || null : null,
       includeFsc,
       includeUsaTariff,
       includeCustoms,
     }),
-    [vendorAddress, buyerName, currency, shipTo, shippingMethod, quotationNumber, freight,
-      miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, requiredBy, includeFsc, includeUsaTariff,
-      includeCustoms],
+    [vendorAddress, vendorAddressTyped, buyerName, buyerNameTyped, currency, currencyTyped, shipTo, shipToTyped,
+      shippingMethod, shippingMethodTyped, quotationNumber, freight, freightTyped, miscellaneous, miscellaneousTyped,
+      taxAmount, taxAmountTyped, taxLabel, tariffAmount, tradeDiscount, tradeDiscountTyped, requiredBy,
+      requiredByTyped, includeFsc, includeUsaTariff, includeCustoms],
   );
 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
@@ -408,6 +430,20 @@ function GenerateForm({
   const gpHelper = (saved: unknown, otherwise?: string) =>
     gpWaiting(saved) ? 'Reading from GP…' : otherwise;
 
+  // #1885: with GP unread, what the document uses in place of GP's figures for the fields the buyer
+  // has not made their own - said, so a fallback is not mistaken for GP's.
+  const gpFallbacks = [
+    !freightTyped && `freight ${freight}${po.shippingCost != null ? " (the PO's shipping cost)" : ''}`,
+    !miscellaneousTyped && `miscellaneous ${miscellaneous}`,
+    !taxAmountTyped && `tax ${taxAmount}`,
+    !tradeDiscountTyped && `trade discount ${tradeDiscount}`,
+    !currencyTyped && `currency ${currency}${poCurrency ? " (the PO's)" : ''}`,
+  ].filter((s): s is string => Boolean(s));
+  // #1885: a document generated while GP's figures are still coming would print, and save, the
+  // fallbacks in their place. Once the read has failed the buyer may go ahead; the alert says so.
+  const waitingOnGp = gpLoading;
+  const canSaveToPo = canUploadPoDocuments(po);
+
   return (
     <>
       <DialogContent dividers>
@@ -416,6 +452,9 @@ function GenerateForm({
             <Alert severity="warning">
               This PO&apos;s details could not be read from GP, so the fields GP would fill are left for you
               to fill in. {gpError}
+              {gpFallbacks.length > 0 && (
+                <> GP&apos;s figures are not in the document: unless you change them, it uses {gpFallbacks.join(', ')}.</>
+              )}
             </Alert>
           )}
           {!gpLoading && !gpError && gpTotals && !gpTotals.header && (
@@ -545,12 +584,21 @@ function GenerateForm({
         </Stack>
       </DialogContent>
       <DialogActions>
+        {/* #1887: a closed PO takes no new documents - the upload is refused after the data saved - so
+            it is only previewed, as the detail offers no Upload on it either. */}
+        {!canSaveToPo && (
+          <Typography variant="caption" color="text.secondary" sx={{ mr: 'auto', pl: 1 }}>
+            A closed PO takes no new documents, so this one can only be previewed.
+          </Typography>
+        )}
         <Button onClick={onClose} disabled={working}>Cancel</Button>
-        <Button variant="outlined" onClick={handleSaveToPO} disabled={working}>
-          {working ? 'Working...' : 'Save to PO documents'}
-        </Button>
+        {canSaveToPo && (
+          <Button variant="outlined" onClick={handleSaveToPO} disabled={working || waitingOnGp}>
+            {working ? 'Working...' : 'Save to PO documents'}
+          </Button>
+        )}
         <Button
-          variant="contained" onClick={handlePreview} disabled={working}
+          variant="contained" onClick={handlePreview} disabled={working || waitingOnGp}
           startIcon={working ? <CircularProgress size={16} /> : undefined}
         >
           {working ? 'Generating...' : 'Generate & preview'}

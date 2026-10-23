@@ -22,8 +22,8 @@ extension in main.py, before the resolver runs, so ordering is structural rather
 each body has to honour.
 
 What is deliberately NOT here: `require_admin_request`, the gate for the plain FastAPI routes in
-main.py (`/admin/reset-data`, `/testing/clerk-sign-in`). Those are not GraphQL, no extension runs for
-them, and they keep their own explicit gate - see app/auth.py.
+main.py (`/admin/reset-data`). Those are not GraphQL, no extension runs for them, and they keep their
+own explicit gate - see app/auth.py.
 """
 
 import logging
@@ -209,6 +209,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # module's picker offers. `createGpJob` writes to the accounting system of record.
     "adminProjectDetail": TENANT_OWNERS,
     "adminProjects": TENANT_OWNERS,
+    "project": SIGNED_IN,
     "projectByScheduleId": SIGNED_IN,
     "projectShipTo": SIGNED_IN,
     "projects": SIGNED_IN,
@@ -481,6 +482,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "moveInventoryLocation": SIGNED_IN,
     "overrideInventoryQuantity": SIGNED_IN,
     "rejectReceiveDraft": WAREHOUSE_MANAGERS,
+    # #1945: releasing an approval held on GP rests on a manager's check of GP, so it is approval's authority.
+    "releaseHeldReceiveApproval": WAREHOUSE_MANAGERS,
     "resubmitReceiveDraft": SIGNED_IN,
     "savePickDraft": SIGNED_IN,
     "startPullRequestPick": SIGNED_IN,

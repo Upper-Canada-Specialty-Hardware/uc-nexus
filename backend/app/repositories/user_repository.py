@@ -1,9 +1,11 @@
 """Repository for Clerk user management via Clerk Backend API."""
 
+from typing import NamedTuple
+
 import httpx
 
 from app.config import CLERK_SECRET_KEY
-from app.demo import DEMO_MODE_METADATA_KEY, is_demo_company
+from app.demo import DEMO_MODE_METADATA_KEY, is_demo_company, may_use_demo_mode
 from app.errors import AppError, ConflictError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
@@ -78,13 +80,20 @@ def list_users() -> list[dict]:
     limit = 100
 
     while True:
-        resp = _client.get(
-            "/users",
-            headers=_headers(),
-            params={"limit": limit, "offset": offset, "order_by": "-created_at"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        # #1934: mapped as the single-user reads are - the roster backs the users page and every
+        # roster-backed field, and a raw httpx error there was an opaque "something went wrong".
+        try:
+            resp = _client.get(
+                "/users",
+                headers=_headers(),
+                params={"limit": limit, "offset": offset, "order_by": "-created_at"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as e:
+            raise AppError(
+                "Could not load the user list from Clerk; please try again.", code="CLERK_UNAVAILABLE"
+            ) from e
 
         for u in data:
             users.append(_user_summary(u))
@@ -119,25 +128,54 @@ def get_user(user_id: str) -> dict:
 
 
 def get_user_roles(user_id: str) -> list[str]:
-    """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set."""
-    resp = _client.get(f"/users/{user_id}", headers=_headers())
-    resp.raise_for_status()
-    u = resp.json()
-    metadata = u.get("public_metadata") or {}
-    return metadata.get("roles") or []
+    """Fetch a single Clerk user's roles from publicMetadata. Returns [] if none set. A Clerk failure
+    is CLERK_UNAVAILABLE, as every other metadata read's is (#1894)."""
+    return _public_metadata(user_id).get("roles") or []
+
+
+def _clerk_refusal(response: httpx.Response) -> tuple[str | None, str | None]:
+    """Clerk's own words for a refused write, and the field it names: its error body is
+    {"errors": [{"message", "long_message", "meta": {"param_name"}}]}. (None, None) when it has none."""
+    try:
+        first = (response.json().get("errors") or [None])[0] or {}
+    except (ValueError, AttributeError):
+        return None, None
+    message = first.get("long_message") or first.get("message")
+    field = (first.get("meta") or {}).get("param_name")
+    return message, field if message else None
+
+
+def _write_to_clerk(send) -> dict:
+    """Send one write to Clerk and answer its user payload. #1934: a raw `raise_for_status` made every
+    Clerk failure on a save an opaque 500. Clerk refusing the value itself (422 - a name it will not
+    take) is the admin's to fix, so it reads in Clerk's words; anything else is Clerk unavailable."""
+    try:
+        resp = send()
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 422:
+            message, field = _clerk_refusal(e.response)
+            if message:
+                raise ValidationError(message, field=field) from e
+        raise AppError("Could not save the change to Clerk; please try again.", code="CLERK_UNAVAILABLE") from e
+    except httpx.HTTPError as e:
+        raise AppError("Could not save the change to Clerk; please try again.", code="CLERK_UNAVAILABLE") from e
 
 
 def _merge_public_metadata(user_id: str, patch: dict) -> dict:
     """Merge keys into a Clerk user's publicMetadata via the /metadata endpoint (deep merge), so
     writing one key (roles) never wipes another (gpBuyerId) - PATCH /users/{id} would replace the
     whole object. Returns the updated user summary."""
-    resp = _client.patch(
-        f"/users/{user_id}/metadata",
-        headers=_headers(),
-        json={"public_metadata": patch},
+    return _user_summary(
+        _write_to_clerk(
+            lambda: _client.patch(
+                f"/users/{user_id}/metadata",
+                headers=_headers(),
+                json={"public_metadata": patch},
+            )
+        )
     )
-    resp.raise_for_status()
-    return _user_summary(resp.json())
 
 
 def update_user_roles(user_id: str, roles: list[str], expected_roles: list[str] | None = None) -> dict:
@@ -161,13 +199,15 @@ def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
     """Issue #240: admin-driven display-name change. first_name/last_name are top-level Clerk user
     fields (not metadata), so this never touches roles/gpBuyerId. Everything that shows a display
     name (useIdentity fullName, resolve_display_name for received_by) derives from these."""
-    resp = _client.patch(
-        f"/users/{user_id}",
-        headers=_headers(),
-        json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
+    return _user_summary(
+        _write_to_clerk(
+            lambda: _client.patch(
+                f"/users/{user_id}",
+                headers=_headers(),
+                json={"first_name": (first_name or "").strip(), "last_name": (last_name or "").strip()},
+            )
+        )
     )
-    resp.raise_for_status()
-    return _user_summary(resp.json())
 
 
 def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
@@ -217,9 +257,15 @@ def update_user_company(user_id: str, company: str | None) -> dict:
         # which leaves its real company where it is for when demo mode is turned off.
         raise ValidationError("DEMO is the demo company; turn on demo mode instead of assigning it.", field="company")
     patch: dict = {"company": cleaned}
-    previous = normalize_company(_public_metadata(user_id).get("company"))
+    metadata = _public_metadata(user_id)
+    previous = normalize_company(metadata.get("company"))
     if previous is not None and previous != cleaned:
         patch["gpBuyerId"] = None
+    if metadata.get(DEMO_MODE_METADATA_KEY) and not may_use_demo_mode(cleaned):
+        # #1658 / #1814: only an account working in a UBC company may be in demo mode, and the flag is
+        # what pins an account to DEMO whatever its company - so a move out of UBC, or a cleared company,
+        # takes it out of demo mode too, or it would keep reading UBC's copy from wherever it went.
+        patch[DEMO_MODE_METADATA_KEY] = None
     return _merge_public_metadata(user_id, patch)
 
 
@@ -240,11 +286,24 @@ def update_user_demo_mode(user_id: str, enabled: bool) -> dict:
     return _merge_public_metadata(user_id, {DEMO_MODE_METADATA_KEY: True if enabled else None})
 
 
-def get_user_tenancy(user_id: str) -> tuple[str | None, bool]:
-    """#1608: the account's company and whether it is in demo mode - two keys of one metadata object,
-    read together so a request that needs both makes one Clerk round trip."""
+class UserAccess(NamedTuple):
+    """What a request needs to authorize and scope its caller: three keys of one metadata object."""
+
+    roles: list[str]
+    company: str | None
+    demo_mode: bool
+
+
+def get_user_access(user_id: str) -> UserAccess:
+    """#1894: the account's roles, company and demo flag from one Clerk read. A scoped request needs all
+    three, and reading roles and the company apart made two `GET /users/{id}` calls in series on every
+    one of them."""
     metadata = _public_metadata(user_id)
-    return normalize_company(metadata.get("company")), bool(metadata.get(DEMO_MODE_METADATA_KEY))
+    return UserAccess(
+        roles=metadata.get("roles") or [],
+        company=normalize_company(metadata.get("company")),
+        demo_mode=bool(metadata.get(DEMO_MODE_METADATA_KEY)),
+    )
 
 
 def _public_metadata(user_id: str) -> dict:

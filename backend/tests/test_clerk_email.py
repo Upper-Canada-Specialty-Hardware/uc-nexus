@@ -284,6 +284,13 @@ def test_the_mailer_error_carries_its_code(senders):
     assert caught.value.code == "recipient_not_internal"
 
 
+def test_a_caller_with_its_own_retries_asks_for_one_try(senders):
+    senders["mailer_refuses"] = "hve_unavailable"
+    with pytest.raises(mailer.MailerError):
+        mailer.send(to=["bob@example.test"], subject="s", text="t", idempotency_key="k1", attempts=1)
+    assert len(senders["mailer"]) == 1
+
+
 # --- delivery, against the database -----------------------------------------------------------------
 
 
@@ -341,6 +348,16 @@ def test_a_mailer_outage_is_never_sent_around_it(senders, email):
 
     assert senders["elsewhere"] == []
     assert _receipt(email.email_id) is None
+
+
+def test_the_webhook_tries_the_mailer_once_and_leaves_the_retrying_to_clerk(senders, email):
+    """#1828: it runs inside the transaction holding the lock, so three slow tries held a connection."""
+    senders["mailer_refuses"] = "hve_unavailable"
+
+    with pytest.raises(clerk_email_delivery.DeliveryError):
+        clerk_email_delivery.deliver(email)
+
+    assert len(senders["mailer"]) == 1
 
 
 def test_a_failed_send_leaves_no_receipt_so_the_retry_sends(senders, email):

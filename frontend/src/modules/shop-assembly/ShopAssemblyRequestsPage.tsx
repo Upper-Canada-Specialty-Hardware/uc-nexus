@@ -46,7 +46,9 @@ import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
 import LoadError from '../../components/LoadError';
 import { dismissalLines } from './dismissals';
+import { appendById } from '../../utils/appendById';
 import {
+  HISTORY_PAGE_SIZE,
   PULL_STATUS_COLOR,
   PULL_STATUS_LABEL,
   STAGE_COLOR,
@@ -147,7 +149,7 @@ export default function ShopAssemblyRequestsPage() {
   const [openRequestId, setOpenRequestId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<
     | { kind: 'batch'; requestId: string; lines: BatchLineInput[]; openings: number; leftBehind: number }
-    | { kind: 'dismiss'; requestId: string; openings: number }
+    | { kind: 'dismiss'; requestId: string; openingNumbers: string[] }
     | { kind: 'reject'; requestId: string }
     | { kind: 'discard'; batchId: string; batchNumber: string }
     | null
@@ -164,14 +166,44 @@ export default function ShopAssemblyRequestsPage() {
     ? null
     : 'Allocating, dismissing, rejecting and discarding are the Shop Assembly Manager’s.';
 
-  const { data, loading, error, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
+  const paged = view !== 'PENDING';
+  const { data, loading, error, refetch, fetchMore } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
-    { variables: { status: view }, fetchPolicy: 'cache-and-network' },
+    {
+      variables: paged ? { status: view, limit: HISTORY_PAGE_SIZE, offset: 0, newestFirst: true } : { status: view },
+      fetchPolicy: 'cache-and-network',
+    },
   );
   const requests = useMemo(() => data?.shopAssemblyRequests ?? [], [data]);
 
-  // The pipeline, folded in: one count per rung, over the requests this view already holds. Not a
-  // second query - the stage is on every row, so the ladder is a reduction over the list.
+  // Where a Load more came back short, per tab: a full page that turns out to be the last offers no
+  // more, and a changed tab or a refetch back to the first page offers it again.
+  const [endAt, setEndAt] = useState<{ view: View; count: number } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const hasMore =
+    paged &&
+    requests.length >= HISTORY_PAGE_SIZE &&
+    !(endAt?.view === view && endAt.count === requests.length);
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: requests.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          shopAssemblyRequests: appendById(prev.shopAssemblyRequests ?? [], fetchMoreResult?.shopAssemblyRequests ?? []),
+        }),
+      });
+      const page = res.data?.shopAssemblyRequests ?? [];
+      const added = appendById(requests, page).length;
+      if (page.length < HISTORY_PAGE_SIZE) setEndAt({ view, count: added });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // The pipeline, folded in: one count per rung, over the requests this view already holds (the pages
+  // loaded so far, #1888). Not a second query - the stage is on every row, so the ladder is a reduction
+  // over the list.
   const stageCounts = useMemo(() => {
     const counts = new Map<RequestStage, number>();
     for (const req of requests) counts.set(req.stage as RequestStage, (counts.get(req.stage as RequestStage) ?? 0) + 1);
@@ -232,8 +264,15 @@ export default function ShopAssemblyRequestsPage() {
     if (pending.kind === 'batch') {
       createBatch({ variables: { input: { requestId: pending.requestId, lines: pending.lines } } });
     } else if (pending.kind === 'dismiss') {
+      // #1853: the openings the confirm counted, never "whatever is pending now" - a batch landed from
+      // another tab since would otherwise be swept up unseen. The server refuses any that are no
+      // longer waiting, and nothing is dismissed.
       dismissOpenings({
-        variables: { requestId: pending.requestId, openingNumbers: null, reason: dismissReason.trim() || null },
+        variables: {
+          requestId: pending.requestId,
+          openingNumbers: pending.openingNumbers,
+          reason: dismissReason.trim() || null,
+        },
       });
     } else if (pending.kind === 'reject') {
       const reason = rejectReason.trim();
@@ -267,7 +306,7 @@ export default function ShopAssemblyRequestsPage() {
     }
     if (confirm.kind === 'dismiss') {
       return {
-        title: `Dismiss ${plural(confirm.openings, 'opening')}?`,
+        title: `Dismiss ${plural(confirm.openingNumbers.length, 'opening')}?`,
         message:
           'These openings are not getting their hardware through this request. Nothing is released - they were ' +
           'never holding anything - and the request is finished with.',
@@ -465,9 +504,9 @@ export default function ShopAssemblyRequestsPage() {
                                 pendingOpenings.length - new Set(lines.map((l) => l.openingNumber)).size,
                             })
                           }
-                          onDismissRemaining={() => {
+                          onDismissRemaining={(openingNumbers) => {
                             setDismissReason('');
-                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length });
+                            setConfirm({ kind: 'dismiss', requestId: req.id, openingNumbers });
                           }}
                           onReject={() => setConfirm({ kind: 'reject', requestId: req.id })}
                         />
@@ -570,6 +609,17 @@ export default function ShopAssemblyRequestsPage() {
           })}
         </Stack>
       </StaggerList>
+
+      {hasMore && (
+        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+            Showing the newest {requests.length} - older requests exist.
+          </Typography>
+          <Button size="small" variant="outlined" onClick={handleLoadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+        </Box>
+      )}
 
       <Dialog
         open={confirm?.kind === 'dismiss'}

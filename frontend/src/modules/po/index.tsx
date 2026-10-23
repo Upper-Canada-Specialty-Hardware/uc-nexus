@@ -57,6 +57,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import type { PoolKind } from '../../types/poolKind';
+import type { PurchaseOrderProject } from '../../types/project';
 import { PoolKindChip } from '../../components/PoolKind';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -129,13 +130,14 @@ export interface PODocumentData {
   poId: string;
   vendorAddress: string | null;
   buyerName: string | null;
-  currency: string;
+  // #1885: null until the buyer picks or types one, so the dialog keeps prefilling GP's.
+  currency: string | null;
   shipTo: string | null;
   shippingMethod: string | null;
   quotationNumber: string | null;
-  freight: number;
-  miscellaneous: number;
-  taxAmount: number;
+  freight: number | null;
+  miscellaneous: number | null;
+  taxAmount: number | null;
   taxLabel: string;
   tariffAmount: number;
   /** #1236: GP's trade discount, taken off the order total. Null until a document saves one. */
@@ -158,6 +160,9 @@ export interface PurchaseOrder {
   // True when every one of this PO's lines is a NEXUS REGISTERED LINE.
   nexusRegistered: boolean;
   projectId: string | null;
+  // #1877: the PO's own project, archived included. Optional because not every document that builds
+  // a PurchaseOrder selects it.
+  project?: PurchaseOrderProject | null;
   // #832: Stock or Overhead - which half of the pool a PO with no project receives into. Optional
   // because not every document that builds a PurchaseOrder selects it.
   poolKind?: PoolKind;
@@ -185,6 +190,11 @@ export interface PurchaseOrder {
   receiveRecords: ReceiveRecord[];
   documents: PODocumentInfo[];
   documentData: PODocumentData | null;
+  // #1950: a draft GP already made a PO for that Nexus never recorded: the claiming attempt's key, which
+  // Register reuses to finish it, and GP's number for it. Null otherwise; optional, as not every document
+  // that builds a PurchaseOrder selects them.
+  registeringKey?: string | null;
+  registeringGpPoNumber?: string | null;
 }
 
 // One register row (gp-owned-po mirror). Slim on purpose - a lineItemCount scalar, not the lines.
@@ -254,8 +264,9 @@ const STAT_CARD_GROUPS: { caption: string; cards: StatCard[] }[] = [
       { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
       { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
       { label: 'Closed', key: 'closed', status: 'CLOSED' },
-      // Mirror-CANCELLED rows (deleted_at NULL) still count into Total, so without a segment for them
-      // the strip would stop summing to Total and those rows would be unreachable by any status filter.
+      // #1886: every cancel also soft-deletes the PO, so a cancelled PO is out of Total and the
+      // unfiltered table, as a deleted one is. This segment is the one place it is counted and listed:
+      // the backend lets soft-deleted CANCELLED rows through for this status alone.
       { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
     ],
   },
@@ -356,11 +367,21 @@ interface POTableRowProps {
   onOpen: () => void;
   // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
+  // #1948: that write failed after GP took it, or may have, and waits for its Retry.
+  gpWriteHeld?: boolean;
   // #851: one of the POs the import wizard just created; tinted for a moment on arrival.
   highlighted?: boolean;
 }
 
-function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, highlighted = false }: POTableRowProps) {
+function POTableRow({
+  po,
+  projectNumber,
+  projectName,
+  onOpen,
+  gpWriteQueued,
+  gpWriteHeld = false,
+  highlighted = false,
+}: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   // #701: where a PO raised in GP carries no vendor, or no document date, the cell says so in plain
   // words. A bare dash left the reader unable to tell an empty field in GP from Nexus failing to
@@ -428,10 +449,19 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
       <TableCell sx={hugSx}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
           <Chip label={formatPoStatus(po.status)} color={poStatusChipColor(po.status)} size="small" />
-          {gpWriteQueued && (
-            <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
-              <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+          {gpWriteHeld ? (
+            <Tooltip
+              title="GP took this registration, or may have, but it was not recorded here. Finish it with Retry under Held PO registrations."
+              arrow
+            >
+              <Chip label="GP registration held" color="error" size="small" variant="outlined" />
             </Tooltip>
+          ) : (
+            gpWriteQueued && (
+              <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
+                <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+              </Tooltip>
+            )
           )}
         </Box>
       </TableCell>
@@ -540,26 +570,39 @@ function POListPage() {
   // server to registrations still waiting (#1223): the newest 200 of every kind used to push an older
   // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
   // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
-  const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
-    GET_GP_OUTBOX,
-    {
-      variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 },
-      fetchPolicy: 'cache-and-network',
-      pollInterval: 15_000,
-    },
-  );
-  const queuedPoIds = useMemo(() => {
-    const ids = new Set<string>();
+  // #1948: a FAILED registration GP took, or may have, holds its draft as well (holdsDraft says which), so
+  // it lights the same hold - otherwise the draft was free to cancel or register again. The server picks
+  // the holding rows (holdingDrafts) rather than this reading the newest 200 of every status, where the
+  // FAILED rows nothing holds could pile up and push a held one off the list.
+  const { data: outboxData } = useQuery<{
+    gpOutbox: { id: string; entityKey: string; status: string; holdsDraft?: boolean | null }[];
+  }>(GET_GP_OUTBOX, {
+    variables: { holdingDrafts: true, limit: 500 },
+    fetchPolicy: 'cache-and-network',
+    pollInterval: 15_000,
+  });
+  const { queuedPoIds, heldPoIds } = useMemo(() => {
+    const queued = new Set<string>();
+    const held = new Set<string>();
     for (const entry of outboxData?.gpOutbox ?? []) {
-      if (entry.status !== 'PENDING' && entry.status !== 'IN_FLIGHT') continue;
-      if (entry.entityKey?.startsWith('po:')) ids.add(entry.entityKey.slice(3));
+      if (!entry.entityKey?.startsWith('po:')) continue;
+      const poId = entry.entityKey.slice(3);
+      if (entry.status === 'PENDING' || entry.status === 'IN_FLIGHT') queued.add(poId);
+      else if (entry.status === 'FAILED' && entry.holdsDraft) held.add(poId);
     }
-    return ids;
+    // A held draft is held for everything a queued one is; only the chip's words differ.
+    for (const poId of held) queued.add(poId);
+    return { queuedPoIds: queued, heldPoIds: held };
   }, [outboxData]);
 
   // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
   // project's POs, and changing the scope re-asks. The origin filter narrows it the same way (#1358).
-  const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
+  const {
+    data: statsData,
+    loading: statsLoading,
+    error: statsError,
+    refetch: refetchStats,
+  } = useQuery<{
     poStatistics: POStatistics;
   }>(GET_PO_STATISTICS, {
     variables: { projectId: projectId || null, origin: origin === 'ALL' ? null : origin },
@@ -619,6 +662,9 @@ function POListPage() {
   const [syncGpPos, { loading: syncing }] = useMutation(SYNC_GP_POS);
 
   const stats = statsData?.poStatistics;
+  // #1847: a failed stats read has no counts to show; every segment read 0, which says "no POs here".
+  const statsFailed = statsError !== undefined && !stats;
+  const countsUnknown = statsLoading || statsFailed;
   const rows = useMemo(() => pageData?.purchaseOrdersPage.rows ?? [], [pageData]);
   const totalCount = pageData?.purchaseOrdersPage.totalCount ?? 0;
   // The scope chip's label, read off the page (#1238) so an archived project - or one with no POs on
@@ -842,7 +888,7 @@ function POListPage() {
                   {group.cards.map((card, i) => {
                     const active = isStatusCardActive({ statuses }, card.status);
                     const count = stats?.[card.key] ?? 0;
-                    const zero = !statsLoading && count === 0;
+                    const zero = !countsUnknown && count === 0;
                     return (
                       <StaggerItem key={card.key} style={{ display: 'flex' }}>
                         <ButtonBase
@@ -876,7 +922,7 @@ function POListPage() {
                               opacity: zero ? 0.6 : 1,
                             }}
                           >
-                            {statsLoading ? '–' : <AnimatedNumber value={count} />}
+                            {countsUnknown ? '–' : <AnimatedNumber value={count} />}
                           </Typography>
                           <Typography
                             component="span"
@@ -898,6 +944,24 @@ function POListPage() {
               </Box>
             ))}
             {/* Sits in the strip's own row, beside the boxes it explains, so it costs no height. */}
+            {statsFailed && (
+              <Typography
+                variant="caption"
+                color="error"
+                role="status"
+                sx={{ alignSelf: 'flex-end', pb: 1, minWidth: 0 }}
+              >
+                Couldn&apos;t load the counts.{' '}
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => void refetchStats().catch(() => undefined)}
+                  sx={{ minWidth: 0, p: 0, verticalAlign: 'baseline', textDecoration: 'underline' }}
+                >
+                  Retry
+                </Button>
+              </Typography>
+            )}
             {searchingAllStatuses && (
               <Typography
                 variant="caption"
@@ -1031,6 +1095,7 @@ function POListPage() {
                 projectName={projectNameOf(po)}
                 onOpen={() => handleOpenPO(po.id)}
                 gpWriteQueued={queuedPoIds.has(po.id)}
+                gpWriteHeld={heldPoIds.has(po.id)}
                 highlighted={highlightIds.has(po.id)}
               />
             ))}
@@ -1049,6 +1114,7 @@ function POListPage() {
             onRefetch={handleRefetch}
             relayConnected={relayConnected}
             registrationQueued={queuedPoIds.has(selectedPO.id)}
+            registrationHeld={heldPoIds.has(selectedPO.id)}
           />
         ) : (
           <Modal open title="Purchase Order" onClose={handleCloseModal} maxWidth="lg">

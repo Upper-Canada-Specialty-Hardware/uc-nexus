@@ -21,6 +21,7 @@ as a SCRAM hash in Postgres, never in a stored column and never in a SQL stateme
 import base64
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import datetime
@@ -29,9 +30,12 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
 from app import config
+from app.auth import NEXUS_ADMIN_ROLE
 from app.database import SessionLocal
 from app.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.models.pg_direct_access import PgDirectAccess, PgDirectAccessAudit
+
+logger = logging.getLogger(__name__)
 
 # The group every minted login joins. NOLOGIN itself; it only carries the DML grants.
 _GROUP_ROLE = "nexus_rw"
@@ -59,6 +63,10 @@ _APP_ROLE = (make_url(config.DATABASE_URL).username or "postgres").lower()
 # Never manageable from this page, whatever the registry says: the superuser, the app's own account,
 # and the shared group. The page can never be aimed at the account the backend itself runs as.
 _DENYLIST = {"postgres", _GROUP_ROLE} | {_APP_ROLE}
+
+# The tables the group's blanket DML grant is taken back off (#1867): the login registry, its audit, and
+# Alembic's version table. Plain lowercase names, so double-quoting them is all the quoting they need.
+_GROUP_DENIED_TABLES = (PgDirectAccess.__tablename__, PgDirectAccessAudit.__tablename__, "alembic_version")
 
 
 # --- identifiers, passwords, connection strings --------------------------------------------------
@@ -191,6 +199,62 @@ def _sweep_role(conn, role: str) -> None:
     conn.exec_driver_sql(f"DROP ROLE IF EXISTS {_q(role)}")
 
 
+def _group_member_roles(conn) -> list[tuple[str, bool]]:
+    """Every member of nexus_rw, login or not, with whether it is a superuser. Empty before the group
+    exists (a first-ever mint)."""
+    rows = conn.execute(
+        text(
+            """
+            SELECT r.rolname, r.rolsuper
+              FROM pg_roles r
+              JOIN pg_auth_members m ON m.member = r.oid
+              JOIN pg_roles g ON g.oid = m.roleid
+             WHERE g.rolname = :grp
+            """
+        ),
+        {"grp": _GROUP_ROLE},
+    ).all()
+    return [(row[0], bool(row[1])) for row in rows]
+
+
+def _app_database_count(conn) -> int:
+    """How many databases besides `postgres` this cluster holds."""
+    return conn.execute(
+        text("SELECT count(*) FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'")
+    ).scalar_one()
+
+
+def _sweep_unlisted_members(*, actor_clerk_id: str) -> list[str]:
+    """Sweep every nexus_rw member the registry has no live row for, and audit each as a REVOKE with no
+    target (#1865).
+
+    Roles are cluster-level, so a data reset that dropped the registry left its logins alive in the
+    group with nothing listing them, and revoke refuses a role the registry does not know. Run before
+    `_ensure_group` re-grants the group, so an orphan is gone before it is handed DML on the rebuilt
+    tables. The denylist (postgres, the app's own role, the group), a superuser and a name this page
+    could never have minted are left alone: this only ever drops what looks like one of our logins."""
+    with SessionLocal() as session:
+        conn = session.connection()
+        if _app_database_count(conn) > 1:
+            # Roles are the cluster's, the registry is this database's: on a cluster another Nexus database
+            # shares, a login this registry doesn't list may be that one's, live. Swept only where this
+            # registry is the only one that can list a member.
+            logger.warning("db access: the cluster holds more than one database, so no unlisted login is swept")
+            return []
+        listed = set(session.scalars(select(PgDirectAccess.db_role).where(PgDirectAccess.revoked_at.is_(None))).all())
+        swept = []
+        for role, is_super in _group_member_roles(conn):
+            if role in listed or role in _DENYLIST or is_super or not _ROLE_NAME_RE.fullmatch(role):
+                continue
+            _sweep_role(conn, role)
+            session.add(
+                PgDirectAccessAudit(actor_clerk_id=actor_clerk_id, action="REVOKE", db_role=role, target_clerk_id=None)
+            )
+            swept.append(role)
+        session.commit()
+    return swept
+
+
 # --- group setup ---------------------------------------------------------------------------------
 
 
@@ -231,7 +295,18 @@ def _ensure_group() -> None:
         conn.exec_driver_sql(
             f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {grp}"
         )
+        # After the blanket grant, so every re-run takes them back.
+        _revoke_bookkeeping_tables(conn)
         session.commit()
+
+
+def _revoke_bookkeeping_tables(conn) -> None:
+    """#1867: the group has no access to the tables a login must never write - the registry and its audit
+    (a login could list itself, or erase who handed it out) and the migration table. The default
+    privileges reach only tables made later. Run by a mint and by a rotate, so a deployment whose group
+    was granted before this takes it back without waiting for somebody's next mint."""
+    denied = ", ".join(f'public."{t}"' for t in _GROUP_DENIED_TABLES)
+    conn.exec_driver_sql(f"REVOKE ALL ON TABLE {denied} FROM {_q(_GROUP_ROLE)}")
 
 
 # --- guards --------------------------------------------------------------------------------------
@@ -263,13 +338,16 @@ def _display_name(user: dict | None) -> str | None:
 def mint(clerk_user_id: str, *, actor_clerk_id: str) -> dict:
     """Mint a login for a Clerk user and return its connection strings once.
 
-    Ensures the group, refuses if the user already has a live grant, sweeps any orphan the deterministic
-    name would collide with, then creates + configures the role and writes the registry row and a MINT
-    audit event - the role DDL and the registry insert in ONE transaction, so a lost race rolls the
-    role back with the row and leaves no orphan."""
+    Sweeps every group member the registry does not list, ensures the group, refuses if the user already
+    has a live grant, sweeps any orphan the deterministic name would collide with, then creates +
+    configures the role and writes the registry row and a MINT audit event - the role DDL and the
+    registry insert in ONE transaction, so a lost race rolls the role back with the row and leaves no
+    orphan."""
     _require_enabled()
     role = _derive_role_name(clerk_user_id)
     _assert_manageable(role)
+    # The sweep first: the grants below reach every member of the group, orphans included (#1865).
+    _sweep_unlisted_members(actor_clerk_id=actor_clerk_id)
     _ensure_group()
 
     password = _generate_password()
@@ -348,12 +426,29 @@ def list_admins(roster: list[dict]) -> list[dict]:
                     "display_name": _display_name(u),
                     "email": u.get("email") if u else None,
                     "clerk_missing": u is None,
+                    # #1866: the login outlives its holder losing UC Nexus Admin, the role it was granted
+                    # for (#729). Flagged, not revoked - whether it goes on its own awaits a ruling. A user
+                    # gone from Clerk is already flagged by clerk_missing.
+                    "lost_admin_role": u is not None and NEXUS_ADMIN_ROLE not in (u.get("roles") or []),
                     "active": r.db_role in live_roles,
                     "created_at": r.created_at,
                     "last_rotated_at": r.last_rotated_at,
                 }
             )
         return result
+
+
+def live_holder(db_role: str) -> str | None:
+    """The Clerk user a live login belongs to, or None when the registry has no live row for it."""
+    _require_enabled()
+    _assert_manageable(db_role)
+    with SessionLocal() as session:
+        return session.scalar(
+            select(PgDirectAccess.clerk_user_id).where(
+                PgDirectAccess.db_role == db_role,
+                PgDirectAccess.revoked_at.is_(None),
+            )
+        )
 
 
 def rotate(db_role: str, *, actor_clerk_id: str) -> dict:
@@ -376,6 +471,7 @@ def rotate(db_role: str, *, actor_clerk_id: str) -> dict:
         _assert_not_superuser(conn, db_role)
         if not _is_group_member(conn, db_role):
             raise ConflictError("That role is not a live nexus_rw member. Revoke it and re-mint instead.")
+        _revoke_bookkeeping_tables(conn)
 
         password = _generate_password()
         verifier = _scram_sha256_verifier(password)

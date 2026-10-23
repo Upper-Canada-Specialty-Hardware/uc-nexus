@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.errors import ConflictError, InventoryShortfallError, ValidationError
 from app.models.enums import (
+    NotificationType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -26,6 +27,7 @@ from app.models.enums import (
 )
 from app.models.inventory import InventoryLocation
 from app.models.inventory_reservation import InventoryReservation
+from app.models.notification import Notification
 from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shipping_out_request import ShippingOutRequest
@@ -38,8 +40,9 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from app.repositories import warehouse as warehouse_repository
+from app.services import notification_service
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_pull, batch_request, with_schedule
+from tests.shop_assembly_helpers import batch_pull, batch_request, schedule_for, shop_classifications, with_schedule
 
 # --- fixtures / helpers ------------------------------------------------------------------------
 
@@ -496,13 +499,16 @@ def test_a_zero_line_shipping_request_is_refused(db_session):
 # --- schedule re-upload ------------------------------------------------------------------------
 
 
-def _reupload(session, project, opening_numbers):
+def _reupload(session, project, opening_numbers, *, keep=None):
+    """A replacing re-upload of these openings. `keep` is request lines whose hardware the new schedule
+    still lists, as shop hardware; by default it lists none."""
     return import_repository.finalize_import_session(
         session,
         {
             "project_id": str(project.id),
             "openings": [{"opening_number": n} for n in opening_numbers],
-            "hardware_items": [],
+            "hardware_items": schedule_for(keep or []),
+            "classifications": shop_classifications(keep or []),
             "replace_schedule": True,
         },
     )
@@ -579,6 +585,72 @@ def test_reupload_closes_out_a_part_batched_request_that_lost_the_rest(db_sessio
     assert _reserved_total(db_session, project.id) == 3
 
 
+def _shop_rejections(session, project) -> list[Notification]:
+    return list(
+        session.scalars(
+            select(Notification).where(
+                Notification.project_id == project.id,
+                Notification.type == NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED,
+            )
+        )
+    )
+
+
+def test_reupload_that_rejects_a_request_names_the_openings_and_tells_the_shop(db_session):
+    """#1955: the auto-reject said nothing to anybody, and the dropped openings were gone from the request
+    with nothing naming them. Now its note names them, and the shop is told as a manager's reject tells it."""
+    project = _make_project(db_session)
+    sar = _finalize_sar(
+        db_session,
+        project,
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1},
+        ],
+    )["shop_assembly_request"]
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.REJECTED
+    assert "removed openings A01, A02" in sar.integrity_note
+    assert "rejected" in sar.integrity_note
+    (notice,) = _shop_rejections(db_session, project)
+    assert notice.recipient_role == notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE
+    assert notice.message == (
+        f"Hardware Schedule Import rejected shop assembly request {sar.request_number} - {sar.rejection_reason}"
+    )
+
+
+def test_reupload_that_closes_out_a_request_names_the_openings_it_dropped(db_session):
+    """#1955: the close-out skipped the note, so the request read Done with no word of the opening that
+    never went. No notice: a close-out is the ordinary end of a worked request."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _finalize_sar(
+        db_session,
+        project,
+        items=[
+            {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+            {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
+        ],
+    )["shop_assembly_request"]
+    db_session.flush()
+    batch_request(db_session, sar.id, openings=["A01"])
+    db_session.flush()
+
+    _reupload(db_session, project, ["A01"])
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.APPROVED
+    assert "removed opening A02" in sar.integrity_note
+    assert "closed out" in sar.integrity_note
+    assert _shop_rejections(db_session, project) == []
+
+
 def test_reupload_rejects_a_request_whose_only_batch_was_cancelled(db_session):
     """#1156: a cancelled batch sent nothing to the shop. Its openings came back to pending, so when
     the re-upload drops them nothing about the request genuinely happened - it is rejected, not
@@ -617,6 +689,33 @@ def test_reupload_flags_a_surviving_request(db_session):
     assert sar.status == ShopAssemblyRequestStatus.PENDING
     assert sar.integrity_note is not None
     assert "re-uploaded" in sar.integrity_note
+
+
+def test_batching_clears_the_schedule_changed_note_which_asks_for_a_review_before_batching(db_session):
+    """#1855: a shop request has no accept step, so the note asks for the review before batching - and
+    the batch, the manager acting on it, clears it instead of leaving it on the request for good."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    items = [
+        {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 3},
+        {"opening_number": "A02", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 5},
+    ]
+    sar = _finalize_sar(db_session, project, items=items)["shop_assembly_request"]
+    db_session.flush()
+
+    # The same hardware again: a batch is held to the opening's schedule now (#1954).
+    _reupload(db_session, project, ["A01", "A02"], keep=items)
+    db_session.flush()
+    db_session.refresh(sar)
+    assert sar.integrity_note.endswith("Review it before batching.")
+    assert "accept" not in sar.integrity_note
+
+    batch_request(db_session, sar.id, openings=["A01"])  # A02 still waiting: the note goes all the same
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.PENDING
+    assert sar.integrity_note is None
 
 
 def test_reupload_leaves_a_batched_openings_pull_alone(db_session):
@@ -686,6 +785,111 @@ def test_reupload_rebuilds_a_shipping_requests_loose_claim(db_session):
     assert _reserved_total(db_session, project.id) == 2
     assert [i.opening_number for i in req.items] == ["A01"]
     assert req.status == ShippingOutRequestStatus.PENDING
+
+
+def _finalize_shipping_requests(session, project, count, *, opening_number="A01", qty=2):
+    """`count` shipping-out requests raised in one finalize, each for `qty` of HG-100 on one opening."""
+    return import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": opening_number}],
+            "hardware_items": [],
+            "shipping_out_pr_drafts": [
+                {
+                    "request_number": f"SHIP-{uuid.uuid4().hex[:6]}",
+                    "requested_by": "importer",
+                    "items": [
+                        {
+                            "opening_number": opening_number,
+                            "hardware_category": "HINGE",
+                            "product_code": "HG-100",
+                            "requested_quantity": qty,
+                        }
+                    ],
+                }
+                for _ in range(count)
+            ],
+        },
+    )["shipping_out_requests"]
+
+
+def test_reupload_that_rejects_a_shipping_request_names_the_openings_and_tells_the_requester(db_session):
+    """#1955: the auto-reject released the claim and said nothing - no note naming the openings that went,
+    and no word to the requester. Now it reads, and notifies, as a manager's reject does (#972)."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    (req,) = _finalize_shipping_requests(db_session, project, 1)
+    req.created_by_user_id = "user_requester"
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(req)
+
+    assert req.status == ShippingOutRequestStatus.REJECTED
+    assert "removed opening A01" in req.integrity_note
+    assert "rejected" in req.integrity_note
+    assert _reserved_total(db_session, project.id) == 0
+    (notice,) = db_session.scalars(
+        select(Notification).where(
+            Notification.project_id == project.id,
+            Notification.type == NotificationType.SHIPPING_REQUEST_REJECTED,
+        )
+    ).all()
+    assert (notice.recipient_user_id, notice.recipient_role) == ("user_requester", None)
+    assert notice.message == (
+        f"For {req.created_by}: Hardware Schedule Import rejected shipping request {req.request_number} - "
+        f"{req.rejection_reason}"
+    )
+
+
+def test_reupload_locks_the_live_shipping_requests_before_reading_them(db_session, monkeypatch):
+    """#1852: accept locks the request row and then mints its pull, so the re-upload takes the same lock
+    before it reads what is pending. Unlocked, an accept committing in between had its APPROVED written
+    over with REJECTED and the reservations its pull relies on released. Every live request is locked -
+    an accepted one too, since the re-upload flags it - and a rejected one is left alone."""
+    from app.services import locking
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    pending, accepted, rejected = _finalize_shipping_requests(db_session, project, 3)
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, accepted.id, "manager")
+    shipping_repository.reject_shipping_out_request(db_session, rejected.id, "manager", "not needed")
+    db_session.flush()
+    seen: list[tuple[str, list]] = []
+    real = locking.lock_rows
+
+    def spy(session, model_class, ids):
+        seen.append((model_class.__name__, list(ids)))
+        return real(session, model_class, ids)
+
+    monkeypatch.setattr(locking, "lock_rows", spy)
+
+    _reupload(db_session, project, ["A01"])
+
+    (locked,) = [ids for name, ids in seen if name == "ShippingOutRequest"]
+    assert set(locked) == {pending.id, accepted.id}
+
+
+def test_reupload_only_flags_a_shipping_request_accepted_before_it_ran(db_session):
+    """#1852: what the re-upload reads under the lock is what an accept committed, so an accepted request
+    is never rejected or stripped of the claim its pull relies on - even with every line's opening gone."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    (req,) = _finalize_shipping_requests(db_session, project, 1, qty=4)
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "manager")
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(req)
+
+    assert req.status == ShippingOutRequestStatus.APPROVED
+    assert req.integrity_note is not None
+    assert _reserved_total(db_session, project.id) == 4
 
 
 # --- self-coverage at the repository level ------------------------------------------------------

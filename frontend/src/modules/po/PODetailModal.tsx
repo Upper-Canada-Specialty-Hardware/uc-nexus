@@ -20,6 +20,7 @@ import {
   DialogActions,
   CircularProgress,
   Tooltip,
+  Alert,
 } from '@mui/material';
 import { Trash2, Download, Upload, FileText, Mail, Pencil } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
@@ -32,13 +33,13 @@ import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR, GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
-import { GET_PRIOR_ORDER_AS_VALUES, GET_PROJECTS } from '../../graphql/shared';
-import type { Project } from '../../types/project';
+import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
-import { poDocumentGate } from './poDocumentGate';
+import { canUploadPoDocuments, poDocumentGate } from './poDocumentGate';
+import { parseUnitCost, unitCostProblem } from './unitCost';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -65,6 +66,8 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
   MISCELLANEOUS: 'Miscellaneous',
   GENERATED_PO: 'Generated PO',
+  // Receiving files the delivery's packing slip as a PO document (#1902).
+  PACKING_SLIP: 'Packing Slip',
 };
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -87,6 +90,14 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** A unit cost box that can't be saved as typed: not a whole number (#1912), negative, past the cent,
+ *  which GP refuses at the line (#1394, #1837), or past what the line's cost column holds (#1936). Empty
+ *  is left alone - the line keeps its cost. */
+function unitCostInvalid(val: string): boolean {
+  if (val === '') return false;
+  return unitCostProblem(val) !== null;
+}
+
 // --- Props ---
 
 interface PODetailModalProps {
@@ -100,6 +111,8 @@ interface PODetailModalProps {
   // #858: a PO REGISTRATION for this PO is waiting on PENDING GP WRITES. The PO page already joins the
   // queue onto its rows, so it hands the answer down rather than this modal reading the queue again.
   registrationQueued?: boolean;
+  /** #1948: the registration failed but GP took it, or may have - it needs Retry, it won't post by itself. */
+  registrationHeld?: boolean;
 }
 
 // --- Component ---
@@ -123,6 +136,7 @@ export default function PODetailModal({
   onRefetch,
   relayConnected: relayConnectedProp,
   registrationQueued = false,
+  registrationHeld = false,
 }: PODetailModalProps) {
   const { showToast } = useToast();
   const apollo = useApolloClient();
@@ -297,6 +311,7 @@ export default function PODetailModal({
   };
 
   const handleSave = async () => {
+    if (unitCostBlocksSave) return;
     setPoNumberError('');
 
     // Save line item changes (alias + unit cost)
@@ -314,15 +329,15 @@ export default function PODetailModal({
       .filter((li) => {
         const editVal = unitCostEdits[li.id];
         if (editVal === undefined || editVal === '') return false;
-        const parsed = parseFloat(editVal);
-        // A $0 no-charge line is valid, as it is when the PO is drafted and registered (#1172).
-        return !isNaN(parsed) && parsed >= 0 && parsed !== li.unitCost;
+        // #1912: read whole - parseFloat saved a typed "1,250.00" as 1 and "1250abc" as 1250. A $0
+        // no-charge line is valid, as it is when the PO is drafted and registered (#1172).
+        return !unitCostInvalid(editVal) && parseUnitCost(editVal) !== li.unitCost;
       })
       .map((li) =>
         updateUnitCost({
           variables: {
             id: li.id,
-            unitCost: parseFloat(unitCostEdits[li.id]),
+            unitCost: parseUnitCost(unitCostEdits[li.id]),
           },
         }),
       );
@@ -571,7 +586,13 @@ export default function PODetailModal({
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
   // #1595: a queued registration posts the lines as they were when it was queued, so they are held too.
-  const canEditItems = po.status === 'DRAFT' && !registrationQueued;
+  // #1950: and a draft GP already made a PO for that Nexus never recorded - the server refuses its edits,
+  // and Register finishes it with the form as it was registered.
+  const canEditItems = po.status === 'DRAFT' && !registrationQueued && !po.registeringKey;
+  // #1837: a line whose cost can't be sent holds the whole save. The line updates go out together before
+  // the header, so letting the valid ones through saved half the edit and dropped the rest unsaid.
+  const unitCostBlocksSave =
+    editing && canEditItems && po.lineItems.some((li) => unitCostInvalid(unitCostEdits[li.id] ?? ''));
   const poNumberLocked = po.origin === 'GP' || po.status !== 'DRAFT';
   // #1488: once receiving has started on an open PO, only the expected date (the vendor's answer for
   // the rest) and the notes still change; the server refuses the others.
@@ -593,10 +614,9 @@ export default function PODetailModal({
     skip: !canEditItems || distinctProductCodes.length === 0,
   });
 
-  // #960: the job a project PO is for, by name and number. The same projects read every picker
-  // makes, so it is normally already cached; skipped on a PO with no project.
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !po.projectId });
-  const project = po.projectId ? projectsData?.projects.find((p) => p.id === po.projectId) : undefined;
+  // #960: the job a project PO is for, by name and number. Off the PO itself (#1877): the projects
+  // list every picker reads leaves archived jobs out, so an archived job's PO showed no project.
+  const project = po.projectId ? po.project : null;
   const projectLabel = project
     ? `${project.description || project.projectId} #${project.projectId}`
     : null;
@@ -635,8 +655,7 @@ export default function PODetailModal({
             ...col,
             renderCell: (params) => {
               const val = unitCostEdits[params.row.id as string] ?? String(params.value ?? '');
-              const parsed = parseFloat(val);
-              const isInvalid = val !== '' && (isNaN(parsed) || parsed < 0);
+              const isInvalid = unitCostInvalid(val);
               return (
                 <TextField
                   size="small"
@@ -668,7 +687,7 @@ export default function PODetailModal({
   // snapshot and writes it back, so an edit made meanwhile never reaches GP. Notes keep their own path.
   const heldForQueuedRegistration = po.status === 'DRAFT' && registrationQueued;
   const canEdit =
-    (po.status === 'DRAFT' && !registrationQueued) ||
+    (po.status === 'DRAFT' && !registrationQueued && !po.registeringKey) ||
     po.status === 'GP_REGISTERED' ||
     po.status === 'VENDOR_CONFIRMED' ||
     po.status === 'PARTIALLY_RECEIVED';
@@ -676,7 +695,7 @@ export default function PODetailModal({
   // Adjusted during render (guarded), the way React recommends for state derived from props.
   if (editing && !canEdit) setEditing(false);
 
-  const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
+  const canUploadDocs = canUploadPoDocuments(po);
   // #500: the PO can be sent once it exists in GP and there is a generated document to attach.
   // Both refusals are also enforced server-side; this only keeps the button from being offered when
   // pressing it could only produce a message saying no.
@@ -693,7 +712,8 @@ export default function PODetailModal({
   // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
   // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound. A queued
   // registration is on its way into GP, so it is held the same way (#1166).
-  const canCancel = po.status === 'DRAFT' && !registrationQueued;
+  // #1950: nor one GP already made a PO for that Nexus never recorded - the server refuses it.
+  const canCancel = po.status === 'DRAFT' && !registrationQueued && !po.registeringKey;
 
   // #858: the supplier PO document reads its details from GP, so it is offered only for a PO GP
   // holds and has been read back from - hidden on a Nexus Draft, held while the registration or its
@@ -719,7 +739,7 @@ export default function PODetailModal({
           <Button
             variant="contained"
             onClick={handleSave}
-            disabled={updateLoading}
+            disabled={updateLoading || unitCostBlocksSave}
           >
             {updateLoading ? 'Saving...' : 'Save Changes'}
           </Button>
@@ -766,7 +786,14 @@ export default function PODetailModal({
             </Button>
           )}
           {heldForQueuedRegistration && (
-            <Tooltip title="This PO's registration is queued for GP, so it can't be changed until it posts." arrow>
+            <Tooltip
+              title={
+                registrationHeld
+                  ? "GP took this PO's registration, or may have, but it wasn't recorded here, so it can't be changed. Finish it with Retry under Held PO registrations."
+                  : "This PO's registration is queued for GP, so it can't be changed until it posts."
+              }
+              arrow
+            >
               <span>
                 <Button variant="outlined" disabled>
                   Edit
@@ -851,6 +878,15 @@ export default function PODetailModal({
             </Box>
           )}
         </Box>
+
+        {/* #1950: GP answered this draft's registration and the save failed, with no held write to finish
+            it. Reopening Register reuses the attempt's key, which finishes it without a second PO. */}
+        {po.status === 'DRAFT' && po.registeringKey && (
+          <Alert severity="warning" sx={{ mb: 2 }} data-testid="unrecorded-registration">
+            GP already made PO {po.registeringGpPoNumber} for this draft, but it was not recorded here. Register
+            in GP finishes recording it - nothing is sent to GP again.
+          </Alert>
+        )}
 
         {/* Info Fields */}
         {editing ? (
@@ -1307,9 +1343,11 @@ export default function PODetailModal({
         open={confirmCancelOpen}
         title="Cancel PO"
         message="Cancelling removes this draft from the PO list for good, and returns its hardware to the schedule as still needing to be ordered. This cannot be undone."
-        confirmLabel="Cancel PO"
+        confirmLabel={cancelLoading ? 'Cancelling…' : 'Cancel PO'}
         cancelLabel="Go Back"
         onConfirm={handleCancelPO}
+        // #1846: held while the cancel is in flight, so a second click can't send it twice.
+        busy={cancelLoading}
         onCancel={() => setConfirmCancelOpen(false)}
       />
     </>

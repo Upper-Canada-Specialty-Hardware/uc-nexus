@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -30,13 +30,15 @@ import ProjectPicker from '../../components/ProjectPicker';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useDropProjectOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import type { Project } from '../../types/project';
-import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_PROJECT, GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { rackLabel, racksCaption, useProjectRacks } from './racks';
+import { appendById } from '../../utils/appendById';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
 // same module rather than a second copy that can drift (#613).
 import {
+  HISTORY_PAGE_SIZE,
   STAGE_COLOR,
   STAGE_LABEL,
   STAGE_ORDER,
@@ -137,9 +139,16 @@ export default function ShippingRequestsPage() {
   // #1528: a company switch takes the scoped project with it, as on Inventory (#1469).
   useDropProjectOnCompanySwitch();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
+  const listed = projectId ? projectsData?.projects.find((p) => p.id === projectId) : undefined;
+  // #1877: the list leaves archived jobs out, so an archived project's tile linked here filtered the
+  // requests and left the picker blank. A project the list does not hold is read by its id instead.
+  const { data: projectData } = useQuery<{ project: Project | null }>(GET_PROJECT, {
+    variables: { id: projectId ?? '' },
+    skip: !projectId || !!listed,
+  });
   const project = useMemo(
-    () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
-    [projectsData, projectId],
+    () => (projectId ? (listed ?? (projectData?.project?.id === projectId ? projectData.project : null)) : null),
+    [listed, projectData, projectId],
   );
   const setProject = useCallback(
     (next: Project | null) => {
@@ -161,18 +170,54 @@ export default function ShippingRequestsPage() {
   // person who raised a request should still see what happens to it next. Editing a pending request
   // stays open to everyone, because correcting your own request is not a review.
   const canManage = ownsTenant || hasRole('Shipping Manager');
-  const { data, loading, error, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
+  const paged = view === 'APPROVED' || view === 'REJECTED';
+  const { data, loading, error, refetch, fetchMore } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
       variables:
         view === 'OPEN'
           ? { projectId: projectId ?? null, status: null, openOnly: true }
-          : { projectId: projectId ?? null, status: view, openOnly: false },
+          : paged
+            ? {
+                projectId: projectId ?? null,
+                status: view,
+                openOnly: false,
+                limit: HISTORY_PAGE_SIZE,
+                offset: 0,
+                newestFirst: true,
+              }
+            : { projectId: projectId ?? null, status: view, openOnly: false },
       fetchPolicy: 'cache-and-network',
     },
   );
 
   const requests = useMemo(() => data?.shippingOutRequests ?? [], [data]);
+
+  // Where a Load more came back short, per tab and project: a full page that turns out to be the last
+  // offers no more, and a changed tab or project, or a refetch back to the first page, offers it again.
+  const listKey = `${view}:${projectId ?? ''}`;
+  const [endAt, setEndAt] = useState<{ key: string; count: number } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const hasMore =
+    paged &&
+    requests.length >= HISTORY_PAGE_SIZE &&
+    !(endAt?.key === listKey && endAt.count === requests.length);
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: requests.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          shippingOutRequests: appendById(prev.shippingOutRequests ?? [], fetchMoreResult?.shippingOutRequests ?? []),
+        }),
+      });
+      const page = res.data?.shippingOutRequests ?? [];
+      const added = appendById(requests, page).length;
+      if (page.length < HISTORY_PAGE_SIZE) setEndAt({ key: listKey, count: added });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   // One count per rung over the accepted requests already in hand - the stage is on every row, so the
   // ladder is a reduction over the list, not a second query.
@@ -272,8 +317,9 @@ export default function ShippingRequestsPage() {
         onChanged={refetch}
         renderExtraActions={(req) =>
           // Editing is only meaningful while the request is still pending; the workspace itself refuses
-          // an accepted one. It reads the request's own project, so no picked project is needed here.
-          view === 'PENDING' ? (
+          // an accepted one. It reads the request's own project, so no picked project is needed here. By
+          // the row, not the view: the open view lists pending requests too (#1821).
+          req.status === 'PENDING' ? (
             <Button
               variant="outlined"
               color="primary"
@@ -316,6 +362,17 @@ export default function ShippingRequestsPage() {
           )
         }
       />
+
+      {hasMore && (
+        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+            Showing the newest {requests.length} - older requests exist.
+          </Typography>
+          <Button size="small" variant="outlined" onClick={handleLoadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 }

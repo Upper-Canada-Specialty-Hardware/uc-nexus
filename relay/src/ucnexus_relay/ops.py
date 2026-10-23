@@ -6,6 +6,7 @@ Each function takes an already-open connection and raises RelayOpError for a val
 failure (the caller commits/rolls back and maps errors to its own shape) or lets econnect.EConnectError
 propagate for a raw eConnect failure."""
 
+import hashlib
 import socket
 from datetime import date
 from decimal import Decimal
@@ -92,6 +93,42 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             raise RelayOpError(
                 "buyer_unresolved",
                 "no buyer_id sent and none resolved from [gp.buyers]; pick a buyer from list_buyers",
+            )
+
+    # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
+    #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
+    #     would reserve a second number for the same registration. The key the backend sent rides on
+    #     the PO's record note, so reading it back here recognises the PO the earlier attempt made and
+    #     hands it straight back. Nothing is written on this path - not the number, not the header,
+    #     not a line.
+    #     This runs as soon as the buyer is known (the lookup is pinned to it) and ahead of every
+    #     pre-check below, the order create_receipt_op takes for the same reason (#1858): a late retry
+    #     of a PO GP already holds must not be refused because its job closed or its cost code was
+    #     deactivated since. So the answer is GP's own stored figures, not a plan worked out from
+    #     masters that may have moved on since the PO was written.
+    if request.idempotency_key:
+        already_registered = econnect.find_po_by_registration_note(
+            conn, key=request.idempotency_key, buyer_id=buyer_id, doc_date=h.doc_date
+        )
+        if already_registered:
+            stored = econnect.read_registered_po(conn, already_registered)
+            if stored is None:
+                # the lookup above has just read this header, so only a PO deleted in between lands here
+                raise RelayOpError(
+                    "po_not_found",
+                    f"PO {already_registered} carries this registration's key but could not be read back",
+                    po_number=already_registered,
+                )
+            return models.CreatePoResponse(
+                po_number=already_registered,
+                company=company,
+                lines_created=len(request.lines),
+                subtotal=stored["subtotal"],
+                doc_date=stored["doc_date"] or h.doc_date,
+                vendor_id=stored["vendor_id"] or h.vendor_id,
+                currency=stored["currency"] or "CAD",
+                tax_amount=stored["tax_amount"],
+                existing=True,
             )
 
     # validate against GP's buyer master: eConnect taPoHdr rejects an unregistered BUYERID with
@@ -200,10 +237,9 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     #     details' rates (issue #762 - eConnect never computes PO tax, so the relay does, the way GP
     #     works it out on an office PO: per line per detail on the line's discounted base, plus the
     #     freight and the misc at each detail's rate; see po_tax.plan_po_tax). Worked out here, ahead
-    #     of anything that writes, so the retry branch below can answer with the same figures a
-    #     create would return without registering anything. A tax detail GP does not hold is refused
-    #     here rather than at step 5, which only means an unregisterable PO is now refused before a
-    #     number is reserved. The percent is read off TX00201 here, never taken from the client.
+    #     of anything that writes. A tax detail GP does not hold is refused here rather than at step 5,
+    #     which only means an unregisterable PO is now refused before a number is reserved. The
+    #     percent is read off TX00201 here, never taken from the client.
     subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
     if h.trade_discount > subtotal:
         raise RelayOpError(
@@ -267,29 +303,6 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                     charge=charge,
                     vendor_id=h.vendor_id,
                 )
-
-    # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
-    #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
-    #     would reserve a second number for the same registration. The key the backend sent rides on
-    #     the PO's record note, so reading it back here recognises the PO the earlier attempt made and
-    #     hands it straight back. Nothing is written on this path - not the number, not the header,
-    #     not a line - and the response carries the same figures the create would have returned.
-    if request.idempotency_key:
-        already_registered = econnect.find_po_by_registration_note(
-            conn, key=request.idempotency_key, buyer_id=buyer_id, doc_date=h.doc_date
-        )
-        if already_registered:
-            return models.CreatePoResponse(
-                po_number=already_registered,
-                company=company,
-                lines_created=len(request.lines),
-                subtotal=subtotal,
-                doc_date=h.doc_date,
-                vendor_id=h.vendor_id,
-                currency=currency,
-                tax_amount=tax_amount,
-                existing=True,
-            )
 
     # 1. PO number: use UC Nexus's own number if supplied, else reserve GP's next 'PO' number. A
     #    client-supplied number is rejected if it's already used anywhere in GP - active OR history.
@@ -667,12 +680,10 @@ def _mint_site_address(
             "job_has_no_customer",
             f"Job '{request.job_number}' has no customer, so a site address cannot be created for it",
         )
-    # char(15), and it has to be stable so a re-push finds its own code rather than making another.
-    own_code = f"SITE-{request.job_number}"[:15].strip().upper()
-    code = (address_code or f"SITE-{request.job_number}")[:15].strip().upper()
+    own_codes = _own_site_codes(request.job_number)
+    named = address_code[:15].strip().upper() if address_code else None
     fields = {
         "customer_number": customer_number,
-        "address_code": code,
         "address1": request.address1,
         "address2": request.address2 or "",
         "city": request.city,
@@ -681,16 +692,52 @@ def _mint_site_address(
         "country": request.country or "",
     }
 
-    if not econnect.customer_address_exists(conn, customer_number, code):
-        econnect.create_customer_address(conn, fields)
-        return code, True
-    if code != own_code:
+    if named and named not in own_codes:
+        if not econnect.customer_address_exists(conn, customer_number, named):
+            econnect.create_customer_address(conn, {**fields, "address_code": named})
+            return named, True
+        return named, False
+
+    # #1859: the job's own code is rewritten in place only when no other job points at it - a code some
+    # other job shares is that job's address too. The fallback code is the one only this job derives.
+    for code in own_codes:
+        code_fields = {**fields, "address_code": code}
+        if not econnect.customer_address_exists(conn, customer_number, code):
+            econnect.create_customer_address(conn, code_fields)
+            return code, True
+        if econnect.jobs_using_customer_address(conn, customer_number, code, excluding_job=request.job_number):
+            continue
+        stored = econnect.get_customer_address_lines(conn, customer_number, code)
+        wanted = {name: fields[name] for name in ("address1", "address2", "city", "state", "zip_code", "country")}
+        if stored != wanted:
+            econnect.update_job_site_customer_address(conn, code_fields)
         return code, False
-    stored = econnect.get_customer_address_lines(conn, customer_number, code)
-    wanted = {name: fields[name] for name in ("address1", "address2", "city", "state", "zip_code", "country")}
-    if stored != wanted:
-        econnect.update_job_site_customer_address(conn, fields)
-    return code, False
+    last = own_codes[-1]
+    others = econnect.jobs_using_customer_address(conn, customer_number, last, excluding_job=request.job_number)
+    raise RelayOpError(
+        "site_address_code_shared",
+        f"address code '{last}' under customer '{customer_number}' is also the site of job(s) "
+        f"{', '.join(others)}, so the site of job '{request.job_number}' cannot be written into it. "
+        f"Point one of the jobs at another address code in GP first.",
+        job_number=request.job_number,
+        address_code=last,
+    )
+
+
+def _own_site_codes(job_number: str) -> list[str]:
+    """The address codes a job's own site lives under, in the order _mint_site_address tries them.
+
+    RM00102.ADRSCODE is char(15), and the code has to be stable so a re-push finds its own record rather
+    than making another. `SITE-<job>` is the code while it fits, exactly what it has always been, so the
+    codes already in GP keep meaning their job. A longer job number used to be cut to 15 characters, and
+    two numbers sharing their first ten characters (NEXUS-380-T1, NEXUS-380-T9) then shared one record,
+    so one job's site edit rewrote the other's address (#1859). Such a job - and a short one whose code
+    another job has been pointed at - takes a code ending in a hash of its whole number instead: the
+    same every time for one job, and different from the next job's except by a 1-in-65536 chance, which
+    the shared-code guard in _mint_site_address catches rather than writes through."""
+    plain = f"SITE-{job_number.strip()}".upper()
+    hashed = f"{plain[:10]}-{hashlib.sha1(plain.encode()).hexdigest()[:4].upper()}"
+    return [plain, hashed] if len(plain) <= 15 else [hashed]
 
 
 # UpdateJobRequest field -> the econnect.update_job field it is sent as. Identical except the use-tax
@@ -963,14 +1010,15 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
                 "line_not_receivable",
                 f"line ORD {rl.po_line_ord} is closed/cancelled (POLNESTA={pl['polnesta']})",
             )
-        # validate against REMAINING (ordered - already received), not just ordered, so cumulative
-        # over-receipt across multiple receives is blocked.
-        remaining = pl["qtyorder"] - pl["prev_received"]
+        # validate against REMAINING (ordered - cancelled - already received), not just ordered, so
+        # cumulative over-receipt across multiple receives is blocked, and so is receiving what GP has
+        # cancelled on the line (#1861; the demo's simulated GP nets it the same way).
+        remaining = pl["qtyorder"] - pl["qtycance"] - pl["prev_received"]
         if rl.quantity > remaining:
             raise RelayOpError(
                 "qty_exceeds_remaining",
                 f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
-                f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})",
+                f"(ordered {pl['qtyorder']}, cancelled {pl['qtycance']}, already received {pl['prev_received']})",
             )
 
     # #730: a receipt books cost to every job its lines carry, so each one must still be open for it in

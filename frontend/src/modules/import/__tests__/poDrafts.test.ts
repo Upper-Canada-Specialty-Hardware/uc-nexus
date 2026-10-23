@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildPoDrafts, toPoDraftInput } from '../poDrafts';
+import {
+  buildPoDrafts,
+  describeDraftShortfalls,
+  describeStrandedDocuments,
+  poIdByDraft,
+  toPoDraftInput,
+} from '../poDrafts';
 import type { DraftGroup, AggregatedHardwareItem } from '../types';
 
 function hw(
@@ -189,5 +195,82 @@ describe('vendorName off the draft label (#632)', () => {
       lineItemAliases: [],
     });
     expect('sourceDraftId' in input).toBe(false);
+  });
+});
+
+describe('describeDraftShortfalls (#1883)', () => {
+  const groups = new Map([
+    ['HG|HINGE', [hw('A01', 'HG', 4)]],
+    ['LK|LOCK', [hw('A01', 'LK', 2, { category: 'LOCK' })]],
+  ]);
+  const built = buildPoDrafts(
+    [draft('Hager', { 'HG|HINGE': 4 }), draft('Schlage', { 'LK|LOCK': 2 })],
+    groups,
+    new Map(),
+  );
+  const label = (id: string) => `${id} PO`;
+
+  it('says nothing when every draft got what its lines asked for', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: 'po-1', requestedQuantity: 4, claimedQuantity: 4 },
+      { draftIndex: 1, purchaseOrderId: 'po-2', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    expect(describeDraftShortfalls(built, outcomes, label)).toBeNull();
+  });
+
+  it('names a buy-again draft that made no PO and one that came back short', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: null, requestedQuantity: 4, claimedQuantity: 0 },
+      { draftIndex: 1, purchaseOrderId: 'po-2', requestedQuantity: 2, claimedQuantity: 1 },
+    ];
+    expect(describeDraftShortfalls(built, outcomes, label)).toBe(
+      "'Hager PO' was not made: its 4 units are already on a purchase order. " +
+        "'Schlage PO' got 1 of the 2 it asked for: the other 1 unit is already on a purchase order.",
+    );
+  });
+
+  it('reads nothing from a finalize that sent no outcomes', () => {
+    expect(describeDraftShortfalls(built, [], label)).toBeNull();
+  });
+});
+
+describe('poIdByDraft / describeStrandedDocuments (#1884)', () => {
+  const groups = new Map([
+    ['HG|HINGE', [hw('A01', 'HG', 4)]],
+    ['LK|LOCK', [hw('A01', 'LK', 2, { category: 'LOCK' })]],
+  ]);
+  const withDocs = (g: DraftGroup, names: string[]): DraftGroup => ({
+    ...g,
+    attachments: names.map((n) => ({ id: n, file: new File(['x'], n), documentType: 'PO_DOCUMENT' as const })),
+  });
+  const draftGroups = [
+    withDocs(draft('Hager', { 'HG|HINGE': 4 }), ['quote-hager.pdf']),
+    withDocs(draft('Schlage', { 'LK|LOCK': 2 }), ['quote-schlage.pdf', 'spec.pdf']),
+  ];
+  const built = buildPoDrafts(draftGroups, groups, new Map());
+
+  it('maps each made PO to the draft it came from when an earlier draft was skipped', () => {
+    // The backend skipped Hager (it claimed nothing), so Schlage's PO is purchaseOrders[0] - which the
+    // old positional map handed Hager's documents.
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: null, requestedQuantity: 4, claimedQuantity: 0 },
+      { draftIndex: 1, purchaseOrderId: 'po-schlage', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    const map = poIdByDraft(built, outcomes);
+    expect([...map.entries()]).toEqual([['Schlage', 'po-schlage']]);
+    expect(describeStrandedDocuments(built.filter((b) => !map.has(b.sourceDraftId)), draftGroups)).toBe(
+      "1 document on 'Hager' was not attached.",
+    );
+  });
+
+  it('names nothing when every draft with documents made a PO', () => {
+    const outcomes = [
+      { draftIndex: 0, purchaseOrderId: 'po-hager', requestedQuantity: 4, claimedQuantity: 4 },
+      { draftIndex: 1, purchaseOrderId: 'po-schlage', requestedQuantity: 2, claimedQuantity: 2 },
+    ];
+    const map = poIdByDraft(built, outcomes);
+    expect(map.get('Hager')).toBe('po-hager');
+    expect(map.get('Schlage')).toBe('po-schlage');
+    expect(describeStrandedDocuments(built.filter((b) => !map.has(b.sourceDraftId)), draftGroups)).toBeNull();
   });
 });

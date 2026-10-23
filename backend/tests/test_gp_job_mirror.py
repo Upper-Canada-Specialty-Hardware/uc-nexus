@@ -352,7 +352,6 @@ def test_a_registration_gp_refuses_for_the_job_reads_as_the_job_error(monkeypatc
     monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda key: None)
     monkeypatch.setattr(po_schema, "_prepare_register_po", lambda **kw: {"lines": [{"job_number": "23093"}]})
     released = []
-    monkeypatch.setattr(po_schema, "_claim_registration", lambda po_id, key: None)
     monkeypatch.setattr(po_schema, "_release_registration", lambda po_id, key: released.append(key))
 
     async def _live_check(company, job_number):
@@ -401,7 +400,7 @@ def _stub_the_approval(monkeypatch, relay_error):
     monkeypatch.setattr(warehouse_schema, "_authorize_draft_approval", lambda info, user_id, draft_id: None)
     monkeypatch.setattr(warehouse_schema.gp_idempotency, "load", lambda key: None)
     monkeypatch.setattr(warehouse_schema, "_claim_draft_for_approval", lambda *a, **k: ctx)
-    monkeypatch.setattr(warehouse_schema, "_prepare_create_receive", lambda **kw: ("TUBC", {"po_number": "PO1"}))
+    monkeypatch.setattr(warehouse_schema, "_prepare_create_receive", lambda **kw: ("TUBC", {"po_number": "PO1"}, None))
     monkeypatch.setattr(warehouse_schema, "_release_draft_claim", lambda draft_id, key: released.append(draft_id))
     monkeypatch.setattr(warehouse_schema, "_po_job_number", lambda po_id: "23093")
 
@@ -724,7 +723,7 @@ def test_gp_receive_entry_refuses_a_closed_job_even_on_a_po_already_in_gp(monkey
     monkeypatch.setattr(
         warehouse_schema.warehouse_repository,
         "validate_receive_eligibility",
-        lambda session, po_id, received_by, lines: ("PO730001", "TUBC", []),
+        lambda session, po_id, received_by, lines, **kw: ("PO730001", "TUBC", []),
     )
 
     with pytest.raises(GpJobNotOpenError):

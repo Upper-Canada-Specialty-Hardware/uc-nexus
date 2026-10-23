@@ -103,6 +103,7 @@ def stubbed(monkeypatch):
             "noninven": 1,
             "polnesta": 2,
             "qtyorder": Decimal("2"),
+            "qtycance": Decimal("0"),
             "prev_received": Decimal("0"),
             "unitcost": Decimal("12.50"),
         }
@@ -212,6 +213,7 @@ def test_the_lookup_runs_before_the_remaining_quantity_check(stubbed, monkeypatc
         16384: {
             "polnesta": 2,
             "qtyorder": Decimal("2"),
+            "qtycance": Decimal("0"),
             "prev_received": Decimal("2"),
             "job": "22004",
         }
@@ -228,9 +230,100 @@ def test_the_lookup_runs_before_the_remaining_quantity_check(stubbed, monkeypatc
     assert excinfo.value.code == "qty_exceeds_remaining"
 
 
+def _line_with(*, ordered: str, cancelled: str, received: str) -> dict:
+    return {
+        16384: {
+            "item": "ML2010",
+            "itemdesc": "ML2010 LOCK",
+            "vendor": "ING100",
+            "vnditnum": "ML2010",
+            "uofm": "Each",
+            "job": "",
+            "jobname": None,
+            "locn": "VANCOUVER",
+            "noninven": 1,
+            "polnesta": 2,
+            "qtyorder": Decimal(ordered),
+            "qtycance": Decimal(cancelled),
+            "prev_received": Decimal(received),
+            "unitcost": Decimal("12.50"),
+        }
+    }
+
+
+def test_the_remaining_quantity_nets_what_gp_cancelled(stubbed, monkeypatch):
+    # #1861: 5 ordered, 2 cancelled in GP, 1 received - 2 are left to receive, not 4.
+    line = _line_with(ordered="5", cancelled="2", received="1")
+    monkeypatch.setattr(econnect, "read_po_receipt_context", lambda conn, po: ("ING100", "Ingersoll", line))
+    over = [models.ReceiptLine(po_line_ord=16384, quantity=Decimal("3"), rack_location="A1")]
+
+    with pytest.raises(RelayOpError) as excinfo:
+        ops.create_receipt_op(_FakeConn(), company="TUBC", request=_request(lines=over))
+
+    assert excinfo.value.code == "qty_exceeds_remaining"
+    assert "remaining 2" in excinfo.value.message and "cancelled 2" in excinfo.value.message
+    assert stubbed["reserved"] == []
+
+    response = ops.create_receipt_op(_FakeConn(), company="TUBC", request=_request())
+    assert response.lines_received == 1
+
+
+def test_the_receipt_context_reads_the_cancelled_quantity():
+    class _Cursor:
+        def __init__(self):
+            self.sql: list[str] = []
+
+        def execute(self, sql, *params):
+            self.sql.append(sql)
+            return self
+
+        def fetchone(self):
+            return namedtuple("_Hdr", "vendor vendname")("ING100", "Ingersoll")
+
+        def fetchall(self):
+            fields = (
+                "ORD item itemdesc vendor job jobname locn NONINVEN uofm vnditnum QTYORDER QTYCANCE UNITCOST "
+                "POLNESTA prev_received"
+            )
+            row = namedtuple("_Line", fields)(
+                16384, "ML2010", "LOCK", "ING100", "", None, "VAN", 1, "Each", "", 5, 2, 12.5, 2, 1
+            )
+            return [row]
+
+    cursor = _Cursor()
+    conn = type("_Conn", (), {"cursor": lambda self: cursor})()
+
+    _, _, lines = econnect.read_po_receipt_context(conn, "PO0000143")
+
+    assert "l.QTYCANCE" in cursor.sql[1]
+    assert lines[16384]["qtycance"] == 2
+
+
 def test_an_overlong_key_is_refused_by_the_model():
     with pytest.raises(ValueError):
         _request(idempotency_key="k" * 65)
+
+
+@pytest.mark.parametrize("bad", ["%", "_", "[a-z]", "ab%cd", "key with space", "key'quote", "k\\1"])
+def test_a_key_carrying_like_syntax_is_refused_by_the_model(bad):
+    # #1860: the key is matched inside GP's note text with LIKE, where these characters are pattern syntax.
+    with pytest.raises(ValueError):
+        _request(idempotency_key=bad)
+
+
+@pytest.mark.parametrize("good", [_KEY, "demo-seed-approve-3c9e1f7a-52b4-4d0e-8a61-0f2b7d9c4e18", "k-1", ""])
+def test_the_keys_the_backend_mints_are_accepted(good):
+    assert _request(idempotency_key=good).idempotency_key == good
+
+
+def test_the_receipt_lookup_escapes_its_pattern():
+    conn = _FakeConn()
+
+    econnect.find_receipt_by_note(conn, key="a%b_c[d", po_number="PO0000143")
+
+    sql, params = conn.note_lookups()[0]
+    assert "LIKE ? ESCAPE '\\'" in sql
+    assert params == ("PO0000143", "%a\\%b\\_c\\[d%")
 
 
 # --- what the relay says about it, and how it serialises ---

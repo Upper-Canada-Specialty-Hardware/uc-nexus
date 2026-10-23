@@ -5,6 +5,7 @@ before persisting, so the two systems are not atomic. A client generates one key
 re-sends it on retry; these helpers key the gp_write_idempotency ledger by it so a retry is a no-op in
 GP. See models/gp_write.py for the full flow and its one residual window."""
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -30,12 +31,29 @@ def load(key: str) -> IdempotencyState | None:
         return IdempotencyState(op=row.op, relay_result=row.relay_result, result_id=row.result_id)
 
 
+def require_op(state: IdempotencyState | None, op: str) -> None:
+    """Refuse a key whose ledger row another kind of GP write made (#1873). A resume persists the row's
+    relay_result as this call's own, so a receipt's result read back as a registration's - or the other
+    way round - would book a write GP never made for it."""
+    if state is not None and state.op != op:
+        raise ValidationError("This key was already used for a different GP write.", field="idempotency_key")
+
+
+# The key goes to the relay, which matches it inside GP's note text with LIKE (#1860). Letters, digits
+# and hyphens cover every key minted here (a UUID, or a short prefix and one) and none of them is LIKE
+# syntax; 64 is the most the relay takes. PAIRED EDIT: relay/src/ucnexus_relay/models.py's
+# IDEMPOTENCY_KEY_PATTERN.
+_KEY_PATTERN = re.compile(r"[A-Za-z0-9-]{1,64}")
+
+
 def validate_key(key: str) -> str:
     cleaned = (key or "").strip()
     if not cleaned:
         raise ValidationError("idempotency_key is required", field="idempotency_key")
-    if len(cleaned) > 100:
-        raise ValidationError("idempotency_key must be at most 100 characters", field="idempotency_key")
+    if len(cleaned) > 64:
+        raise ValidationError("idempotency_key must be at most 64 characters", field="idempotency_key")
+    if not _KEY_PATTERN.fullmatch(cleaned):
+        raise ValidationError("idempotency_key may hold only letters, digits and hyphens", field="idempotency_key")
     return cleaned
 
 

@@ -634,13 +634,15 @@ def _create_po(session: Session, payload: dict) -> dict:
     lines = payload.get("lines") or []
     if not lines:
         raise _refuse("invalid_payload", "a PO needs at least one line")
-    vendor = _vendor(session, header.get("vendor_id"))
     _lock(session, "po")
+    # The key first, before any check, as the relay looks it up (#1858): a PO this key already made is
+    # answered even if its vendor has since gone from the masters.
     key = (payload.get("idempotency_key") or "").strip() or None
     if key is not None:
         for row in _all(session, "po"):
             if row.data.get("idempotency_key") == key:
                 return _po_response(row.data, existing=True)
+    vendor = _vendor(session, header.get("vendor_id"))
     known_jobs = {j["job_number"] for j in _jobs(session)}
     for line in lines:
         job = (line.get("job_number") or "").strip()

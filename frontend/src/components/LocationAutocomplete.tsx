@@ -22,6 +22,10 @@ interface LocationAutocompleteProps {
 export const NO_DEFINED_LOCATIONS_TEXT =
   'No locations are defined in this warehouse yet - add them on the Locations tab.';
 
+/** #1878: a strict pick's list before the registry has loaded - still loading, or the read failed. An
+ *  empty list then says nothing about what is defined, so it must not read as "none defined". */
+export const LOCATIONS_NOT_LOADED_TEXT = "The defined locations haven't loaded.";
+
 export default function LocationAutocomplete({
   label,
   value,

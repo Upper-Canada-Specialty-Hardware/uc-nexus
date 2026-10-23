@@ -110,6 +110,58 @@ def test_not_busy_when_no_job_has_ever_run():
     assert update_poller.is_busy({"channel": {"jobs_in_flight": 0, "last_job_finished_ago": None}}) is False
 
 
+def _counters(*, jobs=0, job_ago=None, writes=0, write_ago=None) -> dict:
+    return {
+        "channel": {
+            "jobs_in_flight": jobs,
+            "last_job_finished_ago": job_ago,
+            "writes_in_flight": writes,
+            "last_write_finished_ago": write_ago,
+        }
+    }
+
+
+def test_reads_finishing_all_day_do_not_keep_the_relay_busy():
+    # #1927: the backend's own loops read from the relay every few seconds, so a busy rule that counted
+    # them saw a job finish inside the grace window on every check, and a scheduled update never happened.
+    assert update_poller.is_busy(_counters(jobs=1, job_ago=3, writes=0, write_ago=None)) is False
+    assert update_poller.is_busy(_counters(jobs=0, job_ago=1, writes=0, write_ago=600)) is False
+
+
+def test_a_write_in_flight_or_just_finished_still_holds_the_update_back():
+    assert update_poller.is_busy(_counters(jobs=1, writes=1)) is True
+    assert update_poller.is_busy(_counters(jobs=0, job_ago=5, writes=0, write_ago=5)) is True
+
+
+def test_the_scheduled_handoff_waits_for_a_write_but_not_a_read(monkeypatch):
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=2, job_ago=1))
+    assert update_poller.ready_for_scheduled_handoff() is True
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=1, writes=1))
+    assert update_poller.ready_for_scheduled_handoff() is False
+
+
+def test_the_manual_handoff_waits_for_a_write_but_not_a_read(monkeypatch):
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=2))
+    assert update_poller.ready_for_manual_handoff() is True
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _counters(jobs=1, writes=1))
+    assert update_poller.ready_for_manual_handoff() is False
+
+
+def test_every_op_is_either_a_read_or_a_listed_write():
+    # The op audit WRITE_OPS points at: a write left off the list would be swapped out from under.
+    from ucnexus_relay import channel
+
+    reads = ("list_", "get_", "read_", "sync_")
+    for op in channel._OPS:
+        if op in channel.WRITE_OPS:
+            continue
+        assert op.startswith(reads) or op in ("job_setup_health", "server_load"), (
+            f"{op} is not in channel.WRITE_OPS; if it writes to GP add it, if it reads add it here"
+        )
+    assert channel.WRITE_OPS <= set(channel._OPS)
+    assert not channel.WRITE_OPS & channel.BACKGROUND_OPS
+
+
 def test_unreachable_health_counts_as_busy():
     # Fail-safe: "cannot tell" must never authorise killing a relay that might be mid-eConnect.
     assert update_poller.is_busy({}) is True
@@ -479,6 +531,89 @@ def test_the_rollback_restarts_serve_from_the_junction_not_the_running_exe(monke
     assert calls == [("stop", tmp_path), ("start", tmp_path / "current" / layout.ASSET_NAME)]
 
 
+class _HelperFinishes(threading.Event):
+    """A stop event standing in for the apply helper: the self-check's first wait is when the helper,
+    having seen this app's /health answer, writes its result to the ledger."""
+
+    def __init__(self, tmp_path, status="success"):
+        super().__init__()
+        self._tmp_path, self._status, self.waits = tmp_path, status, 0
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.waits == 1:
+            updater._finish_ledger(self._tmp_path, self._status, None)
+        return False
+
+
+def _in_flight_ledger(tmp_path, seconds_ago=5.0) -> None:
+    stamped = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    _landed_ledger(tmp_path, status="applying", updated_at=stamped.isoformat(timespec="seconds"))
+
+
+def test_self_check_started_while_the_helper_is_still_applying_runs_once_it_records_success(monkeypatch, tmp_path):
+    # #1926: the helper writes `success` only after this app's /health answers, so the app's first read of
+    # the ledger finds `applying`. Reading once and giving up meant no self-check ever ran.
+    _in_flight_ledger(tmp_path)
+    previous, landed = _versions(tmp_path, _PREVIOUS, _LANDED)
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _health(False))
+    monkeypatch.setattr(layout, "current_target", lambda d: landed)
+    repoints = []
+    monkeypatch.setattr(layout, "repoint_current", lambda d, target: repoints.append(target) or True)
+    monkeypatch.setattr(update_poller, "_restart_serve_from_current", lambda d: None)
+    ticks = iter((0.0, 0.0, 10_000.0))
+    stop = _HelperFinishes(tmp_path)
+
+    verdict = update_poller.self_check(_FakeApp(tmp_path), stop, monotonic=lambda: next(ticks, 10_000.0))
+
+    assert stop.waits >= 1  # it waited for the helper rather than reading once
+    assert verdict == "rolled_back"
+    assert repoints == [previous]
+
+
+def test_self_check_does_not_judge_an_update_the_helper_recorded_as_failed(monkeypatch, tmp_path):
+    _in_flight_ledger(tmp_path)
+    _versions(tmp_path, _PREVIOUS, _LANDED)
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+
+    def _no_health():
+        raise AssertionError("the helper recorded a failure - there is nothing landed to verify")
+
+    monkeypatch.setattr(update_poller, "_read_health", _no_health)
+
+    assert update_poller.self_check(_FakeApp(tmp_path), _HelperFinishes(tmp_path, "failed")) is None
+
+
+def test_self_check_settles_an_abandoned_applying_ledger_the_way_startup_does(monkeypatch, tmp_path):
+    # A helper that died before writing its result: once the ledger reads as abandoned, reconcile_ledger
+    # records the landed build as applied (#369), and the check goes ahead on it.
+    _in_flight_ledger(tmp_path, seconds_ago=updater.ABANDONED_AFTER_SECONDS + 60)
+    _versions(tmp_path, _PREVIOUS, _LANDED)
+    app = _FakeApp(tmp_path)
+
+    assert _self_check(monkeypatch, app, health=_health(True)) == "connected"
+    led = updater.read_ledger(tmp_path)
+    assert (led["status"], led["self_check"]) == ("success", "connected")
+
+
+def test_self_check_leaves_a_ledger_it_cannot_age_in_flight_and_unjudged(monkeypatch, tmp_path):
+    # No readable updated_at never reads as abandoned ("cannot tell" is in flight), so once the wait runs
+    # out the check stands down rather than racing a helper that may still be working.
+    _landed_ledger(tmp_path, status="applying")
+    monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
+
+    def _no_health():
+        raise AssertionError("an in-flight update is never judged")
+
+    monkeypatch.setattr(update_poller, "_read_health", _no_health)
+    ticks = iter((0.0, updater.ABANDONED_AFTER_SECONDS + 1))
+    stop = _NoWait(5)
+
+    assert update_poller.self_check(_FakeApp(tmp_path), stop, monotonic=lambda: next(ticks)) is None
+    assert updater.read_ledger(tmp_path)["status"] == "applying"
+
+
 def test_self_check_never_takes_the_app_down_with_it(monkeypatch, tmp_path):
     _landed_ledger(tmp_path)
     monkeypatch.setattr(updater, "current_build", lambda: _LANDED)
@@ -488,3 +623,88 @@ def test_self_check_never_takes_the_app_down_with_it(monkeypatch, tmp_path):
 
     monkeypatch.setattr(update_poller, "_read_health", _boom)
     assert update_poller.self_check(_FakeApp(tmp_path), threading.Event()) is None
+
+
+# --- the rollback target survives a failed update (#1932) ---------------------------------------------
+# Cleanup kept the two highest build folders, failed ones included, and the rollback took the highest
+# folder that was not current. After 50 -> 51 (failed, back on 50) -> 52 that kept 52 and 51, deleted 50,
+# and a 52 that could not reach the backend was rolled back onto 51 - the one build known not to work.
+
+
+def test_after_a_failed_update_the_next_rollback_goes_to_the_build_it_replaced(monkeypatch, tmp_path):
+    import logging
+
+    from ucnexus_relay import app as appmod
+
+    b50, b51, b52 = (f"relay-v0.1.0-build.{n}" for n in (50, 51, 52))
+    (d50,) = _versions(tmp_path, b50)
+    junction = {"current": d50}
+    monkeypatch.setattr(layout, "current_target", lambda d: junction["current"])
+    monkeypatch.setattr(layout, "repoint_current", lambda d, target: junction.update(current=Path(target)) or True)
+    monkeypatch.setattr(updater, "_update_logger", lambda d: logging.getLogger("relay-test-1932"))
+    monkeypatch.setattr(updater, "_wait_for_pid_exit", lambda pid, deadline, log: None)
+    monkeypatch.setattr(updater, "_kill_relay_pids", lambda pid, d, log: None)
+    # 51 never comes up and the helper relaunches 50; then 52 comes up.
+    healthy = iter([False, True, True])
+    monkeypatch.setattr(updater, "_relaunch_and_wait_healthy", lambda d, deadline, log, attempts=2: next(healthy))
+    running = {"dir": d50}
+    monkeypatch.setattr(layout, "running_version_dir", lambda: running["dir"])
+    app = appmod.RelayApp()
+    monkeypatch.setattr(app, "_install_dir", lambda: tmp_path)
+
+    def _update_to(build):
+        (ver,) = _versions(tmp_path, build)
+        updater._stage_ledger(tmp_path, build, "https://example.invalid/ucnexus-relay.zip", str(ver))
+        return ver, updater.apply_staged_update(4242, tmp_path)
+
+    # 50 -> 51: 51 does not start, the junction goes back to 50, and the app comes up on 50 and cleans up.
+    _, result = _update_to(b51)
+    assert result["ok"] is False and junction["current"] == d50
+    app._cleanup_old_versions()
+
+    # 50 -> 52 lands; the helper cleans up, then the app it relaunched on 52 cleans up again.
+    d52, result = _update_to(b52)
+    assert result["ok"] is True and junction["current"] == d52
+    running["dir"] = d52
+    app._cleanup_old_versions()
+    assert d50.exists()  # the build 52 replaced survives both cleanups
+
+    # 52 never reaches the backend: back to 50, which 52 replaced, not to 51, which already failed.
+    monkeypatch.setattr(updater, "current_build", lambda: b52)
+    monkeypatch.setattr(update_poller, "_read_health", lambda: _health(False))
+    monkeypatch.setattr(update_poller, "_restart_serve_from_current", lambda d: None)
+    ticks = iter((0.0, 10_000.0))
+    verdict = update_poller.self_check(app, threading.Event(), monotonic=lambda: next(ticks, 10_000.0))
+
+    assert verdict == "rolled_back"
+    assert junction["current"] == d50
+    led = updater.read_ledger(tmp_path)
+    assert led["previous_dir"] == str(d50)
+    assert {layout.version_dir_name(b51), layout.version_dir_name(b52)} <= set(led["failed_dirs"])
+
+
+def test_cleanup_does_not_count_failed_builds_toward_the_two_it_keeps(tmp_path):
+    for build in ("relay-v0.1.0-build.49", "relay-v0.1.0-build.50", "relay-v0.1.0-build.51"):
+        _versions(tmp_path, build)
+    failed = layout.version_dir_name("relay-v0.1.0-build.51")
+    updater._write_ledger(tmp_path, {"status": "failed", "failed_dirs": [failed]})
+
+    keep = updater.versions_to_keep(tmp_path)
+
+    assert keep == {layout.version_dir_name("relay-v0.1.0-build.50"), layout.version_dir_name("relay-v0.1.0-build.49")}
+
+
+def test_cleanup_always_keeps_the_folder_the_last_update_replaced(tmp_path):
+    # The first install is app-installed, which carries no build number and so never ranks in the two.
+    (installed,) = _versions(tmp_path, "installed")
+    _versions(tmp_path, "relay-v0.1.0-build.51", "relay-v0.1.0-build.52")
+    updater._write_ledger(tmp_path, {"status": "success", "previous_dir": str(installed)})
+
+    assert installed.name in updater.versions_to_keep(tmp_path)
+
+
+def test_a_build_that_lands_after_failing_is_no_longer_recorded_as_failed(tmp_path):
+    ver = tmp_path / layout.version_dir_name(_LANDED)
+    updater._write_ledger(tmp_path, {"status": "applying", "target_dir": str(ver), "failed_dirs": [ver.name]})
+    updater._finish_ledger(tmp_path, "success", None)
+    assert updater.read_ledger(tmp_path)["failed_dirs"] == []

@@ -17,6 +17,7 @@ from app.database import SessionLocal
 from app.errors import ValidationError
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import sharepoint_migration_repository, tenancy
+from app.repositories import stock as stock_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import sharepoint_inventory
 
@@ -159,9 +160,7 @@ class SharepointMigrationQueries:
         per-row work."""
         ids = [uuid.UUID(str(pid)) for pid in project_ids]
         with SessionLocal() as session:
-            scope = tenant_scope(info)
-            for pid in ids:
-                tenancy.require_project_in_scope(session, pid, scope)
+            tenancy.require_projects_in_scope(session, ids, tenant_scope(info))
             rows = warehouse_repository.get_project_schedule_products(session, ids)
         return [
             ProjectScheduleProduct(
@@ -296,9 +295,11 @@ class SharepointMigrationMutations:
             # Catalog first: it is the description of what the quantities below are, and doing it in
             # the same transaction means a failure either way leaves neither behind.
             catalog = sharepoint_migration_repository.migrate_catalog_items(session, catalog_items)
-            result = sharepoint_migration_repository.migrate_inventory(
-                session, entries, actor, classifications, company=company
-            )
+            # Nothing in the batch writes a type code or a schedule row, so it checks them once (#1834).
+            with stock_repository.schedule_check_reads(session):
+                result = sharepoint_migration_repository.migrate_inventory(
+                    session, entries, actor, classifications, company=company
+                )
             session.commit()
             return MigrationResult(
                 stock_items=result["stock_items"],

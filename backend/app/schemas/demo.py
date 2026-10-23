@@ -40,7 +40,7 @@ from app.repositories import demo_snapshot_repository, user_repository
 from app.services import demo_build, demo_mirror, demo_snapshot
 
 from .converters import clerk_user_to_type
-from .types import ClerkUser, DemoMirrorStatus, DemoResetNotice, DemoResetStatus, DemoSourceRead
+from .types import ClerkUser, DemoBuildFailure, DemoMirrorStatus, DemoResetNotice, DemoResetStatus, DemoSourceRead
 
 _NOT_UBC = "Demo mode is only for UBC accounts."
 _NOT_IN_DEMO = "Only someone in demo mode can reset the demo or read its resets."
@@ -64,9 +64,11 @@ def _read(data: dict | None, read_at) -> DemoSourceRead:
 
 def _status() -> DemoMirrorStatus:
     with SessionLocal() as session:
-        source = demo_mirror.load_source(session)
+        # #1833: polled every few seconds while a build or the masters read runs, and it only counts, so
+        # the summary source - no schedules, no PO lines - and the snapshot without its rows a second time.
+        source = demo_mirror.load_source(session, summary=True)
         entries = demo_snapshot.inventory_entries(source.rows, source.job_numbers)
-        snapshot = demo_snapshot_repository.current(session)
+        snapshot = demo_snapshot_repository.current(session, with_rows=False)
         masters = state.get(session, state.GP_MASTERS) or {}
         build = state.get(session, state.BUILD) or {}
         nightly = state.get(session, state.NIGHTLY) or {}
@@ -101,11 +103,15 @@ def _reset_status(user_id: str) -> DemoResetStatus:
         build = state.get(session, state.BUILD) or {}
     building = demo_build.building()
     notice = demo_build.reset_notice(user_id)
+    failure = demo_build.build_failure(build)
     return DemoResetStatus(
         building=building,
         build_started_at=_when(build.get("started_at")) if building else None,
         build_started_by=build.get("started_by") if building else None,
         notice=DemoResetNotice(reset_at=_when(notice["reset_at"]), reset_by=notice["reset_by"]) if notice else None,
+        failure=DemoBuildFailure(failed_at=_when(failure["failed_at"]), started_by=failure["started_by"])
+        if failure
+        else None,
     )
 
 

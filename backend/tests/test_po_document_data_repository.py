@@ -122,6 +122,32 @@ def test_upsert_trade_discount_stays_null_until_sent(db_session):
     assert data.trade_discount == Decimal("0")
 
 
+def test_upsert_gp_figures_stay_null_until_the_buyer_types_them(db_session):
+    # #1885: the dialog sends GP's fields null when the buyer did not type them. Stored null, the next
+    # open prefills GP's figure; a typed 0 is kept as 0. Tariff is Nexus's own and still reads null as 0.
+    po = _make_po(db_session)
+    data = po_repository.upsert_po_document_data(
+        db_session,
+        po.id,
+        buyer_name="First",
+        freight=None,
+        miscellaneous=None,
+        tax_amount=None,
+        currency=None,
+        tariff_amount=None,
+    )
+    assert (data.freight, data.miscellaneous, data.tax_amount, data.currency) == (None, None, None, None)
+    assert data.tariff_amount == Decimal("0")
+
+    data = po_repository.upsert_po_document_data(db_session, po.id, freight=0, tax_amount=12.5, currency="usd")
+    assert (data.freight, data.miscellaneous, data.tax_amount, data.currency) == (
+        Decimal("0"),
+        None,
+        Decimal("12.5"),
+        "USD",
+    )
+
+
 def test_upsert_refuses_a_negative_trade_discount(db_session):
     po = _make_po(db_session)
     with pytest.raises(ValidationError) as exc:

@@ -1,6 +1,7 @@
 import { MenuItem, TextField } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_SHIPMENT_DRIVERS } from '../../graphql/shipping';
+import { userMessage } from '../../graphql/userMessage';
 
 interface Driver {
   userId: string;
@@ -22,7 +23,7 @@ interface Props {
  * pickup, which is most shipments, so "No driver" is the default and never a validation error.
  */
 export default function DriverPicker({ projectId, value, onChange, disabled, storedName }: Props) {
-  const { data, loading } = useQuery<{ shipmentDrivers: Driver[] }>(GET_SHIPMENT_DRIVERS, {
+  const { data, loading, error } = useQuery<{ shipmentDrivers: Driver[] }>(GET_SHIPMENT_DRIVERS, {
     variables: { projectId },
   });
   const drivers = data?.shipmentDrivers ?? [];
@@ -38,10 +39,14 @@ export default function DriverPicker({ projectId, value, onChange, disabled, sto
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled || loading}
+      // #1839: a failed read is not an empty list - it said nobody had the Driver role.
+      error={!!error}
       helperText={
-        !loading && drivers.length === 0
-          ? 'Nobody has the Driver role yet - give it to an account in User Management.'
-          : 'Who drives it, on one of our trucks.'
+        error
+          ? `Could not load the drivers: ${userMessage(error, { reading: true })}`
+          : !loading && drivers.length === 0
+            ? 'Nobody has the Driver role yet - give it to an account in User Management.'
+            : 'Who drives it, on one of our trucks.'
       }
       sx={{ minWidth: 0 }}
       slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}

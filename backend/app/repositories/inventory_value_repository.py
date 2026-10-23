@@ -1,7 +1,8 @@
 """INVENTORY VALUE: what everything in the building is worth, per GP company (#662).
 
 Three figures - OSSA, NON-OSSA, GENERAL STOCK - each the dollar value of hardware on the shelves plus
-hardware staged for shipping plus doors. Greg's formula, in the vocabulary the schema already uses:
+hardware staged for shipping (or picked for a pull still in progress, #1939) plus doors. Greg's formula,
+in the vocabulary the schema already uses:
 
     (project inventory qty + staged qty + stock qty + non-stock qty) x unit cost
     + every door at AVERAGE DOOR COST
@@ -32,7 +33,7 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse import Warehouse
-from app.repositories import shipping_repository
+from app.repositories import shipping_repository, warehouse
 
 # The three figures the page shows. GENERAL_STOCK is the jobless half - the stock pool and the
 # general DOORS ON HAND row - which is why it has no project side at all.
@@ -197,6 +198,60 @@ def _staged_quantities(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     return dict(staged)
 
 
+def _picked_cost_rows(
+    session: Session,
+    company: str | None,
+    *,
+    project_id: uuid.UUID | None = None,
+    hardware_category: str | None = None,
+    product_code: str | None = None,
+):
+    """The priced APPLIED pick lines per (project, category, code): the Canadian and US cost sums and
+    the quantity behind each. The read `_picked_unit_costs` documents, narrowable to one project's
+    product for a write path that prices a single combo (#1952)."""
+    effective_cost = func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost)
+    line_cost = PullPickLine.quantity * effective_cost
+    stmt = (
+        select(
+            PullRequestModel.project_id,
+            PullPickLine.hardware_category,
+            PullPickLine.product_code,
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=line_cost)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, line_cost), else_=None)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=PullPickLine.quantity)), 0),
+            func.coalesce(func.sum(case((_ROW_IS_USD, PullPickLine.quantity), else_=None)), 0),
+        )
+        .select_from(PullPickLine)
+        .join(PullRequestModel, PullPickLine.pull_request_id == PullRequestModel.id)
+        .join(InventoryLocationModel, PullPickLine.inventory_location_id == InventoryLocationModel.id)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
+        .join(Project, PullRequestModel.project_id == Project.id)
+        .where(
+            PullPickLine.state == PullPickLineState.APPLIED,
+            # #1939: a pull still in progress has its picked units on the cart, priced by the same lines.
+            or_(
+                and_(
+                    PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+                    PullRequestModel.status == PullRequestStatus.COMPLETED,
+                ),
+                PullRequestModel.status == PullRequestStatus.IN_PROGRESS,
+            ),
+            effective_cost.is_not(None),
+        )
+        .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
+    )
+    if company is not None:
+        stmt = stmt.where(Project.company == company)
+    if project_id is not None:
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
+    if hardware_category is not None:
+        stmt = stmt.where(PullPickLine.hardware_category == hardware_category)
+    if product_code is not None:
+        stmt = stmt.where(PullPickLine.product_code == product_code)
+    return session.execute(stmt).all()
+
+
 def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, str, str], _Price]:
     """What the staged units actually cost, read off the rows they were picked from.
 
@@ -213,35 +268,9 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
     Each pick line's cost is in the currency of the row it came off (#1557), so the quantity-weighted
     price is split into a Canadian and a US share over the same total quantity.
     """
-    effective_cost = func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost)
-    line_cost = PullPickLine.quantity * effective_cost
-    rows = session.execute(
-        select(
-            PullRequestModel.project_id,
-            PullPickLine.hardware_category,
-            PullPickLine.product_code,
-            func.coalesce(func.sum(case((_ROW_IS_USD, None), else_=line_cost)), 0),
-            func.coalesce(func.sum(case((_ROW_IS_USD, line_cost), else_=None)), 0),
-            func.sum(PullPickLine.quantity),
-        )
-        .select_from(PullPickLine)
-        .join(PullRequestModel, PullPickLine.pull_request_id == PullRequestModel.id)
-        .join(InventoryLocationModel, PullPickLine.inventory_location_id == InventoryLocationModel.id)
-        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
-        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
-        .join(Project, PullRequestModel.project_id == Project.id)
-        .where(
-            Project.company == company,
-            PullPickLine.state == PullPickLineState.APPLIED,
-            PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
-            effective_cost.is_not(None),
-        )
-        .group_by(PullRequestModel.project_id, PullPickLine.hardware_category, PullPickLine.product_code)
-    ).all()
-
     costs: dict[tuple[uuid.UUID, str, str], _Price] = {}
-    for project_id, category, code, cad_sum, usd_sum, qty_sum in rows:
+    for project_id, category, code, cad_sum, usd_sum, cad_qty, usd_qty in _picked_cost_rows(session, company):
+        qty_sum = cad_qty + usd_qty
         if not qty_sum:
             continue
         costs[(project_id, category, code)] = (
@@ -249,6 +278,29 @@ def _picked_unit_costs(session: Session, company: str) -> dict[tuple[uuid.UUID, 
             Decimal(usd_sum) / Decimal(qty_sum),
         )
     return costs
+
+
+def picked_unit_price(
+    session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str
+) -> tuple[Decimal, str | None] | None:
+    """What one project's product cost as it was picked, as (cost, `cost_currency`), or None when no
+    priced pick line knows (#1952). The same lines that price staged hardware here, so a shipped unit
+    that comes back is worth what it was worth on the cart, not whatever the project's newest row cost.
+
+    A row holds one currency, so a product picked in both prices in the one most of its units were
+    picked in, at that currency's own quantity-weighted cost; a tie stays Canadian.
+    """
+    rows = _picked_cost_rows(
+        session, None, project_id=project_id, hardware_category=hardware_category, product_code=product_code
+    )
+    if not rows:
+        return None
+    _, _, _, cad_sum, usd_sum, cad_qty, usd_qty = rows[0]
+    if usd_qty > cad_qty:
+        return Decimal(usd_sum) / Decimal(usd_qty), USD
+    if cad_qty:
+        return Decimal(cad_sum) / Decimal(cad_qty), None
+    return None
 
 
 def _project_average_costs(
@@ -300,15 +352,17 @@ def _project_average_costs(
     }
 
 
-def _priced(price: _Price | None) -> bool:
-    """A price that knows something. A picked price of nothing in either currency falls back to the
-    project average, as a zero picked price always has."""
-    return price is not None and bool(price[0] or price[1])
-
-
 def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.UUID, bool], Decimal]:
-    """Staged hardware per (project, priced in USD) - the same keying as the shelf."""
+    """Staged hardware per (project, priced in USD) - the same keying as the shelf.
+
+    Units picked for a pull still in progress are counted here too (#1939): the pick took them off the
+    shelf, so they are not in the shelf value, and they are not staged until the pull is handed over -
+    but they are still in the building, on the cart, priced the same way as staged units.
+    """
     staged = _staged_quantities(session, company)
+    for row in session.execute(warehouse.in_pick_stmt(company=company, by_project=True)):
+        key = (row.project_id, row.hardware_category, row.product_code)
+        staged[key] = staged.get(key, 0) + int(row.in_pick or 0)
     if not staged:
         return {}
     picked = _picked_unit_costs(session, company)
@@ -316,9 +370,9 @@ def _staged_value_by_project(session: Session, company: str) -> dict[tuple[uuid.
 
     value: dict[tuple[uuid.UUID, bool], Decimal] = defaultdict(Decimal)
     for key, quantity in staged.items():
-        price = picked.get(key)
-        if not _priced(price):
-            price = fallback.get(key) or (_ZERO, _ZERO)
+        # #1951: a picked price is what the units cost, 0 included - a row bought at a known $0 is free
+        # hardware, not an unknown one. Only a product with no priced pick line takes the average.
+        price = picked[key] if key in picked else fallback.get(key) or (_ZERO, _ZERO)
         cad_share, usd_share = price
         value[(key[0], False)] += Decimal(quantity) * cad_share
         value[(key[0], True)] += Decimal(quantity) * usd_share
@@ -367,7 +421,7 @@ def _hardware_field(is_usd: bool) -> str:
 
 
 def get_inventory_value(session: Session, company: str) -> dict:
-    """The whole INVENTORY VALUE page for one GP company, in six statements plus the two get-or-creates.
+    """The whole INVENTORY VALUE page for one GP company, in seven statements plus the two get-or-creates.
 
     The caller commits: a first read for a company creates that company's settings row and general
     DOORS ON HAND row, and those have to persist or every read would create them again.

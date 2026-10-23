@@ -6,9 +6,10 @@ import random
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from app.errors import ConflictError
 from app.models.gp_outbox import GpWriteOutbox
 
 # Backoff for a retryable failure. Capped at 30 minutes so a long outage does not push the next
@@ -41,13 +42,19 @@ def enqueue(
     label: str,
     project_id: uuid.UUID | None = None,
     requested_by: str | None = None,
+    maybe_in_gp: bool = False,
 ) -> GpWriteOutbox:
     """Queue a GP write, or return the row that is already queued under this idempotency key.
 
     Returning the existing row rather than raising is what makes a resubmit-while-queued a no-op: the
-    user pressing the button again gets the same entry, not a second GP write."""
+    user pressing the button again gets the same entry, not a second GP write.
+
+    `maybe_in_gp` (#1849) is for a write queued after an online attempt that may have reached GP."""
     existing = session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == idempotency_key)).first()
     if existing is not None:
+        if maybe_in_gp:
+            existing.maybe_in_gp = True
+            session.flush()
         return existing
 
     row = GpWriteOutbox(
@@ -65,16 +72,182 @@ def enqueue(
         status="PENDING",
         attempts=0,
         next_attempt_at=datetime.utcnow(),
+        maybe_in_gp=maybe_in_gp,
     )
     session.add(row)
     session.flush()
     return row
 
 
+# #1948: what a draft held by a failed registration is refused with - the held write's Retry finishes it.
+HELD_REGISTRATION_REFUSAL = (
+    "GP took this PO's registration, or may have, but it was not recorded here, so the draft is held. "
+    "Finish it with Retry on the held GP writes panel."
+)
+
+
+GP_TOOK_CANCEL_REFUSAL = "GP already took this write, so it can't be cancelled here. Finish it with Retry."
+
+
+def _registration_holds_draft(row: GpWriteOutbox, ledger) -> bool:
+    """Whether a registration row still holds its draft, given its key's ledger row (or None).
+
+    A waiting one does. So, since #1948, does a FAILED one GP took - the ledger holds the relay's answer
+    and no record (a persist that failed after GP made the PO) - or may have: maybe_in_gp, unless GP
+    refused it, which the relay only does after looking the key up and finding no PO under it. Freed, such
+    a draft was cancelled (a GP PO Nexus has no row for) or registered again (a second GP PO)."""
+    if row.status in ("PENDING", "IN_FLIGHT"):
+        return True
+    if row.status != "FAILED":
+        return False
+    if ledger is not None and ledger.result_id is not None:
+        return False  # registered: the draft is gone
+    if ledger is not None and ledger.relay_result is not None:
+        return True
+    return bool(row.maybe_in_gp) and row.failure_kind != "gp_rejected"
+
+
+def registration_holds_draft(session: Session, row: GpWriteOutbox) -> bool:
+    from app.models.gp_write import GpWriteIdempotency
+
+    if row.op != "register_po_in_gp":
+        return False
+    if row.status != "FAILED":
+        return _registration_holds_draft(row, None)
+    return _registration_holds_draft(row, session.get(GpWriteIdempotency, row.idempotency_key))
+
+
+def ledgers_for(session: Session, rows: list[GpWriteOutbox]) -> dict:
+    """The ledger rows of `rows`' keys, by key, in one read: what a list works out per row from."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    keys = [r.idempotency_key for r in rows]
+    if not keys:
+        return {}
+    return {row.key: row for row in session.scalars(select(GpWriteIdempotency).where(GpWriteIdempotency.key.in_(keys)))}
+
+
+def registrations_holding_drafts(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict | None = None
+) -> set[uuid.UUID]:
+    """The ids of `rows` that are registrations holding their draft, with one ledger read for the lot."""
+    registrations = [r for r in rows if r.op == "register_po_in_gp"]
+    if ledgers is None:
+        ledgers = ledgers_for(session, [r for r in registrations if r.status == "FAILED"])
+    return {r.id for r in registrations if _registration_holds_draft(r, ledgers.get(r.idempotency_key))}
+
+
+def _gp_took(ledger) -> bool:
+    """GP answered the write and Nexus never saved it, so GP holds it (#1948): it is finished with Retry,
+    never cancelled - a cancel abandons a PO or a receipt GP has and frees its draft to be written again."""
+    return ledger is not None and ledger.relay_result is not None and ledger.result_id is None
+
+
+def writes_gp_took(rows: list[GpWriteOutbox], ledgers: dict) -> set[uuid.UUID]:
+    """The ids of `rows` GP already took - the ones `cancel_entry` refuses - off `ledgers_for`'s one read."""
+    return {r.id for r in rows if _gp_took(ledgers.get(r.idempotency_key))}
+
+
+def write_gp_took(session: Session, row: GpWriteOutbox) -> bool:
+    from app.models.gp_write import GpWriteIdempotency
+
+    return _gp_took(session.get(GpWriteIdempotency, row.idempotency_key))
+
+
+# #1961: what a let-go receipt's ledger row is settled with in place of a receive record. A receipt held for
+# an approval released meanwhile is booked nowhere and never posts, and its draft has moved on; settled, the
+# key stops reading as a write GP took, and the PO's received-quantity sync stops waiting on it. GP's answer
+# stays on the row, and the marker is no record id, so a resume of the key is refused as another receive's.
+RECEIPT_LET_GO_RESULT_ID = "let-go:reconciled-in-gp"
+
+
+def receipts_gp_took_whose_draft_moved_on(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict, moved_on: dict | None = None
+) -> set[uuid.UUID]:
+    """The receipts GP took, of `rows`, whose draft has moved on from them (deleted included, #1965), off
+    `ledgers_for`'s one read: the ones `cancel_entry` lets go though GP took them (#1961). Retry is refused on
+    each, so without this neither button moved it. `moved_on` is `receipts_whose_draft_moved_on` over the
+    rows, when the caller already read it."""
+    took = [r for r in rows if r.op == "create_receive" and _gp_took(ledgers.get(r.idempotency_key))]
+    if not took:
+        return set()
+    if moved_on is None:
+        from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
+
+        moved_on = receipts_whose_draft_moved_on(session, took)
+    return {r.id for r in took if r.id in moved_on}
+
+
+def _draft_id_of(row: GpWriteOutbox) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(row.entity_key.removeprefix("po:"))
+    except ValueError:
+        return None
+
+
+def registrations_already_in_nexus(session: Session, rows: list[GpWriteOutbox], ledgers: dict) -> dict:
+    """The registrations GP took whose GP PO is already a live Nexus PO in their company, by row id, with
+    that PO number (#1948). Its save can never land - the mirror copied the PO and something hangs off the
+    copy now, so it cannot give way - and Retry fails for good. GP's PO is represented in Nexus, so
+    cancelling the row abandons nothing in GP: it is let go, and its draft with it (see `cancel_entry`)."""
+    from app.repositories.po_repository import live_po_numbered
+
+    found = {}
+    for row in rows:
+        ledger = ledgers.get(row.idempotency_key)
+        if row.op != "register_po_in_gp" or not _gp_took(ledger):
+            continue
+        number = str((ledger.relay_result or {}).get("po_number") or "").strip()
+        draft_id = _draft_id_of(row)
+        if number and draft_id is not None and live_po_numbered(session, number, row.company, exclude_po_id=draft_id):
+            found[row.id] = number
+    return found
+
+
+def list_registrations_holding_drafts(
+    session: Session, *, company: str | None = None, limit: int = 500
+) -> list[GpWriteOutbox]:
+    """Every registration that still holds its draft, newest first: what the PO list holds drafts by (#1948).
+
+    The list read the newest rows of every registration status and kept the holding ones, so held rows
+    fell off it as FAILED ones nothing holds piled up above them. Narrowed in SQL first - waiting, or FAILED
+    with no record and either a ledger row or maybe_in_gp short of a refusal - then settled exactly by
+    `_registration_holds_draft`, so the limit only ever counts rows that may hold."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    may_hold = or_(
+        GpWriteIdempotency.key.is_not(None),
+        and_(
+            GpWriteOutbox.maybe_in_gp.is_(True),
+            or_(GpWriteOutbox.failure_kind.is_(None), GpWriteOutbox.failure_kind != "gp_rejected"),
+        ),
+    )
+    stmt = (
+        select(GpWriteOutbox)
+        .outerjoin(GpWriteIdempotency, GpWriteIdempotency.key == GpWriteOutbox.idempotency_key)
+        .where(
+            GpWriteOutbox.op == "register_po_in_gp",
+            or_(
+                GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+                and_(GpWriteOutbox.status == "FAILED", GpWriteIdempotency.result_id.is_(None), may_hold),
+            ),
+        )
+        .order_by(GpWriteOutbox.created_at.desc())
+        .limit(limit)
+    )
+    if company is not None:
+        stmt = stmt.where(GpWriteOutbox.company == company)
+    rows = list(session.scalars(stmt).all())
+    holding = registrations_holding_drafts(session, rows)
+    return [r for r in rows if r.id in holding]
+
+
 def queued_po_registration(
     session: Session, po_id: uuid.UUID, *, exclude_key: str | None = None
 ) -> GpWriteOutbox | None:
-    """The PO's registration that is still waiting for GP (PENDING or IN_FLIGHT), if there is one.
+    """The PO's registration that still holds its draft, if there is one: waiting for GP (PENDING or
+    IN_FLIGHT), or FAILED after GP took it or may have (#1948, see `_registration_holds_draft`). A FAILED
+    one comes back FAILED, so a caller can say to finish it with Retry rather than wait for it.
 
     While it waits the PO is still a Draft, so the Draft check alone let a second registration through
     under a fresh key (a second GP PO on drain) and let a cancel drop a PO the queue then created in GP.
@@ -83,11 +256,25 @@ def queued_po_registration(
     stmt = select(GpWriteOutbox).where(
         GpWriteOutbox.entity_key == f"po:{po_id}",
         GpWriteOutbox.op == "register_po_in_gp",
-        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT", "FAILED")),
     )
     if exclude_key is not None:
         stmt = stmt.where(GpWriteOutbox.idempotency_key != exclude_key)
-    return session.scalars(stmt.limit(1)).first()
+    # A waiting row first, so a caller's "queued" wording is the one a waiting registration gets.
+    rows = session.scalars(stmt.order_by((GpWriteOutbox.status == "FAILED").asc(), GpWriteOutbox.created_at)).all()
+    return next((row for row in rows if registration_holds_draft(session, row)), None)
+
+
+def registration_for_key(session: Session, key: str) -> GpWriteOutbox | None:
+    """The registration queued under one attempt's key, whatever its status (#1950)."""
+    return session.scalars(
+        select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key, GpWriteOutbox.op == "register_po_in_gp")
+    ).first()
+
+
+def queued_registration_refusal(row: GpWriteOutbox, waiting_message: str) -> str:
+    """The words a guard refuses a held draft with: its own for a waiting registration, Retry for a failed one."""
+    return HELD_REGISTRATION_REFUSAL if row.status == "FAILED" else waiting_message
 
 
 def claim_next(session: Session, company: str) -> GpWriteOutbox | None:
@@ -149,14 +336,19 @@ def mark_retry(
     error_code: str | None = None,
     bump_attempts: bool = True,
     retry_in_seconds: float | None = None,
+    maybe_in_gp: bool = False,
 ) -> None:
     """Put a row back on the queue.
 
     `bump_attempts=False` is the load-bearing option: "the relay is still down" is not a failure of
     this row, and counting it would let a week-long outage exhaust the attempt budget of every queued
-    write and fail them all the moment they became deliverable again."""
+    write and fail them all the moment they became deliverable again.
+
+    `maybe_in_gp` says this attempt may have left the write in GP (#1849); it only ever sets the flag."""
     if bump_attempts:
         row.attempts += 1
+    if maybe_in_gp:
+        row.maybe_in_gp = True
     delay = retry_in_seconds if retry_in_seconds is not None else _backoff_seconds(row.attempts)
     row.status = "PENDING"
     row.next_attempt_at = datetime.utcnow() + timedelta(seconds=delay)
@@ -165,8 +357,19 @@ def mark_retry(
     session.flush()
 
 
-def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, error_code: str | None = None) -> None:
+def mark_failed(
+    session: Session,
+    row: GpWriteOutbox,
+    *,
+    kind: str,
+    error: str,
+    error_code: str | None = None,
+    maybe_in_gp: bool = False,
+) -> None:
     row.status = "FAILED"
+    # #1849: set before the release below reads it, and never cleared.
+    if maybe_in_gp:
+        row.maybe_in_gp = True
     row.failure_kind = kind
     row.last_error = error
     row.last_error_code = error_code
@@ -271,6 +474,8 @@ def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_
     )
     failed = []
     for row in rows:
+        # #1849: nothing says whether the stopped attempt got as far as GP, so it may have.
+        row.maybe_in_gp = True
         if retry_is_safe(row.relay_op, row.payload):
             row.status = "PENDING"
             row.next_attempt_at = datetime.utcnow()
@@ -323,17 +528,78 @@ def summary(session: Session, company: str | None = None) -> dict:
     }
 
 
+# What Retry is refused with on a cancelled row whose key's ledger is settled (#1960, #1961, #1965). The worker
+# would read the settled ledger and mark it SUCCEEDED without sending, for a save this row never made - told
+# apart by what settled it, so each says what is true of it.
+LET_GO_RETRY_REFUSAL = (
+    "This receipt was let go after GP took it, to be reconciled in GP by hand. There is nothing to send again."
+)
+REGISTRATION_LET_GO_RETRY_REFUSAL = (
+    "This registration was let go after GP took it, as its GP PO is already in Nexus as the mirror's copy. "
+    "There is nothing to send again."
+)
+SETTLED_RETRY_REFUSAL = (
+    "What GP took under this write's key is already recorded here, so there is nothing to send again."
+)
+
+
+def _retry_refusal(row: GpWriteOutbox, ledger, draft_deleted: bool | None) -> str | None:
+    """THE reason Retry is refused on a FAILED or CANCELLED row, or None - one rule for `retry_entry` and for
+    the queue's disabled Retry. `ledger` is the key's ledger row (or None). `draft_deleted` is None unless the
+    row is a receipt whose draft has moved on (`receipts_whose_draft_moved_on`), and then says whether that
+    draft was deleted.
+
+    - A cancelled row whose ledger is settled: let go as reconciled (a receipt, #1961), let go onto the
+      mirror's copy (a registration, whose own record would be its draft PO, #1960), or recorded for real
+      by another attempt under the key - a resume that booked it, a register that finished it.
+    - A receipt whose draft has moved on: its drain is refused as released meanwhile every time (#1965)."""
+    if row.status == "CANCELLED" and ledger is not None and ledger.result_id is not None:
+        if ledger.result_id == RECEIPT_LET_GO_RESULT_ID:
+            return LET_GO_RETRY_REFUSAL
+        if row.op == "register_po_in_gp" and ledger.result_id != str(_draft_id_of(row)):
+            return REGISTRATION_LET_GO_RETRY_REFUSAL
+        return SETTLED_RETRY_REFUSAL
+    if draft_deleted is not None:
+        from app.repositories.warehouse import receive_drafts
+
+        if draft_deleted:
+            return receive_drafts.DRAFT_DELETED_RETRY_REFUSAL
+        return receive_drafts.DRAFT_MOVED_ON_RETRY_REFUSAL
+    return None
+
+
+def retry_refusals(
+    session: Session, rows: list[GpWriteOutbox], ledgers: dict, moved_on: dict | None = None
+) -> dict[uuid.UUID, str]:
+    """Why Retry is refused, by row id, for the rows of `rows` it would be refused on (`_retry_refusal`), off
+    `ledgers_for`'s one read and one read of the drafts. `moved_on` is `receipts_whose_draft_moved_on` over
+    the rows, when the caller already read it."""
+    ended = [r for r in rows if r.status in ("FAILED", "CANCELLED")]
+    if not ended:
+        return {}
+    if moved_on is None:
+        from app.repositories.warehouse.receive_drafts import receipts_whose_draft_moved_on
+
+        moved_on = receipts_whose_draft_moved_on(session, ended)
+    refusals = {r.id: _retry_refusal(r, ledgers.get(r.idempotency_key), moved_on.get(r.id)) for r in ended}
+    return {row_id: why for row_id, why in refusals.items() if why is not None}
+
+
 def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: put a FAILED row back on the queue immediately, with a fresh attempt budget.
 
     Locked and re-read (#1193), so the status checked is the one the worker's own locked finish sees."""
+    _refuse_while_registration_claimed(session, get_entry(session, entry_id))
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
-    _assert_receive_draft_still_queued(session, row)
+    refusal = retry_refusals(session, [row], ledgers_for(session, [row])).get(row.id)
+    if refusal is not None:
+        raise ConflictError(refusal)
     row.status = "PENDING"
     row.attempts = 0
     row.next_attempt_at = datetime.utcnow()
+    # maybe_in_gp stays (#1849): a fresh budget does not take back what an earlier attempt may have written.
     row.failure_kind = None
     session.flush()
     return row
@@ -343,13 +609,82 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: abandon a queued write. Only a row that is not currently on the wire may be cancelled -
     cancelling an IN_FLIGHT row would leave the worker writing to a row a human believes is dead.
     Locked and re-read (#1193): a plain read let a cancel overwrite a claim that landed in between."""
+    _lock_registration_draft(session, get_entry(session, entry_id))
     row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("PENDING", "FAILED"):
         return None
+    # A write GP already answered but Nexus never saved is in GP: cancelling it here abandons a PO or a
+    # receipt GP holds, and frees its draft to be written again (#1948). Retry finishes it instead.
+    # Except a registration whose GP PO the mirror already copied into Nexus: nothing is abandoned. And a
+    # receipt whose draft has moved on (#1961), or was deleted (#1965): Retry is refused on it, so Retry
+    # finishes nothing, and the count is someone else's to approve now, or nobody's - what GP took under it
+    # is reconciled in GP by hand.
+    in_nexus = None
+    receipt_let_go = False
+    if write_gp_took(session, row):
+        ledgers = ledgers_for(session, [row])
+        in_nexus = registrations_already_in_nexus(session, [row], ledgers).get(row.id)
+        receipt_let_go = row.id in receipts_gp_took_whose_draft_moved_on(session, [row], ledgers)
+        if in_nexus is None and not receipt_let_go:
+            raise ConflictError(GP_TOOK_CANCEL_REFUSAL)
     row.status = "CANCELLED"
     session.flush()
+    if receipt_let_go:
+        # Settled, or `_receipt_in_flight` held the PO's received-quantity sync on its ledger row for good.
+        from app.services import gp_idempotency
+
+        gp_idempotency.stamp_result_id(session, row.idempotency_key, row.op, None, RECEIPT_LET_GO_RESULT_ID)
+        session.flush()
+    if in_nexus is not None:
+        # Its draft goes too, cancelled as any draft is: left a draft, Register would push a second GP PO
+        # for the order GP holds as the mirrored copy.
+        from app.repositories.po_repository import cancel_draft_gp_po_already_in_nexus, live_po_id_numbered
+        from app.services import gp_idempotency
+
+        cancel_draft_gp_po_already_in_nexus(session, _draft_id_of(row))
+        # And its ledger row is settled on the copy (#1960). Left with GP's answer and no record, it kept the
+        # number pending registration for good (`po_numbers_pending_registration`), so the mirror skipped the
+        # copy on every pass and GP's changes to it never arrived. The copy is the record GP's PO has here,
+        # so its id is the result: the key no longer reads as a write GP took, and nothing waits on it.
+        copy_id = live_po_id_numbered(session, in_nexus, row.company, exclude_po_id=_draft_id_of(row))
+        if copy_id is not None:
+            gp_idempotency.stamp_result_id(session, row.idempotency_key, row.op, None, str(copy_id))
+            session.flush()
     _release_receive_draft(session, row)
     return row
+
+
+def _lock_registration_draft(session: Session, row: GpWriteOutbox | None) -> None:
+    """A registration's PO row lock, taken before its outbox row's - the order the queueing takes them in."""
+    if row is None or row.op != "register_po_in_gp" or _draft_id_of(row) is None:
+        return
+    from app.models.purchase_order import PurchaseOrder
+
+    session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == _draft_id_of(row)).with_for_update())
+
+
+def _refuse_while_registration_claimed(session: Session, row: GpWriteOutbox | None) -> None:
+    """#1948: a registration is not put back while a window is registering its PO online. That attempt may
+    be finishing this very write from the ledger (#1950), and the queue would save it a second time. The
+    PO's row lock is the one the online claim is taken under, taken before the outbox row's, the order
+    the queueing takes them in."""
+    if row is None or row.op != "register_po_in_gp":
+        return
+    from app.models.purchase_order import PurchaseOrder
+    from app.repositories.po_repository import _registration_claim_is_live
+
+    try:
+        po_id = uuid.UUID(row.entity_key.removeprefix("po:"))
+    except ValueError:
+        return
+    po = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if po is not None and _registration_claim_is_live(po, datetime.utcnow()):
+        raise ConflictError("This PO is being registered in GP from a window right now. Retry this once that finishes.")
 
 
 def _release_receive_draft(session: Session, row: GpWriteOutbox) -> None:
@@ -357,9 +692,3 @@ def _release_receive_draft(session: Session, row: GpWriteOutbox) -> None:
     from app.repositories.warehouse.receive_drafts import release_draft_for_outbox_entry
 
     release_draft_for_outbox_entry(session, row)
-
-
-def _assert_receive_draft_still_queued(session: Session, row: GpWriteOutbox) -> None:
-    from app.repositories.warehouse.receive_drafts import assert_outbox_entry_retryable
-
-    assert_outbox_entry_retryable(session, row)

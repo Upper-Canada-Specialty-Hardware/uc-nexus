@@ -48,9 +48,12 @@ def _guard_registration(session, persist_context: dict, idempotency_key: str) ->
     ).first()
     if po is None or po.deleted_at is not None or po.status != POStatus.DRAFT:
         raise InvalidStateTransitionError("This PO is no longer a Draft, so its registration was not queued")
-    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+    held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key)
+    if held is not None:
         raise InvalidStateTransitionError(
-            "This PO's registration is already queued and will post to GP when the relay is back"
+            gp_outbox_repository.queued_registration_refusal(
+                held, "This PO's registration is already queued and will post to GP when the relay is back"
+            )
         )
 
 
@@ -67,6 +70,7 @@ def enqueue(
     project_id: uuid.UUID | None = None,
     requested_by: str | None = None,
     session: Session | None = None,
+    maybe_in_gp: bool = False,
 ) -> str:
     """Queue the write and return the outbox entry id (as a string).
 
@@ -89,6 +93,7 @@ def enqueue(
             label=label,
             project_id=project_id,
             requested_by=requested_by,
+            maybe_in_gp=maybe_in_gp,
         )
     with SessionLocal() as own:
         entry_id = _enqueue_in(
@@ -103,6 +108,7 @@ def enqueue(
             label=label,
             project_id=project_id,
             requested_by=requested_by,
+            maybe_in_gp=maybe_in_gp,
         )
         own.commit()
     logger.info("gp outbox: queued", extra={"op": op, "label": label, "entry_id": entry_id})

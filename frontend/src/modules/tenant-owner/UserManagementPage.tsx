@@ -32,7 +32,7 @@ import {
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
-import { DEMO_COMPANY } from '../../demo/demoMode';
+import { DEMO_ALLOWED_COMPANIES, DEMO_COMPANY, mayUseDemoMode } from '../../demo/demoMode';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
@@ -629,6 +629,9 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
                           // again from the right list rather than saving an id GP will refuse at
                           // registration.
                           if (e.target.value !== editCompany) setEditGpBuyerId(null);
+                          // #1838: a company outside UBC's takes the account out of demo mode (#1830),
+                          // so the switch below shows what the save will leave.
+                          if (!mayUseDemoMode(e.target.value)) setEditDemoMode(false);
                           setEditCompany(e.target.value);
                         }}
                         size="small"
@@ -651,16 +654,30 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
                       </TextField>
                     )}
                     {/* #1608: demo mode puts the account on the demo company's made-up data, with GP
-                        simulated, and leaves its own company exactly as set above. */}
+                        simulated, and leaves its own company exactly as set above. #1838: on only for
+                        an account working in a UBC company (#1658) - the server refuses anybody else,
+                        but only after the roles and company above have saved. Off is always allowed. */}
                     <FormControlLabel
                       sx={{ mb: 1.5 }}
-                      control={<Switch checked={editDemoMode} onChange={(e) => setEditDemoMode(e.target.checked)} />}
+                      control={
+                        <Switch
+                          checked={editDemoMode}
+                          onChange={(e) => setEditDemoMode(e.target.checked)}
+                          disabled={!editDemoMode && !mayUseDemoMode(editCompany)}
+                        />
+                      }
                       label={
                         <Box>
                           <Typography variant="body2">Demo mode</Typography>
                           <Typography variant="caption" color="text.secondary">
                             Works on made-up data in the demo company, with GP simulated. Their own company is kept.
                           </Typography>
+                          {!mayUseDemoMode(editCompany) && (
+                            <Typography variant="caption" color="text.secondary" component="div">
+                              Only an account working in {DEMO_ALLOWED_COMPANIES.join(' or ')} can be put in demo
+                              mode.
+                            </Typography>
+                          )}
                         </Box>
                       }
                     />

@@ -16,6 +16,15 @@ from app.errors import RelayCallError, RelayTimeoutError, RelayUnavailableError
 from app.repositories import gp_outbox_repository
 from app.services import gp_outbox_worker
 
+_REAL_RECHECK = gp_outbox_worker._recheck_queued_receipt
+
+
+@pytest.fixture(autouse=True)
+def _queued_receipts_pass_the_recheck(monkeypatch):
+    """The receipts here are against made-up POs. #1946's re-check before a first send is tested on its
+    own below; everywhere else it passes, so the drain under test is the one it always was."""
+    monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", lambda context: None)
+
 
 def _enqueue_committed(
     op: str = "create_receive", company: str = "TUBC", payload: dict | None = None
@@ -66,6 +75,7 @@ def _read(row_id: uuid.UUID):
             "attempts": row.attempts,
             "failure_kind": row.failure_kind,
             "last_error": row.last_error,
+            "maybe_in_gp": row.maybe_in_gp,
         }
 
 
@@ -120,6 +130,7 @@ def test_a_dispatched_disconnect_fails_as_ambiguous_and_is_never_retried(_migrat
         state = _read(row_id)
         assert state["status"] == "FAILED"
         assert state["failure_kind"] == "ambiguous"
+        assert state["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -132,6 +143,7 @@ def test_a_timeout_fails_as_ambiguous(_migrate_database, monkeypatch):
         _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
         asyncio.run(gp_outbox_worker._drain_one(row_id))
         assert _read(row_id)["failure_kind"] == "ambiguous"
+        assert _read(row_id)["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -159,6 +171,34 @@ def test_a_keyed_receipt_that_went_unanswered_is_asked_again(_migrate_database, 
         assert state["status"] == "PENDING"
         assert state["failure_kind"] is None
         assert state["attempts"] == 1
+        # #1849: GP may hold it under this key, and the row keeps saying so however it ends.
+        assert state["maybe_in_gp"] is True
+    finally:
+        _delete(row_id)
+
+
+def test_a_keyed_receipt_that_went_unanswered_still_may_be_in_gp_once_exhausted(_migrate_database, monkeypatch):
+    """#1849: the last attempt's outcome is exhausted, but an earlier one timed out with the receipt
+    possibly in GP. A manual retry's fresh budget does not take that back either."""
+    from app.database import SessionLocal
+
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        with SessionLocal() as session:
+            gp_outbox_repository.get_entry(session, row_id).attempts = gp_outbox_repository.MAX_ATTEMPTS
+            session.commit()
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "exhausted", True)
+
+        with SessionLocal() as session:
+            gp_outbox_repository.retry_entry(session, row_id)
+            session.commit()
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 0, True)
     finally:
         _delete(row_id)
 
@@ -307,6 +347,77 @@ def test_a_gp_rejection_fails_as_gp_rejected(_migrate_database, monkeypatch):
         _delete(row_id)
 
 
+@pytest.mark.parametrize(
+    ("relay_error", "payload", "maybe_in_gp"),
+    [
+        ("sql_error", _KEYED_RECEIPT, False),
+        ("company_not_allowed", None, False),
+        ("internal_error", _KEYED_RECEIPT, True),
+    ],
+    ids=["sql-error-keyed", "no-company-served", "internal-error-keyed"],
+)
+def test_a_transient_relay_error_is_asked_again_not_held_as_gp_refusing(
+    _migrate_database, monkeypatch, relay_error, payload, maybe_in_gp
+):
+    """#1857: a deadlock victim, a blip on the relay's database link or a relay that could not read
+    GP's company list is not GP refusing the write. A database error is rolled back on the relay, so
+    that attempt left nothing in GP; an unplanned relay exception may have come after the commit."""
+    row_id, _key = _enqueue_committed(payload=payload)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayCallError("relay failed", detail={"error": relay_error}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["attempts"]) == ("PENDING", None, 1)
+        assert state["maybe_in_gp"] is maybe_in_gp
+    finally:
+        _delete(row_id)
+
+
+def test_an_unkeyed_receipt_the_relay_raised_on_unexpectedly_fails_as_ambiguous(_migrate_database, monkeypatch):
+    # #1857: the exception may have come after GP took it, and nothing would recognise a second send.
+    row_id, _key = _enqueue_committed()
+    try:
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("boom", detail={"error": "internal_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "ambiguous", True)
+    finally:
+        _delete(row_id)
+
+
+def test_an_unkeyed_receipt_the_relay_hit_a_database_error_on_fails_as_ambiguous(_migrate_database, monkeypatch):
+    # #1857: the error can be the commit itself failing, and nothing would recognise a second send.
+    row_id, _key = _enqueue_committed()
+    try:
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("link dropped", detail={"error": "sql_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "ambiguous", True)
+    finally:
+        _delete(row_id)
+
+
+def test_a_sql_error_on_the_last_attempt_exhausts_the_row(_migrate_database, monkeypatch):
+    from app.database import SessionLocal
+
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        with SessionLocal() as session:
+            gp_outbox_repository.get_entry(session, row_id).attempts = gp_outbox_repository.MAX_ATTEMPTS
+            session.commit()
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+        _stub_relay(monkeypatch, raises=RelayCallError("deadlock victim", detail={"error": "sql_error"}))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "exhausted", False)
+    finally:
+        _delete(row_id)
+
+
 def test_a_successful_drain_calls_the_persist_helper_and_marks_succeeded(_migrate_database, monkeypatch):
     row_id, key = _enqueue_committed()
     try:
@@ -353,6 +464,8 @@ def test_a_persist_that_raises_an_app_error_fails_as_persist_failed(_migrate_dat
         state = _read(row_id)
         assert state["status"] == "FAILED"
         assert state["failure_kind"] == "persist_failed"
+        # #1946: GP holds it, so however the row ends, its draft is never sent back and the PO's sync holds.
+        assert state["maybe_in_gp"] is True
     finally:
         _delete(row_id)
 
@@ -366,6 +479,7 @@ def test_a_transient_persist_error_is_retried(_migrate_database, monkeypatch):
         state = _read(row_id)
         assert state["status"] == "PENDING"
         assert state["attempts"] == 1
+        assert state["maybe_in_gp"] is True, "#1946: GP took it; running out later must not release the draft"
     finally:
         _delete(row_id)
 
@@ -446,6 +560,160 @@ def test_a_receipt_queued_before_drafts_existed_still_drains(_migrate_database, 
         assert captured["receive_draft_id"] is None
     finally:
         _delete(row_id)
+
+
+# --- the re-check before a queued receipt is first sent (#1946) -------------------------------------
+
+
+def _set_maybe_in_gp(row_id: uuid.UUID) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        gp_outbox_repository.get_entry(session, row_id).maybe_in_gp = True
+        session.commit()
+
+
+def test_a_queued_receipt_that_no_longer_passes_approval_is_never_sent(_migrate_database, monkeypatch):
+    """A bin retired while the receipt waited for the relay: the persist would refuse it only after GP
+    took it. It fails as GP's own refusal does - nothing sent, so not maybe in GP - and its draft goes
+    back for review by the existing rules."""
+    from app.errors import ValidationError
+
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+
+        def _refuse(context):
+            raise ValidationError("Location A-1-1 is not an active bin in this warehouse", field="location")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _refuse)
+        notified: list = []
+        monkeypatch.setattr(gp_outbox_worker, "_notify_failure", notified.append)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert calls == [], "nothing may reach GP once the receipt no longer passes approval"
+        state = _read(row_id)
+        assert (state["status"], state["failure_kind"], state["maybe_in_gp"]) == ("FAILED", "gp_rejected", False)
+        assert state["last_error"].startswith("Not sent to GP")
+        assert "not an active bin" in state["last_error"]
+        assert notified == [row_id]
+    finally:
+        _delete(row_id)
+
+
+def test_a_queued_receipt_that_may_be_in_gp_is_sent_without_the_recheck(_migrate_database, monkeypatch):
+    """An earlier attempt may have left it in GP: the relay answers its key with that receipt, and a
+    refusal here would leave a receipt GP holds with nothing in Nexus."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _set_maybe_in_gp(row_id)
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+        _stub_persist(monkeypatch)
+
+        def _must_not_run(context):
+            raise AssertionError("a receipt that may be in GP is not re-checked")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _must_not_run)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert len(calls) == 1
+        assert _read(row_id)["status"] == "SUCCEEDED"
+    finally:
+        _delete(row_id)
+
+
+def _set_attempts(row_id: uuid.UUID, attempts: int) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        gp_outbox_repository.get_entry(session, row_id).attempts = attempts
+        session.commit()
+
+
+def test_a_queued_receipt_already_sent_once_is_sent_again_without_the_recheck(_migrate_database, monkeypatch):
+    """#1946 review: a keyed sql_error is retried with maybe_in_gp left False, though its commit may have
+    landed. The row counted the attempt, so it is not re-checked: a refusal would send back the draft of a
+    receipt GP may hold."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _set_attempts(row_id, 1)
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+        _stub_persist(monkeypatch)
+
+        def _must_not_run(context):
+            raise AssertionError("a receipt already sent once is not re-checked")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _must_not_run)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert len(calls) == 1
+        assert _read(row_id)["status"] == "SUCCEEDED"
+    finally:
+        _delete(row_id)
+
+
+def test_a_relay_that_is_not_there_counts_no_attempt_so_the_recheck_still_runs(_migrate_database, monkeypatch):
+    """What the gate rests on: a receipt waiting on a relay that is not connected is never sent, and that
+    wait counts no attempt, so its first real send is still re-checked."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=RelayUnavailableError("relay not connected", dispatched=False))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 0, False)
+    finally:
+        _delete(row_id)
+
+
+def test_a_recheck_that_raises_unexpectedly_is_retried_and_nothing_is_sent(_migrate_database, monkeypatch):
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT1"}, calls=calls)
+
+        def _boom(context):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(gp_outbox_worker, "_recheck_queued_receipt", _boom)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert calls == []
+        state = _read(row_id)
+        assert (state["status"], state["attempts"], state["maybe_in_gp"]) == ("PENDING", 1, False)
+    finally:
+        _delete(row_id)
+
+
+def test_the_recheck_is_the_approvals_preflight_on_the_stored_warehouse(monkeypatch):
+    """The same check the approval ran, against the building the payload named to GP, which is the one
+    the persist books into."""
+    seen: dict = {}
+    monkeypatch.setattr("app.schemas.warehouse._prepare_create_receive", lambda **kw: seen.update(kw))
+    po_id, line_id, warehouse_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    locations = [{"aisle": "A", "row": "1", "bay": "1", "quantity": 2}]
+
+    _REAL_RECHECK(
+        {
+            "po_id": str(po_id),
+            "received_by": "Wendy Warehouse",
+            "warehouse_id": str(warehouse_id),
+            "line_items_data": [{"po_line_item_id": str(line_id), "quantity_received": 2, "locations": locations}],
+        }
+    )
+
+    assert seen == {
+        "po_id": po_id,
+        "received_by": "Wendy Warehouse",
+        "line_items_data": [{"po_line_item_id": line_id, "quantity_received": 2, "locations": locations}],
+        "warehouse_id": warehouse_id,
+    }
 
 
 # --- GP-PROCESSING after a drained registration (#702) --------------------------------------------

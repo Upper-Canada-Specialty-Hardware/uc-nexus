@@ -30,12 +30,13 @@ from app.repositories import (
     tenancy,
     user_repository,
 )
-from app.repositories.project_labels import project_labels
+from app.repositories.project_labels import project_labels, projects_by_id
 from app.services import email as email_service
 from app.services import (
     gp_idempotency,
     gp_job_sync,
     gp_outbox_enqueue,
+    gp_outbox_worker,
     gp_po,
     gp_po_sync,
     gp_processing,
@@ -341,10 +342,15 @@ def _prepare_register_po(
     comment=None,
     idempotency_key=None,
     digest_out: dict | None = None,
+    claim: bool = False,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
     A lean scalar read - the resolver never needs the PO's documents here.
+
+    `claim` takes the attempt's registration claim (#1274) under the same lock, before the draft is read
+    for its digest, and commits it (#1849): taken after, an edit could land between the read and the claim,
+    and the queued payload would then be refused as a changed draft. The caller releases it.
 
     `contact` is the Confirm With name, and the register form sends the vendor's own contact as its
     default - which is why nothing here asks the relay for it. A round trip to GP just to fill a
@@ -383,9 +389,13 @@ def _prepare_register_po(
         # above passes a second attempt. Its fresh key would queue a second write and GP would end up
         # with two POs, the second never recorded. The same attempt's key is let through: its resubmit
         # is the no-op enqueue already makes it.
-        if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+        # #1948: a failed one GP took, or may have, holds the draft the same way.
+        held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key)
+        if held is not None:
             raise InvalidStateTransitionError(
-                "This PO's registration is already queued and will post to GP when the relay is back"
+                gp_outbox_repository.queued_registration_refusal(
+                    held, "This PO's registration is already queued and will post to GP when the relay is back"
+                )
             )
 
         # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
@@ -422,10 +432,15 @@ def _prepare_register_po(
         project_repository.require_gp_job_open(session, effective_project_id)
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
+        if claim:
+            # #1849: from here an edit is refused (#1903), so the digest below is the draft GP is sent.
+            po_repository.claim_po_registration(session, po_id, idempotency_key)
         # #1599: the draft as this payload is built from it, read under the same lock - the worker refuses to
         # push the snapshot of a draft that changed since. Handed back beside the payload, never sent to GP.
         if digest_out is not None:
             digest_out["registration_digest"] = po_repository.registration_digest(session, po.id)
+        if claim:
+            session.commit()
 
     gp_po.validate_create_po_inputs(
         job_number=job_number,
@@ -500,12 +515,6 @@ def _email_po_context(po_id: uuid.UUID, scope: str | None) -> EmailPoResult | di
         }
 
 
-def _claim_registration(po_id, key) -> None:
-    with SessionLocal() as session:
-        po_repository.claim_po_registration(session, po_id, key)
-        session.commit()
-
-
 def _release_registration(po_id, key) -> None:
     try:
         with SessionLocal() as session:
@@ -513,6 +522,76 @@ def _release_registration(po_id, key) -> None:
             session.commit()
     except Exception:  # noqa: BLE001 - a claim not released goes stale on its own
         logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
+
+
+# #1950: where the online push keeps the context it sent beside GP's answer in the ledger. Nexus's own key,
+# never GP's; it is taken off again before the answer is saved. The claim reads it too (#1962).
+PUSHED_CONTEXT_KEY = po_repository.REGISTRATION_PUSHED_CONTEXT_KEY
+
+
+def _without_pushed_context(gp_result: dict) -> tuple[dict, dict | None]:
+    """GP's answer as GP gave it, and the context the push kept beside it (None on an older answer)."""
+    if not isinstance(gp_result, dict) or PUSHED_CONTEXT_KEY not in gp_result:
+        return gp_result, None
+    answer = {k: v for k, v in gp_result.items() if k != PUSHED_CONTEXT_KEY}
+    return answer, gp_result[PUSHED_CONTEXT_KEY]
+
+
+def _held_registration(key: str, po_id: uuid.UUID) -> dict | None:
+    """What a resume saves (#1950): the held write GP's answer belongs to, with the context GP was sent.
+
+    The resume used to save this call's lines, vendor, costs and project over GP's answer - a form the
+    person could have edited since the push. None when the key has no held write: its save and the queueing
+    of it both failed, or GP answered before #1950. Refusing that left the draft held by an answer nothing
+    could finish, so the resume saves from the context the push kept with GP's answer, or - for an answer
+    recorded before it was kept - this call's context: the window that pushed it, under its key, and no
+    other window may resume it; the server refuses edits to the draft from the moment GP answers (#1903)."""
+    with SessionLocal() as session:
+        row = gp_outbox_repository.registration_for_key(session, key)
+        if row is None:
+            return None
+        if (row.persist_context or {}).get("po_id") != str(po_id):
+            raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
+        return {"id": row.id, "status": row.status, "persist_context": row.persist_context}
+
+
+def _hold_unsaved_registration(*, key, po_id, company, payload, persist_context, requested_by) -> bool:
+    """GP took the registration and Nexus failed to save it (#1950): queue it, under the same key, with
+    the context GP was sent. The worker finds GP's answer in the ledger and goes straight to the save, so
+    the held writes panel's Retry finishes it from any window, and the row holds the draft meanwhile
+    (#1948). The key lived only in the dialog that pushed it, so before this nothing else could.
+    Returns whether it was queued; when not, the attempt's claim keeps holding the draft instead."""
+    try:
+        project_id, label = _po_outbox_identity(po_id)
+        gp_outbox_enqueue.enqueue(
+            idempotency_key=key,
+            op="register_po_in_gp",
+            relay_op="create_po",
+            company=company,
+            payload=payload,
+            persist_context=persist_context,
+            entity_key=f"po:{po_id}",
+            label=label,
+            project_id=project_id,
+            requested_by=requested_by,
+            maybe_in_gp=True,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - the original failure is the one the caller raises
+        logger.exception("po registration gp took was not queued after its save failed", extra={"po_id": str(po_id)})
+        return False
+
+
+def _settle_held_registration(entry_id) -> None:
+    """The held write a resume just finished (#1950) is done: left FAILED it would offer a Retry."""
+    try:
+        with SessionLocal() as session:
+            row = gp_outbox_repository.get_entry_locked(session, entry_id)
+            if row is not None and row.status in ("FAILED", "CANCELLED"):
+                gp_outbox_repository.mark_succeeded(session, row)
+            session.commit()
+    except Exception:  # noqa: BLE001 - a Retry finds the ledger finished and settles the row then
+        logger.warning("held po registration not settled", extra={"entry_id": str(entry_id)}, exc_info=True)
 
 
 def _persist_register_po(
@@ -569,7 +648,9 @@ class POQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             pos = po_repository.get_purchase_orders(session, pid, status, company=scope)
-            return [po_to_type(po) for po in pos]
+            # #1877: every PO's project in one read, not one per PO.
+            projects = projects_by_id(session, (po.project_id for po in pos))
+            return [po_to_type(po, projects=projects) for po in pos]
 
     @strawberry.field
     def po_line_tied_quantities(self, info: strawberry.Info, po_id: strawberry.ID) -> list[PoLineTiedQuantity]:
@@ -666,7 +747,9 @@ class POQueries:
     @strawberry.field
     def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
         with SessionLocal() as session:
-            po = po_repository.get_purchase_order(session, uuid.UUID(str(id)), company=tenant_scope(info))
+            po = po_repository.get_purchase_order(
+                session, uuid.UUID(str(id)), company=tenant_scope(info), include_cancelled=True
+            )
             if po is None:
                 return None
             receive_records = po_repository.get_receive_records_for_po(session, po.id)
@@ -736,7 +819,8 @@ class POQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             pos = po_repository.get_open_pos(session, pid, company=scope)
-            return [po_to_type(po) for po in pos]
+            projects = projects_by_id(session, (po.project_id for po in pos))  # #1877: one read for the list
+            return [po_to_type(po, projects=projects) for po in pos]
 
     @strawberry.field
     def open_pos_summary(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpenPOSummary]:
@@ -1063,9 +1147,23 @@ class POMutations:
         ]
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
+        # #1873: before the row's result is answered with or resumed from, it must be a registration's.
+        gp_idempotency.require_op(state, "register_po_in_gp")
         if state is not None and state.result_id is not None:
+            # A key that registered a PO answers for that PO alone (#1905), as #1851 has an approval key
+            # answer for its own draft: sent with another PO's id it handed back the first one.
+            if state.result_id != str(input.po_id):
+                raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
             po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id), tenant_scope(info))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
+        if state is not None and state.relay_result is not None:
+            # #1962: an answer GP gave for another PO is never resumed onto this one. With no held write the
+            # resume saves the context kept with the answer, and that names its own PO: saved as it stood, it
+            # registered that PO - another company's, maybe - and handed it back to this caller. The claim
+            # below refuses the rest: a key whose answer is not this draft's own claim or held write.
+            _, pushed = _without_pushed_context(state.relay_result)
+            if isinstance(pushed, dict) and pushed.get("po_id") is not None and pushed.get("po_id") != str(pid):
+                raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
 
         # #1207: the costs the persist writes are checked before anything reaches GP.
         po_repository.validate_order_costs(shipping_cost=input.shipping_cost, tariff_amount=input.tariff_amount)
@@ -1077,39 +1175,42 @@ class POMutations:
         tax_detail_ids = _fold_tax_detail_ids(input)
         tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
         digest: dict = {}
-        payload = await asyncio.to_thread(
-            _prepare_register_po,
-            po_id=pid,
-            gp_vendor_id=input.gp_vendor_id,
-            buyer_id=input.buyer_id,
-            cost_code=input.cost_code,
-            line_items_data=line_items_data,
-            tax_detail_ids=tax_detail_ids,
-            tax_schedule_id=tax_schedule_id,
-            shipping_cost=input.shipping_cost,
-            miscellaneous=input.miscellaneous,
-            trade_discount=input.trade_discount,
-            project_id=register_project_id,
-            scope=tenant_scope(info),
-            gp_company=input.gp_company,
-            shipping_method=input.shipping_method,
-            vendor_address_code=input.vendor_address_code,
-            site=input.site,
-            doc_date=input.doc_date,
-            contact=input.contact,
-            comment=input.comment,
-            idempotency_key=key,
-            digest_out=digest,
-        )
 
         # #1274: one registration attempt per draft at a time. Taken under the PO's row lock and
         # committed before anything goes to GP, so a second window is refused instead of pushing a
         # second create_po under its own key. Released when the attempt settles: refused before the
         # push, refused by GP, queued, or persisted. When GP may hold the write but Nexus did not
-        # record it, the claim is kept and goes stale after REGISTRATION_CLAIM_SECONDS.
-        await asyncio.to_thread(_claim_registration, pid, key)
-        release = True
+        # record it, the claim is kept and goes stale after REGISTRATION_CLAIM_SECONDS. #1849: taken in
+        # the pre-flight, before the draft is read for its digest. A resume of an attempt GP answered
+        # never lets it go before the save does - that claim is what holds the draft.
+        release = state is None or state.relay_result is None
         try:
+            payload = await asyncio.to_thread(
+                _prepare_register_po,
+                po_id=pid,
+                gp_vendor_id=input.gp_vendor_id,
+                buyer_id=input.buyer_id,
+                cost_code=input.cost_code,
+                line_items_data=line_items_data,
+                tax_detail_ids=tax_detail_ids,
+                tax_schedule_id=tax_schedule_id,
+                shipping_cost=input.shipping_cost,
+                miscellaneous=input.miscellaneous,
+                trade_discount=input.trade_discount,
+                project_id=register_project_id,
+                scope=tenant_scope(info),
+                gp_company=input.gp_company,
+                shipping_method=input.shipping_method,
+                vendor_address_code=input.vendor_address_code,
+                site=input.site,
+                doc_date=input.doc_date,
+                contact=input.contact,
+                comment=input.comment,
+                idempotency_key=key,
+                digest_out=digest,
+                claim=True,
+            )
+
             # #425 live re-check. The job number is read back off the payload rather than returned
             # separately, because the payload is the thing actually being pushed - checking anything else
             # could check a job this PO is not going to GP under. Only job-cost lines carry one; a
@@ -1153,10 +1254,31 @@ class POMutations:
                 "registration_digest": digest.get("registration_digest"),
             }
 
+            held = None
             if state is not None and state.relay_result is not None:
                 # GP already holds this attempt's PO; only the persist below may let the claim go.
                 release = False
                 gp_result = state.relay_result
+                # #1950: saved from what GP was sent, kept on the held write, never from this call's form -
+                # the dialog keeps its key after a failure, and its lines could have been edited since.
+                # With no held write to save from, this call's context is saved, and held as a fresh push's
+                # is when that save fails too, so a resume can always finish it.
+                held = await asyncio.to_thread(_held_registration, key, pid)
+                gp_result, pushed_context = _without_pushed_context(gp_result)
+                if held is None and pushed_context is not None:
+                    # #1950: no held write, so what GP was sent is the context kept with its answer - never
+                    # this call's form, which a dialog reopened on the draft could have edited since. Only ever
+                    # saved onto this caller's own draft, the one the pre-flight scoped and claimed (#1962).
+                    persist_context = {**pushed_context, "po_id": str(pid)}
+                if held is not None and held["status"] in ("PENDING", "IN_FLIGHT"):
+                    # The queue is finishing it right now; the queued row holds the draft from here.
+                    release = True
+                    po = await asyncio.to_thread(_load_po_type, pid)
+                    return RegisterPOResult(
+                        queued=True, outbox_entry_id=strawberry.ID(str(held["id"])), purchase_order=po
+                    )
+                if held is not None:
+                    persist_context = held["persist_context"]
             else:
                 # Refused before anything is sent: a relay that does not recognise the key cannot tell a
                 # retry of this registration from a second order, and the queueing below assumes it can.
@@ -1180,14 +1302,28 @@ class POMutations:
                     # the claim to go stale rather than letting another window push a second PO.
                     release = False
                     gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-                except (RelayUnavailableError, RelayTimeoutError):
+                except (RelayUnavailableError, RelayTimeoutError, RelayCallError) as e:
+                    if isinstance(e, RelayCallError) and not e.may_have_committed:
+                        # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
+                        # it reads the same. Every other refusal passes through untouched.
+                        release = True  # GP refused it, so nothing reached GP
+                        refusal = project_repository.gp_job_refusal(e, job_number)
+                        if refusal is not None:
+                            raise refusal from e
+                        raise
                     # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
                     # the user it will post itself. All three ways that can happen are queued now - the
                     # relay is not there, the socket died with the job on the wire, or the relay did not
                     # answer in time. The last two used to surface to the user, because a retry might have
                     # reserved a second PO number in GP; the relay recognises the attempt's key now and
-                    # answers with the PO it already made, so asking again cannot double-order.
+                    # answers with the PO it already made, so asking again cannot double-order. #1857: so is
+                    # a refusal that can follow the commit (an unplanned relay exception), which released
+                    # the claim as GP refusing and let the next try push a second PO under a fresh key.
                     project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
+                    # #1948: all but the first may have left the PO in GP, so the row says so - however it
+                    # ends, it then keeps holding the draft rather than freeing it to be cancelled or
+                    # registered again.
+                    may_be_in_gp = not isinstance(e, RelayUnavailableError) or e.dispatched
                     entry_id = await asyncio.to_thread(
                         gp_outbox_enqueue.enqueue,
                         idempotency_key=key,
@@ -1200,39 +1336,46 @@ class POMutations:
                         label=label,
                         project_id=project_id,
                         requested_by=auth["user_id"],
+                        maybe_in_gp=may_be_in_gp,
                     )
                     # The PO is still DRAFT; the list shows it as queued until the worker drains it.
                     # The queued row guards the draft from here on.
                     release = True
                     po = await asyncio.to_thread(_load_po_type, pid)
                     return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
-                except RelayCallError as e:
-                    # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
-                    # it reads the same. Every other refusal passes through untouched.
-                    release = True  # GP refused it, so nothing reached GP
-                    refusal = project_repository.gp_job_refusal(e, job_number)
-                    if refusal is not None:
-                        raise refusal from e
-                    raise
-                await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
+                # #1950: kept with GP's answer, what was sent saves it if the save and its queueing both fail.
+                await asyncio.to_thread(
+                    gp_idempotency.record_relay_result,
+                    key,
+                    "register_po_in_gp",
+                    {**gp_result, PUSHED_CONTEXT_KEY: persist_context},
+                )
 
-            po = await asyncio.to_thread(
-                _persist_register_po,
-                key=key,
-                po_id=pid,
-                gp_vendor_id=input.gp_vendor_id,
-                vendor_name_snapshot=input.gp_vendor_name,
-                gp_result=gp_result,
-                line_items_data=line_items_data,
-                cost_code=input.cost_code,
-                buyer_id=input.buyer_id,
-                shipping_cost=input.shipping_cost,
-                tariff_amount=input.tariff_amount,
-                # #691: a draft with no project, registered with one chosen in the dialog, must land ON
-                # that project. This was omitted, so the online path dropped the choice while the outbox
-                # replay - which reads the same value out of persist_context - kept it.
-                project_id=register_project_id,
-            )
+            try:
+                # The save the queue makes, from the same context (#1950): this call's on a fresh push, the
+                # held write's on a resume. #691's project chosen in the dialog rides in it.
+                po = await asyncio.to_thread(
+                    gp_outbox_worker._persist_register_po_from_context, persist_context, gp_result, key
+                )
+            except Exception:
+                # GP holds the PO and Nexus did not record it. A fresh push is queued from what GP was sent,
+                # and the queued row, like a held one that failed again, holds the draft in place of the
+                # claim. A held write somebody cancelled holds nothing, so the claim stays.
+                if held is None:
+                    release = await asyncio.to_thread(
+                        _hold_unsaved_registration,
+                        key=key,
+                        po_id=pid,
+                        company=input.gp_company,
+                        payload=payload,
+                        persist_context=persist_context,
+                        requested_by=auth["user_id"],
+                    )
+                else:
+                    release = held["status"] == "FAILED"
+                raise
+            if held is not None:
+                await asyncio.to_thread(_settle_held_registration, held["id"])
             release = True
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
         finally:

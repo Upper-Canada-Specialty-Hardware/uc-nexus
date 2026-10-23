@@ -1,10 +1,11 @@
 """Pool entry/exit flows: destock, allocate-to-project, receive-to-stock, transfer."""
 
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
@@ -15,9 +16,12 @@ from app.models.enums import (
     DestockSource,
     InventoryEntrySource,
     PoolKind,
+    PullRequestSource,
+    PullRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_item_type import InventoryItemType
+from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
     clone_origin_fields,
@@ -27,6 +31,7 @@ from app.repositories.warehouse import (
     get_project_progress_by_product,
     get_reserved_quantities,
     get_scheduled_pairs,
+    in_pick_stmt,
     location_detail,
 )
 from app.repositories.warehouse.inventory import check_expected_quantity
@@ -217,6 +222,30 @@ def _non_schedule_type_codes(session: Session, company: str | None) -> set[str]:
     return set(session.scalars(select(InventoryItemType.code).where(InventoryItemType.company == company)).all())
 
 
+_SCHEDULE_CHECK_READS = "stock_schedule_check_reads"
+
+
+@contextmanager
+def schedule_check_reads(session: Session):
+    """Within the block, the schedule check reads a company's type codes and a project's pairs once
+    (#1834). For a batch that allocates entry by entry (the legacy migration, which the demo build runs
+    too) and writes neither between them: two reads per entry was ~4000 for a 2000-entry batch."""
+    session.info[_SCHEDULE_CHECK_READS] = {}
+    try:
+        yield
+    finally:
+        session.info.pop(_SCHEDULE_CHECK_READS, None)
+
+
+def _read_once(session: Session, key: tuple, read):
+    reads = session.info.get(_SCHEDULE_CHECK_READS)
+    if reads is None:
+        return read()
+    if key not in reads:
+        reads[key] = read()
+    return reads[key]
+
+
 def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, code: str) -> None:
     """Schedule hardware allocated to a project must name a pair on its schedule (#1647).
 
@@ -225,21 +254,69 @@ def _refuse_a_pair_off_the_schedule(session: Session, project, category: str, co
     fact. Checked here, in the one write every caller goes through (the dialog, the legacy migration),
     with the inventory view's own rule: a non-schedule type code is exempt, any other pair must be one
     the project's schedule has.
+
+    A pair the latest schedule dropped is off it too (#1825): a revision keeps the rows already ordered
+    with every unit past the schedule (#1491, ruled on #1527), so the pair must still be asked units of.
+    Whether the project has a schedule at all is still decided by any row, dropped or not.
     """
-    if category in _non_schedule_type_codes(session, project.company):
+    type_codes = _read_once(
+        session, ("types", project.company), lambda: _non_schedule_type_codes(session, project.company)
+    )
+    if category in type_codes:
         return
-    scheduled = get_scheduled_pairs(session, project.id)
+    scheduled = _read_once(session, ("pairs", project.id), lambda: get_scheduled_pairs(session, project.id))
     if not scheduled:
         # INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1647 / #1756, 2026-10-19): a
         # project with no hardware schedule imported yet takes the allocation. The units land as floating
         # inventory - on the project, tied to no schedule line item, so nothing claims them until they
         # are tied to one. Do not refuse it, and do not report it as a gap in later audits.
         return
-    if (category, code) not in scheduled:
+    still = _read_once(
+        session, ("still", project.id), lambda: get_scheduled_pairs(session, project.id, still_scheduled=True)
+    )
+    if (category, code) not in still:
         raise ValidationError(
             f"{category} / {code} is not on this project's hardware schedule. Pick one of the schedule's products.",
             field="target_product_code",
         )
+
+
+def _picked_not_shipped(session: Session, project_id: uuid.UUID) -> dict[tuple[str, str], int]:
+    """Units of each pair a pick took off the project's shelves that no packing slip carries (#1814).
+
+    A confirmed pick deducts the rows it names, so these units are no longer on hand, and until a slip
+    is cut they are not shipped out either. Three places hold them, none overlapping the others or a
+    slip: the staging pool (completed shipping-out pulls less what slips carried, the shipping
+    workspace's own figure), the shop (completed shop-assembly pulls, a terminal exit as on the
+    Hardware Status page), and a pull still in progress, whose applied pick lines are off the shelf
+    before the pull is handed over.
+    """
+    from app.repositories import shipping_repository
+
+    out: dict[tuple[str, str], int] = {}
+    for li in shipping_repository.get_ship_ready_items(session, project_id)["loose_items"]:
+        pair = (li["hardware_category"], li["product_code"])
+        out[pair] = out.get(pair, 0) + li["available_quantity"]
+
+    shop_stmt = (
+        select(
+            PullRequestItem.hardware_category,
+            PullRequestItem.product_code,
+            func.sum(PullRequestItem.requested_quantity),
+        )
+        .join(PullRequest, PullRequestItem.pull_request_id == PullRequest.id)
+        .where(
+            PullRequest.project_id == project_id,
+            PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
+            PullRequest.status == PullRequestStatus.COMPLETED,
+        )
+        .group_by(PullRequestItem.hardware_category, PullRequestItem.product_code)
+    )
+    # #1939: the in-progress pull's share is the one statement Hardware Status and the reconcile read too.
+    for stmt in (shop_stmt, in_pick_stmt(project_ids=[project_id])):
+        for category, code, quantity in session.execute(stmt).all():
+            out[(category, code)] = out.get((category, code), 0) + int(quantity or 0)
+    return out
 
 
 def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, project_id: uuid.UUID) -> dict:
@@ -249,7 +326,10 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
     is exempt and goes under its own pair. `has_schedule` is False for a project with no schedule yet,
     whose allocation lands as floating inventory. `pairs` is every pair on the schedule with what it
     still needs: required, less what the project holds sound, what is on order and not yet received,
-    and what has already shipped out. Two grouped reads that already exist, joined in Python by pair.
+    what has already shipped out, and what a pick took off the shelf that has not shipped yet - staged,
+    at the shop, or on a pull still in progress (#1814). Grouped reads that already exist plus two
+    more, joined in Python by pair. A pair the latest schedule dropped (required 0, every unit past it)
+    is not offered (#1825), but its rows still mean the project has a schedule.
     """
     from app.models.project import Project as ProjectModel
 
@@ -264,10 +344,16 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
         (r["hardware_category"], r["product_code"]): r["on_hand_quantity"] - r["deficient_quantity"]
         for r in get_project_availability(session, project_id)
     }
+    # #1814: units picked for the project and not yet on a slip are in neither on hand nor shipped out,
+    # so without them a job whose hardware sits staged for a truck read as still needing all of it.
+    picked = _picked_not_shipped(session, project_id)
+    progress = get_project_progress_by_product(session, project_id)
     pairs = []
-    for row in get_project_progress_by_product(session, project_id):
+    for row in progress:
+        if row["required_quantity"] <= 0:
+            continue
         pair = (row["hardware_category"], row["product_code"])
-        covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"]
+        covered = on_hand.get(pair, 0) + row["back_ordered"] + row["shipped_out"] + picked.get(pair, 0)
         pairs.append(
             {
                 "hardware_category": row["hardware_category"],
@@ -278,7 +364,7 @@ def get_allocation_targets(session: Session, *, stock_item_id: uuid.UUID, projec
         )
     return {
         "schedule_hardware": si.hardware_category not in _non_schedule_type_codes(session, project.company),
-        "has_schedule": bool(pairs),
+        "has_schedule": bool(progress),
         "pairs": pairs,
     }
 
@@ -518,6 +604,9 @@ def _find_matching_inventory_location(
         (InventoryLocationModel.receive_line_item_id, src.receive_line_item_id),
         (InventoryLocationModel.stock_item_id, src.stock_item_id),
         (InventoryLocationModel.shipment_return_item_id, src.shipment_return_item_id),
+        # How the row got there (#1699) is part of its origin too: merged into a row of another, the moved
+        # units would read with the target's label (#1826).
+        (InventoryLocationModel.entry_source, src.entry_source),
     ):
         stmt = stmt.where(col.is_(None)) if val is None else stmt.where(col == val)
     return session.scalars(stmt).first()
@@ -541,6 +630,10 @@ def transfer_inventory(
     Partial + immediate. Source keeps the remainder (an InventoryLocation may sit at 0, a fully
     drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
     row (same origin + location) or a new row is created. Same- and cross-warehouse use one path.
+
+    A new destination row keeps the source row's `received_at`, as a split does (#1880): a transfer is a
+    change of shelf, not a receipt, and FIFO orders picks by that date. A merge leaves the row it lands
+    on with its own date.
 
     `expected_quantity` is the source row's count the dialog showed; a row that moved since is
     refused, so a resend after a lost reply cannot move the units twice (#1552).
@@ -566,8 +659,6 @@ def transfer_inventory(
         session, dest_warehouse_id, company=None, field="dest_warehouse_id"
     )
     ensure_registered_location(session, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
-
-    now = datetime.utcnow()
 
     if source_type == "INVENTORY_LOCATION":
         # Locked and re-read (#1119): the source shrinks by a count read here, and a merge target of the
@@ -609,7 +700,7 @@ def transfer_inventory(
                 aisle=dest_aisle,
                 row=dest_row,
                 bay=dest_bay,
-                received_at=now,
+                received_at=il.received_at,
             )
             session.add(target)
         session.flush()
@@ -674,7 +765,7 @@ def transfer_inventory(
             aisle=dest_aisle,
             row=dest_row,
             bay=dest_bay,
-            received_at=now,
+            received_at=si.received_at,
             # The units keep their Stock / Overhead flag and their price wherever they go (#832, #942).
             kind=si.kind,
             unit_cost=si.unit_cost,

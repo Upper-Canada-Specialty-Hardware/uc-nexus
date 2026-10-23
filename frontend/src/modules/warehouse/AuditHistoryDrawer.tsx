@@ -16,6 +16,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_AUDIT_LOG, GET_WAREHOUSES } from '../../graphql/shared';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { auditActionLabel } from './auditActions';
 
 interface AuditLogEntry {
   id: string;
@@ -54,26 +55,6 @@ const ACTION_COLORS: Record<string, 'default' | 'primary' | 'secondary' | 'succe
   PULL_RESTOCK: 'success',
   PULL_CANCELLED: 'error',
   POOL_KIND_CHANGE: 'secondary',
-};
-
-const ACTION_LABELS: Record<string, string> = {
-  RECEIVE: 'Received',
-  ADJUSTMENT: 'Qty Adjusted',
-  MOVE: 'Moved',
-  UNLOCATE: 'Unlocated',
-  PUT_AWAY: 'Put Away',
-  PULL_DEDUCTION: 'Pull Deduction',
-  SPOT_CHECK: 'Spot Check',
-  DESTOCK: 'Destocked',
-  ALLOCATE_FROM_STOCK: 'Allocated from Stock',
-  RECLASSIFY: 'Reclassified',
-  REPORT_DEFICIENT: 'Reported Deficient',
-  RESOLVE_DEFICIENT: 'Deficiency Resolved',
-  TRANSFER: 'Transferred',
-  RETURN: 'Returned',
-  PULL_RESTOCK: 'Pull Restocked',
-  PULL_CANCELLED: 'Pull Cancelled',
-  POOL_KIND_CHANGE: 'Kind Changed',
 };
 
 // #974: the words each detail value is shown in, where the stored value is a code.
@@ -137,16 +118,37 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
     return code ? `${code} ${where}` : where;
   };
   const reason = text('reasonText');
+  // #1895: an override that placed units on another shelf made a new row there; its first entry is
+  // the row being created, not a count changing.
+  const createdByOverride = entry.action === 'ADJUSTMENT' && Boolean(detail.createdByOverrideOf);
 
   const renderDetail = () => {
     switch (entry.action) {
-      case 'ADJUSTMENT':
+      case 'ADJUSTMENT': {
+        if (createdByOverride) {
+          return (
+            <>
+              <DetailLine label="Qty" value={(detail.newQuantity ?? detail.quantity) as number} />
+              <DetailLine label="At" value={place(detail.location)} />
+              {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
+            </>
+          );
+        }
+        // An override written before #1895 stored `delta` where the drawer reads `adjustment`.
+        const adjustment = (detail.adjustment ?? detail.delta) as number;
+        // #1897: a stock pool recount stores its reason as reasonText.
+        const adjustReason = text('reason') ?? reason;
+        const placed = (detail.destinations as { aisle: string; row: string; bay: string; quantity: number }[]) ?? [];
         return (
           <>
-            <DetailLine label="Qty" value={`${detail.oldQuantity} → ${detail.newQuantity} (${(detail.adjustment as number) > 0 ? '+' : ''}${detail.adjustment})`} />
-            {detail.reason && <DetailLine label="Reason" value={detail.reason as string} />}
+            <DetailLine label="Qty" value={`${detail.oldQuantity} → ${detail.newQuantity} (${adjustment > 0 ? '+' : ''}${adjustment})`} />
+            {placed.length > 0 && (
+              <DetailLine label="Placed" value={placed.map((d) => `${d.quantity} at ${formatLocation(d)}`).join(', ')} />
+            )}
+            {adjustReason && <DetailLine label="Reason" value={adjustReason} />}
           </>
         );
+      }
       case 'SPOT_CHECK': {
         // A spot check carries the counted-vs-system pair; fall back to the adjustment quantities on
         // an older row that predates those keys.
@@ -296,7 +298,7 @@ function AuditEntry({ entry, warehouseCodes }: { entry: AuditLogEntry; warehouse
     <Box sx={{ py: 1.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Chip
-          label={ACTION_LABELS[entry.action] ?? entry.action}
+          label={createdByOverride ? 'Created by Override' : auditActionLabel(entry.action)}
           color={ACTION_COLORS[entry.action] ?? 'default'}
           size="small"
           variant="outlined"

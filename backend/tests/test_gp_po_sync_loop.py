@@ -454,6 +454,31 @@ def test_a_stalled_company_leaves_the_backfill_rotation(monkeypatch):
     assert "A" not in backfills[1:]
 
 
+def test_a_stall_is_tried_again_after_the_poll_interval(monkeypatch):
+    """#1914: with no company past its backfill there is no incremental tick to clear a stall, so the
+    stall runs out on its own after POLL_SECONDS - and not a moment sooner."""
+    events = _run_scheduler(monkeypatch, companies=["A"], draining={"A"}, stalls={"A"}, max_turns=12)
+
+    backfills = [i for i, e in enumerate(events) if e == ("backfill", "A")]
+    assert len(backfills) >= 2
+    assert sum(s for kind, s in events[backfills[0] : backfills[1]] if kind == "sleep") >= 900.0
+
+
+def test_a_stall_holds_a_company_out_until_it_is_poll_seconds_old(monkeypatch):
+    now = {"t": 1000.0}
+    monkeypatch.setattr(gp_po_sync.time, "monotonic", lambda: now["t"])
+    monkeypatch.setattr(gp_po_sync, "POLL_SECONDS", 900.0)
+    stalled = {"A": 1000.0, "B": 500.0}
+
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["C"]
+    now["t"] = 1500.0  # B stalled 1000s ago, A only 500s ago
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["B", "C"]
+    assert stalled == {"A": 1000.0}
+    now["t"] = 1900.0
+    assert gp_po_sync._drainable(["A", "B", "C"], stalled) == ["A", "B", "C"]
+    assert stalled == {}
+
+
 def test_there_is_no_all_companies_sweep_at_startup(monkeypatch):
     """Sweeping every company is what re-issued two unbounded open-book reads minutes after the first
     had already pinned GP's CPU. Startup resumes the rotation; it does not sweep."""
@@ -1739,3 +1764,29 @@ def test_the_open_book_pass_ends_with_the_currency_backfill(monkeypatch):
 
     assert ran == ["TUBC"]
     assert ("finish", None) in asked
+
+
+def test_each_po_of_a_page_is_committed_before_the_next_is_upserted(monkeypatch):
+    """#1959: one page transaction kept every PO's, project's and line's locks to the end of the page, and
+    a register in Nexus taking its PO then the project deadlocked against it. Each PO now starts with
+    nothing held from the one before; and one that fails is rolled back without losing those before it."""
+    from app.repositories import gp_po_sync_repository as sync_repo
+
+    monkeypatch.setattr(gp_po_sync, "_load_project_map", lambda session, company: {})
+    monkeypatch.setattr(sync_repo, "po_numbers_pending_registration", lambda session, company: frozenset())
+    seen = []
+
+    def upsert(session, company, po, project_map, *, pending_registration):
+        seen.append((po["po_number"], session.in_transaction()))
+        if po["po_number"] == "PO2":
+            raise RuntimeError("boom")
+        return "updated"
+
+    monkeypatch.setattr(sync_repo, "upsert_mirrored_po", upsert)
+
+    result = gp_po_sync._persist_page(
+        "UCSH", [{"po_number": n} for n in ("PO1", "PO2", "PO3")], None, is_backfill=False
+    )
+
+    assert seen == [("PO1", False), ("PO2", False), ("PO3", False)]
+    assert result["updated"] == 2 and result["skipped"] == 1

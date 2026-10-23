@@ -13,6 +13,7 @@ import {
 } from '@mui/material';
 import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
+import LoadError from '../../../components/LoadError';
 import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import { useToast } from '../../../components/Toast';
 import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
@@ -94,13 +95,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
     source === 'DEFICIENT_SWAP' ? deficient : inventoryLocation.quantity - deficient;
   // #1046: an override target is a strict pick from the row's warehouse - the server refuses a
   // partial triple and any bin not on the Locations tab. Skipped until the override is opened.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
-    [inventoryLocation.warehouseId],
-    aisle,
-    row,
-    bay,
-    !overrideLoc,
-  );
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryLoaded, registryError, refetchRegistry, noOptionsText } =
+    useDefinedLocationPick([inventoryLocation.warehouseId], aisle, row, bay, !overrideLoc);
   const valid =
     Number.isInteger(q) &&
     q >= 1 &&
@@ -230,10 +226,14 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
         </Button>
         {overrideLoc && (
           <Stack spacing={1}>
+            {/* #1878: a failed registry read left the pickers offering nothing, as if no bin were defined. */}
+            {registryError && !registryLoaded && (
+              <LoadError what="the defined locations" error={registryError} onRetry={refetchRegistry} />
+            )}
             <Stack direction="row" spacing={2}>
-              <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
-              <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
-              <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
+              <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} noOptionsText={noOptionsText} />
+              <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} noOptionsText={noOptionsText} />
+              <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} noOptionsText={noOptionsText} />
             </Stack>
             {!isDefinedPick && (
               <Typography variant="caption" color="text.secondary">

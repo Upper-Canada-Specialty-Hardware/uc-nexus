@@ -57,6 +57,10 @@ class Project(Base):
     # hydrate-from-persisted finalize leaves it, so the stored name survives. NULL = imported before
     # this, or a hydrate that never carried one.
     schedule_filename: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1918: bumped by every finalize, which rewrites the unordered schedule rows. The wizard sends the
+    # revision it loaded and finalize refuses a stale one, so a tab can't revert a newer schedule.
+    # 0 = no schedule yet.
+    schedule_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     off_site_storage_agreement: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )

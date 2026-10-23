@@ -49,6 +49,7 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveLineItem, ReceiveRecord
 from app.models.sharepoint_migration_run import SharepointMigrationMark, SharepointMigrationRun
 from app.models.warehouse import Warehouse
+from app.models.warehouse_location import WarehouseLocation as WarehouseLocationModel
 from app.repositories import custom_items_repository
 from app.repositories import stock as stock_repository
 from app.repositories.warehouse import (
@@ -963,23 +964,55 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
     # whole, defined triple, but only mid-batch; the stock branch held it to nothing, so company stock
     # landed on undefined or aisle-only shelves - the legacy rows location cleanup exists for. No
     # shelf at all is still fine: 340 source rows have no location and still hold real hardware.
-    checked: set[tuple] = set()
+    #
+    # Every bad shelf is collected and named in one refusal (#1907): stopping at the first sent the
+    # admin back to the wizard once per shelf, and a source list has dozens. Each shelf is named once,
+    # by the first entry on it, with how many more ride on it. The registry is read in one query.
+    defined = {
+        tuple(shelf)
+        for shelf in session.execute(
+            select(
+                WarehouseLocationModel.warehouse_id,
+                WarehouseLocationModel.aisle,
+                WarehouseLocationModel.row,
+                WarehouseLocationModel.bay,
+            ).where(
+                WarehouseLocationModel.warehouse_id.in_(warehouse_ids),
+                WarehouseLocationModel.active.is_(True),
+            )
+        ).all()
+    }
+    # (warehouse, aisle, row, bay) -> [first entry's label, the problem, how many entries name it]
+    bad: dict[tuple, list] = {}
     for index, entry in enumerate(entries):
         triple = _location_triple(entry)
         provided = [v for v in triple if v is not None]
         if not provided:
             continue
+        key = (entry["warehouse_id"], *triple)
+        if key in bad:
+            bad[key][2] += 1
+            continue
+        if len(provided) == 3 and key in defined:
+            continue
         label = f"Entry {index + 1} ({entry['hardware_category'].strip()} / {entry['product_code'].strip()})"
         if len(provided) != 3:
-            raise ValidationError(f"{label}: aisle, row and bay must all be given together, or none", field="location")
-        key = (entry["warehouse_id"], *triple)
-        if key in checked:
-            continue
-        try:
-            ensure_registered_location(session, entry["warehouse_id"], *triple)
-        except ValidationError as e:
-            raise ValidationError(f"{label}: {e.message}", field=e.field) from e
-        checked.add(key)
+            shelf = " / ".join(v for v in triple if v is not None)
+            problem = f"{shelf}: aisle, row and bay must all be given together, or none"
+        else:
+            problem = f"{' / '.join(triple)} is not a defined location in this warehouse"
+        bad[key] = [label, problem, 1]
+    if bad:
+        named = "; ".join(
+            f"{label}: {problem}"
+            + (f" (and {count - 1} more {'entry' if count == 2 else 'entries'})" if count > 1 else "")
+            for label, problem, count in bad.values()
+        )
+        raise ValidationError(
+            f"{len(bad)} location(s) cannot take migrated hardware - {named}. "
+            "Define them on the Locations tab first, or resolve them differently.",
+            field="location",
+        )
 
 
 def _location_triple(entry: dict) -> tuple[str | None, str | None, str | None]:

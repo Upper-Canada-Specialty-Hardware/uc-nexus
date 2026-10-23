@@ -1,5 +1,6 @@
 import { it, expect } from 'vitest';
-import type { GridColDef } from '@mui/x-data-grid';
+import { render, screen } from '@testing-library/react';
+import type { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { columnMinWidth } from '../../../components/useGridColumnFit';
 import { buildRelayInstallColumns } from '../relayInstallsColumns';
 
@@ -23,4 +24,18 @@ it('keeps the install history reachable in one column', () => {
   expect(headers).toContain('History');
   expect(headers).toContain('Last seen');
   expect(headers).not.toContain('Adopted by');
+});
+
+it('will not adopt the connected install, as it will not remove it (#1868)', () => {
+  const columns = buildRelayInstallColumns({ liveInstallId: 'live', onCopy: () => {}, onAdopt: () => {}, onRemove: () => {} });
+  const recovery = columns.find((c) => c.field === 'adopt')!;
+  const cell = (id: string) => recovery.renderCell!({ row: { id } } as GridRenderCellParams);
+
+  const { unmount } = render(<>{cell('live')}</>);
+  expect(screen.getByRole('button', { name: 'Adopt next connection' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Remove' })).toBeDisabled();
+  unmount();
+
+  render(<>{cell('other')}</>);
+  expect(screen.getByRole('button', { name: 'Adopt next connection' })).toBeEnabled();
 });

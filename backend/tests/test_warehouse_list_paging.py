@@ -118,6 +118,81 @@ def test_pages_interleave_drafts_and_records_newest_first(db_session):
     assert [r["id"] for page in pages for r in page] == newest_first
 
 
+def _queued_approval(session, po, outbox_status, minutes) -> ReceiveDraft:
+    """A draft approved onto the GP outbox: APPROVED, linked to the row, no receive record yet."""
+    from app.repositories import gp_outbox_repository
+
+    draft = _draft(session, po, ReceiveDraftStatus.APPROVED, minutes=minutes)
+    row = gp_outbox_repository.enqueue(
+        session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company="TUBC",
+        payload={},
+        persist_context={},
+        entity_key=f"po:{po.id}",
+        label="Receipt",
+    )
+    row.status = outbox_status
+    draft.approved_outbox_entry_id = row.id
+    session.flush()
+    return draft
+
+
+@pytest.mark.parametrize(
+    ("outbox_status", "state"),
+    [
+        ("PENDING", "WAITING_ON_GP"),
+        ("IN_FLIGHT", "WAITING_ON_GP"),
+        ("FAILED", "GP_WRITE_FAILED"),
+        ("CANCELLED", "GP_WRITE_FAILED"),
+    ],
+)
+def test_an_approval_still_on_the_outbox_says_what_gp_is_doing(db_session, outbox_status, state):
+    """#1947: an approved draft with no record read as plain Approved, as if it were booked, while its
+    receipt waited on GP or GP had refused it."""
+    project = _project(db_session)
+    po = _po(db_session, project)
+    queued = _queued_approval(db_session, po, outbox_status, minutes=0)
+    pending = _draft(db_session, po, ReceiveDraftStatus.PENDING_APPROVAL, minutes=1)
+    record = _record(db_session, po, minutes=2)
+
+    rows = {r["id"]: r for r in warehouse_repository.get_all_receives(db_session, limit=10, project_id=project.id)}
+
+    assert rows[queued.id]["status"] == "APPROVED"
+    assert rows[queued.id]["gp_write_state"] == state
+    assert rows[pending.id]["gp_write_state"] is None
+    assert rows[record.id]["gp_write_state"] is None
+    assert all("_outbox_entry_id" not in r for r in rows.values())
+
+
+def test_the_outbox_rows_for_a_page_are_read_once(db_session):
+    """One grouped read for the page, however many queued approvals it holds."""
+    from sqlalchemy import event
+
+    project = _project(db_session)
+    po = _po(db_session, project)
+    for i in range(3):
+        _queued_approval(db_session, po, "PENDING", minutes=i)
+
+    outbox_reads: list[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "gp_write_outbox" in statement:
+            outbox_reads.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        rows = warehouse_repository.get_all_receives(db_session, limit=10, project_id=project.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    assert [r["gp_write_state"] for r in rows] == ["WAITING_ON_GP"] * 3
+    assert len(outbox_reads) == 1
+
+
 def test_an_unknown_status_is_a_field_error(db_session):
     with pytest.raises(ValidationError) as e:
         warehouse_repository.get_all_receives(db_session, limit=5, status="NOPE")
@@ -136,6 +211,28 @@ def test_the_po_search_treats_wildcards_as_characters(db_session):
     rows = warehouse_repository.get_all_receives(db_session, limit=10, project_id=project.id, po_search=f"PO_{tag}")
 
     assert {r["po_id"] for r in rows} == {exact.id}
+
+
+# --- my drafts (#1889) --------------------------------------------------------------------------
+
+
+def test_my_drafts_reads_only_the_states_it_shows(db_session):
+    """The view shows rejected and waiting drafts; an author's approved ones are left in the database
+    rather than read and dropped in the browser."""
+    project = _project(db_session)
+    po = _po(db_session, project)
+    rejected = _draft(db_session, po, ReceiveDraftStatus.REJECTED, minutes=0)
+    _draft(db_session, po, ReceiveDraftStatus.APPROVED, minutes=1)
+    waiting = _draft(db_session, po, ReceiveDraftStatus.PENDING_APPROVAL, minutes=2)
+
+    rows = warehouse_repository.get_receive_drafts(
+        db_session,
+        po_id=po.id,
+        created_by_user_id="u_1",
+        statuses=[ReceiveDraftStatus.REJECTED, ReceiveDraftStatus.PENDING_APPROVAL],
+    )
+
+    assert [draft.id for draft, _ in rows] == [waiting.id, rejected.id]
 
 
 # --- pull history (#1268) -----------------------------------------------------------------------

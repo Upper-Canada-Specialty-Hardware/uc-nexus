@@ -51,6 +51,8 @@ interface PostgresLogin {
   displayName: string | null;
   email: string | null;
   clerkMissing: boolean;
+  // #1866: the holder no longer holds UC Nexus Admin. Flagged for a revoke; rotate is refused.
+  lostAdminRole: boolean;
   active: boolean;
   createdAt: string;
   lastRotatedAt: string | null;
@@ -282,6 +284,7 @@ export default function DbAccessPage() {
                 color={row.active ? 'success' : 'warning'}
               />
               {row.clerkMissing && <Chip size="small" label="not in Clerk" color="error" variant="outlined" />}
+              {row.lostAdminRole && <Chip size="small" label="no longer an admin" color="error" variant="outlined" />}
             </Stack>
           );
         },
@@ -317,7 +320,9 @@ export default function DbAccessPage() {
               <Button
                 size="small"
                 variant="outlined"
-                disabled={isRotating}
+                // #1866: the backend refuses rotating a login whose holder is no longer an admin, and one
+                // whose holder is gone from Clerk.
+                disabled={isRotating || row.lostAdminRole || row.clerkMissing}
                 onClick={() => handleRotate(row.dbRole)}
               >
                 {isRotating ? 'Rotating…' : 'Rotate'}
@@ -506,6 +511,8 @@ export default function DbAccessPage() {
         onConfirm={() => {
           if (revokeTarget) revoke({ variables: { dbRole: revokeTarget.dbRole } });
         }}
+        // #1846: held while the revoke is in flight, so a second click can't send it again.
+        busy={revoking}
         onCancel={() => setRevokeTarget(null)}
       />
 

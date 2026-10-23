@@ -84,6 +84,15 @@ def test_projects_are_not_preserved():
     assert Project not in PRESERVED_MODELS
 
 
+def test_the_db_access_registry_and_audit_are_preserved():
+    """#1865: minted logins are cluster-level roles a schema drop never touches, so the registry that lists
+    them - and the audit of who handed them out - must outlive the reset with them."""
+    from app.models.pg_direct_access import PgDirectAccess, PgDirectAccessAudit
+
+    assert PgDirectAccess in PRESERVED_MODELS
+    assert PgDirectAccessAudit in PRESERVED_MODELS
+
+
 def test_preserved_models_carry_json_columns():
     """Guards the reason this module builds statements through Core instead of text(): psycopg2 adapts
     a Python list to a Postgres array, so a JSON column round-tripped through a text() bind param fails

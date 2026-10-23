@@ -190,27 +190,34 @@ export default function RelayInstallsPage() {
 
   // The window lives in the backend's memory (single replica), not in this component: another admin's
   // arming, an expiry, and a consumption by a reconnecting relay all have to show up here. Poll only
-  // while one is open - there is nothing to watch otherwise.
-  const { data: windowData, refetch: refetchWindow } = useQuery<{ relayAdoptWindow: AdoptWindow | null }>(
-    RELAY_ADOPT_WINDOW,
-    { skip: !isNexusAdmin, fetchPolicy: 'cache-and-network' },
-  );
-  const adoptWindow = windowData?.relayAdoptWindow ?? null;
+  // while one is open - there is nothing to watch otherwise - or while the read is failing (#1869): a
+  // failed read is not a closed window, so it is said, retried, and never shown as either state.
+  const {
+    data: windowData,
+    error: windowError,
+    refetch: refetchWindow,
+  } = useQuery<{ relayAdoptWindow: AdoptWindow | null }>(RELAY_ADOPT_WINDOW, {
+    skip: !isNexusAdmin,
+    fetchPolicy: 'cache-and-network',
+  });
+  const windowUnknown = windowError !== undefined;
+  const adoptWindow = windowUnknown ? null : (windowData?.relayAdoptWindow ?? null);
   const [adoptTarget, setAdoptTarget] = useState<RelayInstall | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RelayInstall | null>(null);
   const liveInstallId = relay.installId;
   const [, setTick] = useState(0);
 
   useEffect(() => {
-    if (!adoptWindow) return;
+    if (!adoptWindow && !windowUnknown) return;
     // One timer drives both the countdown and the re-poll: when the window is consumed by the relay
     // reconnecting (the expected ending) only the server knows, so the banner must not outlive it.
     const id = setInterval(() => {
       setTick((t) => t + 1);
-      refetchWindow();
+      // A failed re-read lands on `windowError`; the rejected promise has nothing more to say.
+      refetchWindow().catch(() => {});
     }, 5000);
     return () => clearInterval(id);
-  }, [adoptWindow, refetchWindow]);
+  }, [adoptWindow, windowUnknown, refetchWindow]);
 
   const [armAdopt, { loading: arming }] = useMutation<{ armRelayAdopt: AdoptWindow }>(ARM_RELAY_ADOPT, {
     refetchQueries: [{ query: RELAY_ADOPT_WINDOW }, { query: RELAY_INSTALLS }],
@@ -387,6 +394,27 @@ export default function RelayInstallsPage() {
         </Alert>
       )}
 
+      {/* #1869: an open window accepts any secret, so not knowing whether one is open is said as loudly,
+          with the same way to make sure it is closed. */}
+      {windowUnknown && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => disarmAdopt()} disabled={disarming}>
+              Cancel window
+            </Button>
+          }
+        >
+          <AlertTitle>The adopt window could not be read</AlertTitle>
+          <Typography variant="body2">
+            Whether an adopt window is open is unknown, so the next relay connection may be bound to an install
+            whatever secret it presents. Retrying every few seconds; cancel the window to be sure none is open.{' '}
+            {windowError?.message}
+          </Typography>
+        </Alert>
+      )}
+
       {/* An open adopt window is real system state with a real security cost, which DESIGN.md reserves
           status colour for: it stays loud until it is consumed or cancelled. */}
       {adoptWindow && (
@@ -534,6 +562,8 @@ export default function RelayInstallsPage() {
         onConfirm={() => {
           if (adoptTarget) armAdopt({ variables: { installId: adoptTarget.id } });
         }}
+        // #1846: held while the mutation is in flight, so a second click can't send it again.
+        busy={arming}
         onCancel={() => setAdoptTarget(null)}
       />
 
@@ -546,6 +576,7 @@ export default function RelayInstallsPage() {
         onConfirm={() => {
           if (deleteTarget) deleteInstall({ variables: { installId: deleteTarget.id } });
         }}
+        busy={deleting}
         onCancel={() => setDeleteTarget(null)}
       />
 

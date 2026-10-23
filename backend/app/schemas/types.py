@@ -584,6 +584,12 @@ class ReceiveDraft:
     created_at: datetime
     updated_at: datetime
     line_items: list[ReceiveDraftLineItem]
+    # #1945: approved with nothing booked, and its queued receipt cancelled or failed with no answer from
+    # GP. It stays approved - its units held against the PO - until a manager checks GP and releases it.
+    queued_receipt_stopped: bool = False
+    # #1945: on an APPROVING draft, when the attempt holding its claim has run out of time - the receipt
+    # relay call's timeout and a margin past the claim. A held approval is not released before it.
+    approval_releasable_at: datetime | None = None
 
 
 @strawberry.type
@@ -643,13 +649,14 @@ class PODocumentData:
     po_id: strawberry.ID
     vendor_address: str | None
     buyer_name: str | None
-    currency: str
+    # #1885: null until the buyer types one, so the dialog keeps prefilling GP's figure for it.
+    currency: str | None
     ship_to: str | None
     shipping_method: str | None
     quotation_number: str | None
-    freight: float
-    miscellaneous: float
-    tax_amount: float
+    freight: float | None
+    miscellaneous: float | None
+    tax_amount: float | None
     tax_label: str
     tariff_amount: float
     # #1236: null until a document saves one; the dialog then prefills GP's discount.
@@ -784,6 +791,9 @@ class PurchaseOrder:
     vendor_quote_number: str | None
     shipping_cost: float | None
     tariff_amount: float | None
+    # GP's currency for the PO (CURNCYID), null on a draft or before the mirror read it (#1557). The
+    # document dialog falls back to it when GP's header cannot be read (#1885).
+    currency: str | None
     notes: str | None
     preferred_delivery_date: date | None
     expected_delivery_date: date | None
@@ -794,6 +804,14 @@ class PurchaseOrder:
     receive_records: list[ReceiveRecord]
     documents: list[PODocumentInfo]
     document_data: PODocumentData | None = None
+    # #1877: the PO's own project, archived or not. The detail and receiving screens used to find it in
+    # the `projects` list, which leaves archived jobs out. Null on a PO with no project.
+    project: "PurchaseOrderProject | None" = None
+    # #1950: a draft GP already made a PO for that Nexus never recorded - its save and the queueing of it
+    # both failed, so no held write finishes it. The claiming attempt's key, which the register dialog
+    # reuses so Register finishes it through the same-key resume, and GP's number for it. Null otherwise.
+    registering_key: str | None = None
+    registering_gp_po_number: str | None = None
 
 
 @strawberry.type
@@ -804,6 +822,21 @@ class GpSetupIssue:
 
     cost_code: str  # 'phase-step-element', as the register-PO dropdown shows it
     account_index: int  # the dangling index, absent from GL00105
+
+
+@strawberry.type
+class PurchaseOrderProject:
+    """What a PO's screens show of its project (#1877): its number and name, and the GP job state and
+    setup verdict receiving warns and blocks on. Scalar columns off the project row, so no opening is
+    read and there is no count to get wrong."""
+
+    id: strawberry.ID
+    project_id: str  # the job number, as on Project
+    description: str | None
+    archived: bool
+    gp_job_state: GpJobState | None
+    gp_setup_ok: bool | None
+    gp_setup_issues: list[GpSetupIssue]
 
 
 @strawberry.type
@@ -946,6 +979,8 @@ class ProjectHardwareSchedule:
     openings: list[Opening]
     hardware_items: list[ProjectScheduleHardwareItem]
     product_classifications: list[ProjectProductClassification]
+    # #1918: which revision of the schedule this is; the wizard sends it back on finalize.
+    revision: int
 
 
 @strawberry.type
@@ -1144,14 +1179,16 @@ class ShopAssemblyAllocationLine:
     opening_number: str
     hardware_category: str
     product_code: str
-    # What this opening was still owed when the request was raised.
+    # What this opening was still owed when the request was raised, capped at what its schedule lists now
+    # (#1954) - the most the batch takes.
     requested_quantity: int
     # `on-hand - deficient - every active reservation` for this product across the project - the same
     # figure the batch gate applies. Project-wide and NOT split per opening: two openings wanting the
     # same hinge compete for one pool, and the review has to show that rather than hide it.
     available_quantity: int
     # #1540: why this line may not go on a batch - its product moved to site or By Others since the request
-    # was raised - or None while it is still shop work. The batch refuses such a line, so the review says so first.
+    # was raised, or (#1954) its opening's schedule no longer lists it - or None while it is still shop work.
+    # The batch refuses such a line, so the review says so first.
     not_shop_work_reason: str | None = None
 
 
@@ -1441,6 +1478,18 @@ class Notification:
 
 
 @strawberry.type
+class PODraftOutcome:
+    """What finalize made of one PO draft it was sent (#1883), in the order the drafts were sent."""
+
+    draft_index: int
+    # The PO the draft became, or null when it claimed nothing and was skipped (#640).
+    purchase_order_id: strawberry.ID | None
+    # Units the draft's lines asked for, against the units still unordered that it got (#1186).
+    requested_quantity: int
+    claimed_quantity: int
+
+
+@strawberry.type
 class FinalizeImportResult:
     project: Project
     purchase_orders: list[PurchaseOrder]
@@ -1448,6 +1497,7 @@ class FinalizeImportResult:
     # accepts them downstream, which mints the warehouse PullRequest.
     shipping_out_requests: list[ShippingOutRequest]
     shop_assembly_request: ShopAssemblyRequest | None
+    po_draft_outcomes: list[PODraftOutcome] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -1589,6 +1639,8 @@ class ShipmentPhoto:
     packing_slip_id: strawberry.ID | None
     file_name: str
     taken_by: str
+    # Whose account took it, so a driver's page offers to remove only the driver's own (#1823).
+    taken_by_user_id: str | None
     taken_at: datetime
     s3_key: strawberry.Private[str]
 
@@ -1737,6 +1789,9 @@ class ReceiveRow:
     rejection_reason: str | None
     receipt_number: str | None
     batch_number: str | None
+    # #1947: on an APPROVED draft whose receipt is still on the GP outbox, what that write is doing -
+    # WAITING_ON_GP or GP_WRITE_FAILED. Null on every other row.
+    gp_write_state: str | None = None
 
 
 @strawberry.type
@@ -2067,6 +2122,8 @@ class HardwareStatusByProduct:
     on_order: int
     received_quantity: int
     on_hand: int
+    # Picked off the shelf for a pull still in progress (#1939): in neither on_hand nor a completed-pull figure.
+    in_pick: int
     sent_to_shop: int
     staged_for_shipping: int
     # Gross packing-slip exits; returns never decrement it.
@@ -2314,6 +2371,24 @@ class GpOutboxEntry:
     entity_key: str
     last_error: str | None = None
     failure_kind: str | None = None
+    # #1948: a PO registration that still holds its draft - waiting, or FAILED after GP took it or may
+    # have. The PO list holds Register, Cancel and edits on it, as it does for a waiting one.
+    holds_draft: bool = False
+    # #1948: GP answered this write and Nexus never saved it - it is in GP, so it is finished with Retry
+    # and cancelling it is refused. `maybe_in_gp`: an attempt may have reached GP with no answer back.
+    gp_took: bool = False
+    maybe_in_gp: bool = False
+    # #1948: a registration GP took whose GP PO is already a live Nexus PO (the mirror's copy), by that PO
+    # number. Its save can never land; cancelling it abandons nothing in GP, and cancels its draft.
+    already_in_nexus_as: str | None = None
+    # #1965: the ledger holds GP's answer and Nexus saved nothing for it, whether or not Cancel may let it go
+    # (`gp_took` is the subset Cancel is refused on) - what tells a receipt GP holds from one GP may hold.
+    gp_answered: bool = False
+    # #1961, #1965: a receipt whose draft has moved on - sent back for review, approved again under another
+    # key, or deleted. Nothing here will book it; Cancel lets it go once what GP holds, or may, is reconciled.
+    receipt_draft_moved_on: bool = False
+    # #1965: why Retry would be refused on this row, or null - the panel disables Retry and says why.
+    retry_refusal: str | None = None
 
 
 @strawberry.type
@@ -2629,14 +2704,24 @@ class DemoResetNotice:
 
 
 @strawberry.type
+class DemoBuildFailure:
+    """The demo's last build, when it failed (#1937): when, and who started it. Why is not here - the
+    recorded error can carry SQL and UBC's values - but under Nexus Admin → Demo, for a UC Nexus Admin."""
+
+    failed_at: datetime | None
+    started_by: str | None
+
+
+@strawberry.type
 class DemoResetStatus:
     """What a demo tab needs to know about resets (#1697): whether one is running - and who started it -
-    and the last one the caller has not been told of."""
+    the last one the caller has not been told of, and whether the last build failed (#1937)."""
 
     building: bool
     build_started_at: datetime | None
     build_started_by: str | None
     notice: DemoResetNotice | None
+    failure: DemoBuildFailure | None = None
 
 
 @strawberry.type

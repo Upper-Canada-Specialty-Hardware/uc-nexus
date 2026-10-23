@@ -339,6 +339,40 @@ def test_a_product_given_different_answers_at_different_costs_is_not_listed(db_s
     assert _classes(db_session, project, "HG-100") == {Classification.SHOP_HARDWARE, Classification.SITE_HARDWARE}
 
 
+def test_a_mixed_products_rows_put_back_keep_the_classification_they_had(db_session):
+    """#1919: a Mixed product is on no list, so a finalize that doesn't pick it (a shop request, a PO
+    finalize that left it alone) put its wiped unordered rows back with no classification at all."""
+    project = _project(db_session)
+    items = [_item("A01", "HG-100"), {**_item("A02", "HG-100"), "unit_cost": 20.0}]
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01"), _opening("A02")],
+            "hardware_items": items,
+            "classifications": [
+                _classified("HG-100", Classification.SHOP_HARDWARE),
+                {**_classified("HG-100", Classification.SITE_HARDWARE), "unit_cost": 20.0},
+            ],
+        },
+    )
+    db_session.flush()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {"project_id": str(project.id), "openings": [_opening("A01"), _opening("A02")], "hardware_items": items},
+    )
+    db_session.flush()
+
+    rows = db_session.execute(
+        select(Opening.opening_number, HardwareItem.classification)
+        .join(Opening, HardwareItem.opening_id == Opening.id)
+        .where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+    ).all()
+    assert sorted(rows) == [("A01", Classification.SHOP_HARDWARE), ("A02", Classification.SITE_HARDWARE)]
+    assert _listed(db_session, project) == {}
+
+
 def _mixed(session, project, codes: list[str]) -> None:
     """Each code on A01 as Shop, plus one ordered row of it as Site: a Mixed product, never listed - the
     state a product whose rows disagreed was left in by the #1443 backfill."""
@@ -468,6 +502,62 @@ def test_the_batch_review_flags_a_line_that_is_no_longer_shop_work(db_session):
     assert reasons["HG-100"] is not None and "not shop hardware" in reasons["HG-100"]
 
 
+def _hg100_line(quantity: int) -> list[dict]:
+    return [
+        {"opening_number": "A01", "hardware_category": CAT, "product_code": "HG-100", "allocated_quantity": quantity}
+    ]
+
+
+def test_a_line_the_reupload_took_off_a_kept_opening_is_off_the_schedule(db_session):
+    """#1954: the re-upload keeps A01, so the request keeps its HG-100 line - but A01's schedule no longer
+    lists HG-100. The review says so and offers it nothing, and the batch refuses it."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+
+    _finalize(db_session, project, {"HG-200": Classification.SHOP_HARDWARE}, replace=True)
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
+    assert reasons["HG-200"] is None
+    assert reasons["HG-100"] == shop_assembly_repository.OFF_SCHEDULE_REASON
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(2), created_by="manager")
+    assert exc.value.field == "lines"
+    assert "no longer on this opening's schedule" in str(exc.value)
+
+
+def test_a_line_is_capped_at_what_the_openings_schedule_lists_now(db_session):
+    """#1954: the request was raised owing 2, and the re-upload lowered A01 to 1. The review offers 1 and the
+    batch refuses 2, rather than pulling a unit the schedule no longer asks for."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100"])
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening("A01")],
+            "hardware_items": [_item("A01", "HG-100", qty=1)],
+            "classifications": [_classified("HG-100", Classification.SHOP_HARDWARE)],
+            "replace_schedule": True,
+        },
+        created_by="Pat PM",
+    )
+    db_session.flush()
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    (line,) = review["openings"][0]["lines"]
+    assert (line["requested_quantity"], line["not_shop_work_reason"]) == (1, None)
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(2), created_by="manager")
+    assert exc.value.field == "allocated_quantity"
+    assert "schedule now gives it 1" in str(exc.value)
+
+
 def _replace_with_by_others(session, project, codes: list[str], by_others: list[str]):
     import_repository.finalize_import_session(
         session,
@@ -511,3 +601,41 @@ def test_a_new_product_may_still_be_by_others_at_import(db_session):
     _replace_with_by_others(db_session, project, ["HG-1", "HG-NEW"], ["HG-NEW"])
 
     assert _excluded(db_session, project) == {"HG-NEW"}
+
+
+def test_an_ordered_line_the_revision_left_as_surplus_is_off_the_schedule(db_session):
+    """#1954: a revision keeps an ordered row whole and marks what the schedule no longer asks for as beyond
+    it (#1527, #1825), so the gross quantity still read as scheduled and the batch took it all. Every unit of
+    HG-100 marked beyond the schedule is HG-100 dropped from A01: off the schedule, offered nothing."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+    db_session.execute(
+        update(HardwareItem)
+        .where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+        .values(beyond_schedule_quantity=HardwareItem.item_quantity)
+    )
+    db_session.flush()
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+    reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
+    assert reasons["HG-200"] is None
+    assert reasons["HG-100"] == shop_assembly_repository.OFF_SCHEDULE_REASON
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.create_shop_assembly_batch(db_session, req.id, _hg100_line(1), created_by="manager")
+    assert exc.value.field == "lines"
+    assert "no longer on this opening's schedule" in str(exc.value)
+
+
+def test_the_removed_openings_named_in_a_note_never_overflow_it():
+    """#1955: a revision that renumbers a whole request's openings listed every one in the 500-character
+    note, and the write refused failed the whole re-upload. They are named while they fit, then counted."""
+    from app.repositories.import_repository import _removed_openings
+
+    assert _removed_openings({"A01"}) == "opening A01"
+    assert _removed_openings({"A02", "A01"}) == "openings A01, A02"
+    many = _removed_openings({f"1-{n:03d}A" for n in range(80)})
+    assert many.startswith("openings 1-000A, 1-001A") and many.endswith(" more")
+    assert len(many) < 300
+    assert len(_removed_openings({"X" * 900, "Y" * 900})) < 300

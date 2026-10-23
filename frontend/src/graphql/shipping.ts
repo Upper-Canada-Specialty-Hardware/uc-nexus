@@ -17,7 +17,7 @@ export const GET_SHIPPING_STATS = gql`
 // for both halves so they can never disagree about whether something has been loaded.
 // A photo of a container as loaded or a load as delivered (#1728). `url` is signed when read and good
 // for an hour, which is longer than anybody keeps a screen open.
-const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenAt url`;
+const PHOTO_FIELDS = `id kind containerId packingSlipId fileName takenBy takenByUserId takenAt url`;
 
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
@@ -371,10 +371,21 @@ export const GET_SLIP_PO_TRACE = gql`
 
 // The signed-in driver's own shipments still on the road (#1727), for the driver page. The same slip
 // selection as every other read, so marking one picked up updates it in place.
+// #1943: the lines with what came back off them, so a container whose hardware all came back before
+// pickup is not listed as on the truck.
 export const GET_MY_DELIVERIES = gql`
   query GetMyDeliveries {
     myDeliveries {
       ${PACKING_SLIP_FIELDS}
+      items {
+        id
+        openingNumber
+        productCode
+        hardwareCategory
+        quantity
+        isManual
+        returnedQuantity
+      }
     }
   }
 `;
@@ -390,9 +401,11 @@ export const GET_SHIPMENT_DRIVERS = gql`
 `;
 
 // Put a scheduled shipment on another load, or on a new one when loadId is null (#1723).
+// #1940: pickupDate is the date the dialog is about to save, which names a new load; left out, the
+// stored one does.
 export const MOVE_SHIPMENT_TO_LOAD = gql`
-  mutation MoveShipmentToLoad($id: ID!, $loadId: ID) {
-    moveShipmentToLoad(id: $id, loadId: $loadId) {
+  mutation MoveShipmentToLoad($id: ID!, $loadId: ID, $pickupDate: Date) {
+    moveShipmentToLoad(id: $id, loadId: $loadId, pickupDate: $pickupDate) {
       ${PACKING_SLIP_FIELDS}
     }
   }
@@ -494,9 +507,25 @@ export const MARK_SHIPMENT_DELIVERED = gql`
   }
 `;
 
+// The Accepted and Rejected tabs page with limit/offset, newest first (#1888); the Pending and Open
+// views send neither and read every request they hold.
 export const GET_SHIPPING_OUT_REQUESTS = gql`
-  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus, $openOnly: Boolean = false) {
-    shippingOutRequests(projectId: $projectId, status: $status, openOnly: $openOnly) {
+  query GetShippingOutRequests(
+    $projectId: ID
+    $status: ShippingOutRequestStatus
+    $openOnly: Boolean = false
+    $limit: Int
+    $offset: Int
+    $newestFirst: Boolean
+  ) {
+    shippingOutRequests(
+      projectId: $projectId
+      status: $status
+      openOnly: $openOnly
+      limit: $limit
+      offset: $offset
+      newestFirst: $newestFirst
+    ) {
       id
       requestNumber
       projectId

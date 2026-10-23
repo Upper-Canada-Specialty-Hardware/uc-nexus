@@ -5,13 +5,15 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import String, and_, bindparam, delete, func, or_, select, tuple_, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import (
     Classification,
     HardwareItemState,
+    NotificationType,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -28,8 +30,6 @@ from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
-from app.models.shipping import PackingSlip as PackingSlipModel
-from app.models.shipping import PackingSlipItem as PackingSlipItemModel
 from app.models.shipping_out_request import (
     ShippingOutRequest as ShippingOutRequestModel,
 )
@@ -50,6 +50,7 @@ from app.models.shop_assembly import (
 )
 from app.repositories import project_repository
 from app.repositories import shipping_requests as _shipping_requests
+from app.services import notification_service
 
 
 def get_project_hardware_schedule(
@@ -261,6 +262,10 @@ def reconcile_schedule(
     # into NOT_COVERED, got auto-selected on a PO re-import, and finalize minted a duplicate row per
     # combo while a real PO was drafted for units already on the shelf. They bucket as RECEIVED:
     # bought and received under the retired system is exactly what the marking asserts.
+    #
+    # So do the rows a cancelled PO keeps (#1915): a PO GP voided after receipts keeps its received units
+    # tied, IN_PO, and Query 1 leaves every cancelled or deleted PO out. Hardware Status counts them on
+    # hand; missed here, they fell into NOT_COVERED and were seeded onto a new PO while on the shelf.
     marked_stmt = (
         select(
             OpeningModel.opening_number,
@@ -269,10 +274,16 @@ def reconcile_schedule(
             func.sum(HardwareItemModel.item_quantity).label("marked_quantity"),
         )
         .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
+        .outerjoin(POLineItemModel, HardwareItemModel.po_line_item_id == POLineItemModel.id)
+        .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(
             HardwareItemModel.project_id == project_id,
             HardwareItemModel.state == HardwareItemState.IN_PO,
-            HardwareItemModel.po_line_item_id.is_(None),
+            or_(
+                HardwareItemModel.po_line_item_id.is_(None),
+                POModel.status == POStatus.CANCELLED,
+                POModel.deleted_at.isnot(None),
+            ),
         )
         .group_by(OpeningModel.opening_number, HardwareItemModel.hardware_category, HardwareItemModel.product_code)
     )
@@ -317,27 +328,26 @@ def reconcile_schedule(
     # The slip is the record of departure now that no assembled unit carries one. Nothing here counts
     # assembly: a completed SHOP_ASSEMBLY pull is the only evidence the bench ever got the hardware,
     # and Step 3 has already bucketed it.
-    slip_stmt = (
-        select(
-            PackingSlipItemModel.opening_number,
-            PackingSlipItemModel.hardware_category,
-            PackingSlipItemModel.product_code,
-            func.sum(PackingSlipItemModel.quantity).label("qty"),
-        )
-        .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
-        .where(PackingSlipModel.project_id == project_id)
-        .group_by(
-            PackingSlipItemModel.opening_number,
-            PackingSlipItemModel.hardware_category,
-            PackingSlipItemModel.product_code,
-        )
-    )
+    # #1941: the shipping workspace's own reads - manual lines left out (free text that never came off
+    # inventory), and what came back netted - so a re-import does not see a spare line or a returned
+    # unit as the opening's hardware gone out.
+    from app.repositories.request_composer import came_back_stmt, slip_shipped_stmt
+
     shipped_by_pair: dict[tuple[str, str, str], int] = defaultdict(int)
-    for row in session.execute(slip_stmt).all():
-        key = (row.opening_number, row.hardware_category, row.product_code)
+    for opening_number, category, code, quantity in session.execute(slip_shipped_stmt(project_id)).all():
+        key = (opening_number, category, code)
         if key not in pair_set:
             continue
-        shipped_by_pair[key] += row.qty or 0
+        shipped_by_pair[key] += int(quantity or 0)
+    # Split by where it went: a return to the project is back on its shelf, a cancelled slip's return
+    # to stock left the project. Either way the opening is owed it again.
+    back_on_shelf: dict[tuple[str, str, str], int] = defaultdict(int)
+    back_elsewhere: dict[tuple[str, str, str], int] = defaultdict(int)
+    for opening_number, category, code, to_project, quantity in session.execute(came_back_stmt(project_id)).all():
+        key = (opening_number, category, code)
+        if key not in pair_set:
+            continue
+        (back_on_shelf if to_project else back_elsewhere)[key] += int(quantity or 0)
 
     # ---- Process each item using pre-loaded data ----
     for item in lifecycle_items:
@@ -374,9 +384,14 @@ def reconcile_schedule(
 
         # Step 3: PR deductions
         received_qty = buckets.get("RECEIVED", 0)
+        pulled_shipped = 0
         if received_qty > 0:
             for pr_row in pr_by_pair.get(pair_key, []):
                 pulled_qty = pr_row.total_pulled or 0
+                if pr_row.source == PullRequestSource.SHIPPING_OUT and pr_row.status == PullRequestStatus.COMPLETED:
+                    # Step 4 nets a completed shipping pull with its slips and returns, uncapped (#1941).
+                    pulled_shipped += pulled_qty
+                    continue
                 deduct = min(pulled_qty, received_qty)
                 if deduct <= 0:
                     continue
@@ -392,20 +407,20 @@ def reconcile_schedule(
                     if pr_row.status in (PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS):
                         buckets["SHIPPING_OUT"] += deduct
                         received_qty -= deduct
-                    elif pr_row.status == PullRequestStatus.COMPLETED:
-                        buckets["SHIPPED_OUT"] += deduct
-                        received_qty -= deduct
 
             buckets["RECEIVED"] = max(0, received_qty)
 
-        # Step 4: Shipped cross-check against the slips
-        slip_shipped = shipped_by_pair.get(pair_key, 0)
-        existing_shipped = buckets.get("SHIPPED_OUT", 0)
-        if slip_shipped > existing_shipped:
-            extra = slip_shipped - existing_shipped
-            from_received = min(extra, buckets.get("RECEIVED", 0))
-            buckets["RECEIVED"] = max(0, buckets.get("RECEIVED", 0) - from_received)
-            buckets["SHIPPED_OUT"] = existing_shipped + from_received
+        # Step 4 (#1941): shipped out the way the shipping workspace counts it - the completed pull and
+        # its slips folded with max, less what came back - and only then capped by what the project
+        # holds. Capped at received first and netted after, a return shipped again read as on the shelf.
+        # Returned to the project, a unit is on the shelf again; returned to stock off a cancelled slip,
+        # it left the project, so it is in no bucket and the opening is owed it again.
+        came_back = back_on_shelf.get(pair_key, 0) + back_elsewhere.get(pair_key, 0)
+        shipped = max(0, max(pulled_shipped, shipped_by_pair.get(pair_key, 0)) - came_back)
+        on_project = max(0, buckets.get("RECEIVED", 0) - back_elsewhere.get(pair_key, 0))
+        shipped = min(shipped, on_project)
+        buckets["SHIPPED_OUT"] = shipped
+        buckets["RECEIVED"] = on_project - shipped
 
         # Step 5: Calculate NOT_COVERED gap
         total_committed = sum(buckets.values())
@@ -448,6 +463,42 @@ SCHEDULE_CHANGED_DROPPED_NOTE = (
     "no longer exist; those were dropped, along with any claim they were holding on inventory. "
     "Review what is left before accepting."
 )
+# #1855: a shop-assembly request has no accept step - the manager batches it - so its notes ask for the
+# review before batching, and batching clears them (`create_shop_assembly_batch`). Its dropped openings
+# were pending, which never hold a claim (#646), so there is none to mention.
+SHOP_SCHEDULE_CHANGED_NOTE = (
+    "The hardware schedule was re-uploaded after this request was created, so its bill of hardware "
+    "may no longer match the schedule. Review it before batching."
+)
+SHOP_SCHEDULE_CHANGED_DROPPED_NOTE = (
+    "The hardware schedule was re-uploaded after this request was created and some of its openings "
+    "no longer exist; those were dropped. Review what is left before batching."
+)
+
+
+# The note column is 500 characters, and the rest of a note is about 150: the list is cut short well inside it.
+_REMOVED_OPENINGS_BUDGET = 200
+
+
+def _removed_openings(numbers: set[str]) -> str:
+    """The openings a re-upload took off a shop or shipping-out request, for its note (#1955): "opening A01" or
+    "openings A01, A02". Named only while they fit the budget, then counted ("and 37 more"): a revision that
+    renumbers a whole request's openings would otherwise overflow the note, and the finalize with it."""
+    if not numbers:
+        return "its openings"
+    ordered = sorted(numbers)
+    if len(ordered) == 1:
+        return f"opening {ordered[0][:_REMOVED_OPENINGS_BUDGET]}"
+    shown: list[str] = []
+    used = 0
+    for name in ordered:
+        if shown and used + len(name) + 2 > _REMOVED_OPENINGS_BUDGET:
+            break
+        shown.append(name[:_REMOVED_OPENINGS_BUDGET])
+        used += len(shown[-1]) + 2
+    rest = len(ordered) - len(shown)
+    names = ", ".join(shown)
+    return f"openings {names} and {rest} more" if rest else f"openings {names}"
 
 
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
@@ -458,7 +509,28 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
     once the warehouse starts one, inventory has moved and the request is no longer something a
     re-upload may quietly rewrite. Either way the rewrite below only touches PENDING openings; a
     closed-out request just gets the flag.
+
+    #1852: the candidates are row-locked, in id order and after the project lock the finalize took,
+    before anything is read off them. A batch locks the same row before it marks openings BATCHED
+    (`shop_assembly_repository._locked_request`), so unlocked, a batch committing between this read and
+    the deletes below had its batched opening deleted, and a request holding a live batch was REJECTED
+    as though nothing had been dispatched. Now one waits for the other, and the read below sees what
+    the other committed.
     """
+    from app.services.locking import lock_rows
+
+    lock_rows(
+        session,
+        SARModel,
+        list(
+            session.scalars(
+                select(SARModel.id).where(
+                    SARModel.project_id == project_id,
+                    SARModel.status.in_([ShopAssemblyRequestStatus.PENDING, ShopAssemblyRequestStatus.APPROVED]),
+                )
+            ).all()
+        ),
+    )
     worked_batch = (
         select(SARBatchModel.id)
         .join(PullRequestModel, SARBatchModel.pull_request_id == PullRequestModel.id)
@@ -490,7 +562,8 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
             # and without this the identity-mapped request comes back carrying the empty `batches`
             # collection its first load saw - which reads as "never dispatched" and would auto-REJECT
             # a request that has real hardware on the warehouse floor. Same reasoning as the readers
-            # in shop_assembly_repository.
+            # in shop_assembly_repository. It is also what makes the lock above count (#1852): a copy
+            # already in the session would otherwise hide a batch committed while the lock was waited on.
             .execution_options(populate_existing=True)
         )
         .unique()
@@ -499,7 +572,33 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
 
 
 def _live_shipping_out_requests(session: Session, project_id: uuid.UUID) -> list[ShippingOutRequestModel]:
-    """Shipping-out requests still in flight, on the same definition as their shop-assembly twin."""
+    """Shipping-out requests still in flight, on the same definition as their shop-assembly twin.
+
+    #1852: row-locked in id order before they are read, as the shop ones are. Accept locks the request
+    row (`shipping_repository.lock_shipping_out_request`) and then only inserts its pull, whose project key
+    share the finalize's no-key-update project lock lets through, so the order is the project, then the
+    requests, then the reservations and inventory the rewrite below takes - the order a request's edit
+    takes them in too. Unlocked, an accept committing between this read and the writes below had its
+    APPROVED written over with REJECTED and the reservations its new pull relies on released. Now one
+    waits for the other, and the read below sees the status the other committed: a request accepted
+    meanwhile reads APPROVED and is only flagged.
+    """
+    from app.services.locking import lock_rows
+
+    lock_rows(
+        session,
+        ShippingOutRequestModel,
+        list(
+            session.scalars(
+                select(ShippingOutRequestModel.id).where(
+                    ShippingOutRequestModel.project_id == project_id,
+                    ShippingOutRequestModel.status.in_(
+                        [ShippingOutRequestStatus.PENDING, ShippingOutRequestStatus.APPROVED]
+                    ),
+                )
+            ).all()
+        ),
+    )
     return list(
         session.scalars(
             select(ShippingOutRequestModel)
@@ -518,6 +617,9 @@ def _live_shipping_out_requests(session: Session, project_id: uuid.UUID) -> list
                     ),
                 ),
             )
+            # What makes the lock above count (#1852): a copy already in the session would otherwise hand
+            # back the status and items from before an accept or edit committed while the lock was waited on.
+            .execution_options(populate_existing=True)
         )
         .unique()
         .all()
@@ -543,7 +645,8 @@ def _handle_schedule_replacement(
       nothing, because its pending openings never held a claim (#646). A request left with nothing at
       all is auto-REJECTED (which for shipping out releases the rest by the ordinary reject path),
       because an empty request is not something anybody can work; a part-batched shop-assembly one
-      closes out instead, since some of it genuinely happened.
+      closes out instead, since some of it genuinely happened. Either way the request's note names the
+      openings that went, and an auto-rejected one tells the shop or the requester (#1955).
     - **Openings already dispatched or dismissed are left alone.** A batched opening is on a pull
       that is the authority on what the warehouse will hand over, and silently shrinking it
       underneath the puller would be worse than a stale bill of hardware; a dismissed one is a
@@ -588,6 +691,9 @@ def _handle_schedule_replacement(
             session.refresh(sar, attribute_names=["items", "openings"])
 
         if pending and not any(o.status == ShopAssemblyOpeningStatus.PENDING for o in sar.openings):
+            # #1955: either way the request leaves the board, so its note says which openings the
+            # re-upload took - they are gone from the request, and nothing else names them.
+            removed = _removed_openings({o.opening_number for o in lost_openings})
             if any(b.status == ShopAssemblyBatchStatus.ACTIVE for b in sar.batches):
                 # Part-worked: the batches that already went out are the record of what happened, so
                 # the request closes out rather than being rejected as though nothing had. Only a live
@@ -596,6 +702,10 @@ def _handle_schedule_replacement(
                 sar.status = ShopAssemblyRequestStatus.APPROVED
                 sar.approved_by = SCHEDULE_IMPORT_ACTOR
                 sar.approved_at = datetime.utcnow()
+                sar.integrity_note = (
+                    f"The hardware schedule was re-uploaded and removed {removed} while still waiting on "
+                    "this request, so the request closed out with the batches already sent."
+                )
             else:
                 # Nothing left to assemble and nothing ever dispatched: reject it rather than leave an
                 # empty request on the manager's board.
@@ -603,9 +713,24 @@ def _handle_schedule_replacement(
                 sar.rejected_by = SCHEDULE_IMPORT_ACTOR
                 sar.rejection_reason = "All of this request's openings were removed by a hardware schedule re-upload."
                 sar.rejected_at = datetime.utcnow()
+                sar.integrity_note = (
+                    f"The hardware schedule was re-uploaded and removed {removed}, all this request was "
+                    "waiting on; nothing had been batched, so the request was rejected."
+                )
+                # #1955: the shop is told, as a manager's reject tells it (#1242).
+                notification_service.create_notification(
+                    session,
+                    project_id=sar.project_id,
+                    recipient_role=notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE,
+                    notification_type=NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED,
+                    message=(
+                        f"{SCHEDULE_IMPORT_ACTOR} rejected shop assembly request {sar.request_number} - "
+                        f"{sar.rejection_reason}"
+                    ),
+                )
             continue
 
-        sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SCHEDULE_CHANGED_NOTE
+        sar.integrity_note = SHOP_SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SHOP_SCHEDULE_CHANGED_NOTE
 
     for req in _live_shipping_out_requests(session, project.id):
         pending = req.status == ShippingOutRequestStatus.PENDING
@@ -622,7 +747,27 @@ def _handle_schedule_replacement(
             req.rejected_by = SCHEDULE_IMPORT_ACTOR
             req.rejection_reason = "All of this request's lines were removed by a hardware schedule re-upload."
             req.rejected_at = datetime.utcnow()
+            # #1955: as on a shop request, the note names the openings that went - they are gone from the
+            # request, and nothing else names them.
+            removed = _removed_openings({i.opening_number for i in lost if i.opening_number})
+            req.integrity_note = (
+                f"The hardware schedule was re-uploaded and removed {removed}, all this request was "
+                "waiting on; nothing had been accepted, so the request was rejected."
+            )
             warehouse_repository.release_reservations(session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
+            # #1955: the requester is told, as a manager's reject tells them (#972) - by their Clerk user id
+            # where the request recorded it, else the shipping audience.
+            notification_service.create_notification(
+                session,
+                project_id=req.project_id,
+                recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+                recipient_user_id=req.created_by_user_id or None,
+                notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
+                message=(
+                    f"For {req.created_by}: {SCHEDULE_IMPORT_ACTOR} rejected shipping request "
+                    f"{req.request_number} - {req.rejection_reason}"
+                ),
+            )
             continue
 
         if lost:
@@ -758,6 +903,32 @@ def plan_po_claims(
     return per_draft_claims, remaining_by_idx
 
 
+def draft_claim_counts(
+    hardware_items_input: list[dict],
+    po_drafts: list[dict],
+    per_draft_claims: list[list[tuple[int, int]]],
+) -> list[tuple[int, int]]:
+    """Per draft, (units its lines asked for, units plan_po_claims gave it) - #1883.
+
+    A ref with quantity=None asks for the whole combo as the schedule holds it, before what is already
+    on a PO comes off: that is what the wizard means by "the whole opening". A combo already ordered
+    resolves to its unordered remainder (#1186), so a buy-again line on a covered product asks for units
+    and gets none; finalize reports the gap rather than calling the import a plain success.
+    """
+    combo_gross: dict[tuple[str, str, str], int] = defaultdict(int)
+    for hi in hardware_items_input:
+        combo_gross[(hi["opening_number"], hi["product_code"], hi["hardware_category"])] += hi["item_quantity"]
+    counts: list[tuple[int, int]] = []
+    for po_draft, claims in zip(po_drafts, per_draft_claims, strict=True):
+        requested = 0
+        for ref in po_draft.get("hardware_item_refs", []):
+            want = ref.get("quantity")
+            combo = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
+            requested += combo_gross.get(combo, 0) if want is None else want
+        counts.append((requested, sum(take for _, take in claims)))
+    return counts
+
+
 def restate_beyond_schedule(
     session: Session,
     project_id: uuid.UUID,
@@ -805,6 +976,38 @@ def restate_beyond_schedule(
     session.flush()
 
 
+# #1938: a schedule row's prices and markup are Numeric(10,4) columns, at most 999,999.9999. The parser
+# refuses a row past that; this is the backstop, so a row sent past it is named rather than overflowing at
+# flush as the masked server error.
+_MAX_SCHEDULE_VALUE = Decimal(1_000_000)
+_SCHEDULE_VALUE_FIELDS = {
+    "unit_cost": "unit cost",
+    "unit_price": "unit price",
+    "list_price": "list price",
+    "vendor_discount": "vendor discount",
+    "markup_pct": "markup",
+}
+
+
+def refuse_schedule_values_too_large(hardware_items: list[dict]) -> None:
+    """Refuse schedule rows whose prices or markup their columns can't hold, naming each row (#1938)."""
+    rows = []
+    for hi in hardware_items:
+        past = [
+            f"{label} {hi[key]}"
+            for key, label in _SCHEDULE_VALUE_FIELDS.items()
+            if hi.get(key) is not None and abs(Decimal(str(hi[key]))) >= _MAX_SCHEDULE_VALUE
+        ]
+        if past:
+            rows.append(f"opening {hi.get('opening_number')} {hi.get('product_code')} ({', '.join(past)})")
+    if rows:
+        shown = "; ".join(rows[:5]) + (f"; and {len(rows) - 5} more" if len(rows) > 5 else "")
+        raise ValidationError(
+            f"A schedule price or markup must be under {_MAX_SCHEDULE_VALUE:,} - fix these rows: {shown}",
+            field="hardware_items",
+        )
+
+
 def finalize_import_session(
     session: Session,
     input_data: dict,
@@ -840,6 +1043,17 @@ def finalize_import_session(
     # #627: the source XML file name, present only when the hardware items came from a fresh parse.
     schedule_filename = input_data.get("schedule_filename")
 
+    # #1917: a replace drops every opening it isn't sent, so one sent none (a wrong export, a cut-off
+    # file) deleted every opening with nothing ordered, wiped every unordered row and rejected every
+    # pending request. A schedule with no openings is not a schedule to replace one with.
+    if replace_schedule and not openings_input:
+        raise ValidationError(
+            "The new schedule has no openings, so it can't replace this project's schedule. "
+            "Check the file is the right export.",
+            field="openings",
+        )
+    refuse_schedule_values_too_large(hardware_items_input)
+
     # 1. Project lookup (must already exist), row-locked so finalizes on one project run one at a time
     # (#1156). Unlocked, two concurrent finalizes each wiped and re-inserted the AVAILABLE schedule: the
     # second's delete skipped the first's new rows and it inserted a full set on top, doubling the
@@ -857,6 +1071,31 @@ def finalize_import_session(
 
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
+
+    # #1918: the lock serializes finalizes but never noticed the schedule changed between them, so a tab
+    # finalizing the schedule it loaded after someone replaced it put its stale rows back and recreated the
+    # openings the newer revision dropped. The wizard sends the revision it started from (None: it expected
+    # no schedule yet, revision 0); read under the lock, a moved count is refused. Omitted = not checked.
+    if "expected_schedule_revision" in input_data:
+        expected_revision = input_data["expected_schedule_revision"] or 0
+        if expected_revision != project.schedule_revision:
+            raise ConflictError(
+                "The schedule changed since you opened this. Reload it and start again.",
+                field="expected_schedule_revision",
+            )
+    # Bumped by every finalize that writes what a second open tab works from: a replace, a freshly parsed
+    # file (the only kind that carries its file name), the first import, and a PO import - which sends the
+    # exclusions it loaded (deleting any not listed) and rewrites unordered rows at its costs, so a stale
+    # tab's would undo another's By Others marks and cost corrections. Only a request raised off the
+    # schedule as it stands writes none of that, and bumping on it refused the other tab for nothing.
+    if (
+        replace_schedule
+        or schedule_filename
+        or project.schedule_revision == 0
+        or po_drafts
+        or excluded_items_input is not None
+    ):
+        project.schedule_revision += 1
 
     # #425: quarantine gate. This one mutation is BOTH of Start a Request's write actions - it persists
     # the schedule, and it creates the shop-assembly and shipping-out requests that reserve inventory
@@ -928,12 +1167,38 @@ def finalize_import_session(
         session, project.id, product_classification, listed
     )
 
+    # #1919: a Mixed product this finalize didn't pick is on neither the list nor this finalize's picks, so
+    # the unordered rows step 2 wipes came back from step 5 with no classification, and the shop composer
+    # stopped counting them. #1443 ruled an import doesn't change a product's classification, so what a row
+    # had is the last fallback - read before the wipe, keyed by cost the way classification_for is asked. A
+    # key whose rows disagree is left out.
+    stored_by_key: dict[tuple[str, str, float], set[Classification]] = defaultdict(set)
+    for category, code, cost, stored in session.execute(
+        select(
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.unit_cost,
+            HardwareItemModel.classification,
+        ).where(
+            HardwareItemModel.project_id == project.id,
+            HardwareItemModel.state == HardwareItemState.AVAILABLE,
+            HardwareItemModel.classification.is_not(None),
+        )
+    ).all():
+        stored_by_key[(category, code, float(cost) if cost else 0.0)].add(stored)
+    stored_classification = {key: next(iter(cls)) for key, cls in stored_by_key.items() if len(cls) == 1}
+
     def classification_for(hardware_category: str, product_code: str, unit_cost: float):
         listed_value = listed.get((hardware_category, product_code))
         if listed_value is not None:
             return listed_value
         exact = classification_map.get((hardware_category, product_code, unit_cost))
-        return exact if exact is not None else product_classification.get((hardware_category, product_code))
+        if exact is not None:
+            return exact
+        product_value = product_classification.get((hardware_category, product_code))
+        if product_value is not None:
+            return product_value
+        return stored_classification.get((hardware_category, product_code, float(unit_cost)))
 
     # #1392: a product the project already has as Shop / Site can't be taken to By Others by a replace.
     # Checked here, before step 2 rewrites the rows, for the same reason.
@@ -1062,6 +1327,12 @@ def finalize_import_session(
 
     # 4. PO creation
     created_pos: list[POModel] = []
+    # #1883: one outcome per draft sent, in po_drafts order - the PO it made (None when skipped) and the
+    # units it asked for against the units it got - so the wizard can say which came back short.
+    draft_outcomes: list[dict] = [
+        {"draft_index": i, "purchase_order": None, "requested_quantity": requested, "claimed_quantity": claimed}
+        for i, (requested, claimed) in enumerate(draft_claim_counts(hardware_items_input, po_drafts, per_draft_claims))
+    ]
     if po_drafts:
         # Generate request_number sequence for new POs
         from app.repositories.po_repository import generate_next_request_number, request_number_prefix
@@ -1223,6 +1494,7 @@ def finalize_import_session(
                     hi.po_line_item_id = poli.id
 
             created_pos.append(po)
+            draft_outcomes[draft_idx]["purchase_order"] = po
 
     # 5. Persist the unclaimed remainder of every hardware item as AVAILABLE. #570: a combo the PO
     #    block took in full leaves nothing here; a partially-claimed combo persists what plan_po_claims
@@ -1284,13 +1556,30 @@ def finalize_import_session(
         **product_classification,
         **{product: value for product, value in listed.items() if product in schedule_products},
     }
-    for (hardware_category, product_code), classification in whole_product.items():
+    # One UPDATE per value rather than per product (#1890): a schedule of hundreds of products was as many
+    # round trips. The products are matched against two arrays unnested side by side, not a literal
+    # row-constructor IN list, which Postgres parses recursively and overflows at schedule scale (see
+    # reconcile_schedule). "fetch" still writes the new value onto the rows this session holds,
+    # so the steps below read them as they now are.
+    products_by_value: dict[Classification, list[tuple[str, str]]] = {}
+    for product, classification in whole_product.items():
+        products_by_value.setdefault(classification, []).append(product)
+    for classification, products in products_by_value.items():
+        unnested = (
+            func.unnest(
+                bindparam("categories", [c for c, _ in products], type_=ARRAY(String)),
+                bindparam("codes", [p for _, p in products], type_=ARRAY(String)),
+            )
+            .table_valued("hardware_category", "product_code")
+            # AS anon(hardware_category, product_code): without the column list Postgres names neither.
+            .render_derived()
+        )
+        pairs = select(unnested.c.hardware_category, unnested.c.product_code)
         session.execute(
             update(HardwareItemModel)
             .where(
                 HardwareItemModel.project_id == project.id,
-                HardwareItemModel.hardware_category == hardware_category,
-                HardwareItemModel.product_code == product_code,
+                tuple_(HardwareItemModel.hardware_category, HardwareItemModel.product_code).in_(pairs),
                 or_(HardwareItemModel.classification.is_(None), HardwareItemModel.classification != classification),
             )
             .values(classification=classification)
@@ -1402,6 +1691,7 @@ def finalize_import_session(
     return {
         "project": project,
         "purchase_orders": created_pos,
+        "po_draft_outcomes": draft_outcomes,
         "shipping_out_requests": created_shipping_requests,
         "shop_assembly_request": sar,
     }

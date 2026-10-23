@@ -203,10 +203,15 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
     """Upsert one page of GP POs and advance the sync state. Runs in a worker thread - the relay socket
     lives on the event loop and must not block on Postgres.
 
-    Each PO is upserted inside its own SAVEPOINT (begin_nested), so a failure rolls back only that PO and
-    the page's other upserts still commit at the end. The backfill cursor is advanced only over POs that
-    actually persisted: if a PO in the page failed, the cursor is parked at the last consecutively-
-    persisted PO (or left untouched when even the first failed) so the next pass re-reads and retries it.
+    Each PO is upserted and committed on its own, so a failure rolls back only that PO. Not a SAVEPOINT in
+    one page transaction (#1959): a released savepoint keeps its row locks until the page commits, so the
+    mirror held every PO, project and line it had touched while it asked for the next PO's, and a register
+    in Nexus that locks its PO then the project deadlocked against it. A re-read page re-upserts the same
+    rows to the same values, so committing ahead of the cursor costs nothing.
+
+    The backfill cursor is advanced only over POs that actually persisted: if a PO in the page failed, the
+    cursor is parked at the last consecutively-persisted PO (or left untouched when even the first failed)
+    so the next pass re-reads and retries it.
     History is invisible to the incremental phase, so a PO skipped PAST here would be a permanent hole.
 
     Returns per-page counts plus `stored_cursor` (the keyset written, None when the cursor did not move)
@@ -221,11 +226,12 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
         for po in pos:
             po_number = (po.get("po_number") or "").strip()
             try:
-                with session.begin_nested():  # per-PO SAVEPOINT
-                    action = sync_repo.upsert_mirrored_po(
-                        session, company, po, project_map, pending_registration=pending_registration
-                    )
+                action = sync_repo.upsert_mirrored_po(
+                    session, company, po, project_map, pending_registration=pending_registration
+                )
+                session.commit()  # per PO, so its locks go with it (#1959)
             except Exception:  # noqa: BLE001 - one bad PO must not lose the rest of the page
+                session.rollback()
                 logger.exception("gp po sync: failed to upsert PO %s", po.get("po_number"))
                 skipped += 1
                 all_persisted = False
@@ -987,20 +993,34 @@ def _log_pass(result: dict) -> None:
         )
 
 
-async def _backfill_tick(draining: list[str], stalled: set[str]) -> bool:
+def _drainable(draining: list[str], stalled: dict[str, float]) -> list[str]:
+    """The draining companies not held out by a stall, dropping every stall POLL_SECONDS old first.
+
+    A stall used to last until the next incremental tick, and while no company has finished its
+    backfill there is no incremental tick at all, so one transient failure idled the company until a
+    restart (#1914). On a timer it is tried again; a PO that fails every time still holds the cursor
+    where it is, re-read once per interval rather than in a tight loop."""
+    now = time.monotonic()
+    for company in [c for c, at in stalled.items() if now - at >= POLL_SECONDS]:
+        del stalled[company]
+    return [c for c in draining if c not in stalled]
+
+
+async def _backfill_tick(draining: list[str], stalled: dict[str, float]) -> bool:
     """One backfill batch for the next company still draining. True if one ran.
 
     No deadline of its own any more: the read budget is the pace, so the backfill simply takes whatever
-    the incremental schedule is not using. A company whose cursor could not advance is held out until
-    the next incremental tick clears the set - the old anti-hot-spin rule, per company."""
-    drainable = [c for c in draining if c not in stalled]
+    the incremental schedule is not using. A company whose cursor could not advance is held out for
+    POLL_SECONDS, or until the next incremental tick clears the map - the old anti-hot-spin rule, per
+    company. `stalled` maps each held company to the monotonic instant it stalled."""
+    drainable = _drainable(draining, stalled)
     if not drainable:
         return False
     company = _next_company(drainable, key="backfill")
     result = await _run_backfill(company, max_pages=BACKFILL_MAX_PAGES_PER_PASS)
     _log_pass(result)
     if result.get("stalled"):
-        stalled.add(company)
+        stalled[company] = time.monotonic()
     return True
 
 
@@ -1106,7 +1126,8 @@ async def run_forever() -> None:
     _activity = None
     _last_open_pass.clear()
     _last_new_po_check_result.clear()
-    stalled: set[str] = set()
+    # Company -> monotonic instant its backfill cursor stalled (see _drainable).
+    stalled: dict[str, float] = {}
     # Whether the "backfill is waiting for its window" line has already been logged. One line per
     # transition, not one per check.
     backfill_asleep = False
@@ -1138,7 +1159,7 @@ async def run_forever() -> None:
                     draining, mirrored = await asyncio.to_thread(_backfill_phase, relay_gateway.companies)
                     now_utc = datetime.utcnow()
                     window_open = BACKFILL_WINDOW.allows(now_utc)
-                    drainable = [c for c in draining if c not in stalled]
+                    drainable = _drainable(draining, stalled)
                     ran = False
 
                     # INSIDE the window the backfill goes FIRST, and keeps going while anything is

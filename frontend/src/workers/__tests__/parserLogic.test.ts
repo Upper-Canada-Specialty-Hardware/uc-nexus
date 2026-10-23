@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   textOrNull,
   parseFloatOrNull,
@@ -600,6 +602,33 @@ describe('extractHardwareItems', () => {
     expect(result.hardwareItems[0].list_price).toBeNull();
   });
 
+  it('makes a row whose price is too large for its column a row error naming it (#1938)', () => {
+    const contract = {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'LOCK-100',
+            Material_List_Fields: { Product_Description: 'Lockset', Unit_Cost: '45.50', List_Price: '1000000' },
+            Assignments: { Assignment: [{ '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' }] },
+          },
+          {
+            '@_Description': 'HINGE-1',
+            Material_List_Fields: { Product_Description: 'Hinge', Unit_Cost: '999999.9999', Markup_Pct: '30' },
+            Assignments: { Assignment: [{ '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '3' }] },
+          },
+        ],
+      },
+    };
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems.map((h) => h.product_code)).toEqual(['HINGE-1']);
+    expect(result.skippedRows).toEqual([
+      {
+        reason: 'List_Price must be under 1,000,000',
+        context: 'Product_Code: LOCK-100, Opening: D101, List_Price: 1000000',
+      },
+    ]);
+  });
+
   it('handles no Detail element', () => {
     const contract = {};
     const result = extractHardwareItems(contract);
@@ -1006,6 +1035,52 @@ describe('parseHardwareSchedule (end-to-end with XML string)', () => {
       'missing root <Contract>',
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1916: a cut-off or malformed file is refused with where it broke
+// ---------------------------------------------------------------------------
+
+describe('parseHardwareSchedule - a file that is not whole (#1916)', () => {
+  const fixture = readFileSync(resolve(__dirname, '../../../../testing/fixtures/contracterp-74.xml'), 'utf8');
+
+  it('the real schedule cut at 30% is refused, not read as part of a schedule', () => {
+    const cut = fixture.slice(0, Math.floor(fixture.length * 0.3));
+    expect(() => parseHardwareSchedule(cut)).toThrow(/^Invalid XML at line \d+, column \d+: /);
+  });
+
+  it('cut at a tag boundary: refused as cut off, at the end of the file', () => {
+    const cut30 = fixture.slice(0, Math.floor(fixture.length * 0.3));
+    const cut = cut30.slice(0, cut30.lastIndexOf('</Assignment>') + '</Assignment>'.length);
+    expect(() => parseHardwareSchedule(cut)).toThrow(
+      `Invalid XML at line 1, column ${cut.length}: the file ends before its closing </Contract> tag`,
+    );
+  });
+
+  it('a mismatched tag is refused naming its line and column', () => {
+    const xml = '<?xml version="1.0"?>\n<Contract>\n<Fields><Project_ID>P1</Fields>\n</Contract>';
+    expect(() => parseHardwareSchedule(xml)).toThrow(
+      /^Invalid XML at line 3, column \d+: Expected closing tag 'Project_ID'/,
+    );
+  });
+
+  it('a well-formed file whose contract is not closed last is refused', () => {
+    expect(() => parseHardwareSchedule('<Contract Description="T"/>')).toThrow('ends before its closing </Contract> tag');
+  });
+
+  it('the whole schedule still parses', () => {
+    const result = parseHardwareSchedule(fixture);
+    expect(result.openings.length).toBeGreaterThan(0);
+    expect(result.hardwareItems.length).toBeGreaterThan(0);
+  });
+
+  // Parsed before the check came in; the validator alone refused a declaration not at the very start.
+  // One parse of the real schedule, as the test above: two ran past the default timeout on CI.
+  it('a schedule with blank lines before its declaration still parses', () => {
+    const result = parseHardwareSchedule('\r\n\n' + fixture);
+    expect(result.openings.length).toBeGreaterThan(0);
+    expect(result.hardwareItems.length).toBeGreaterThan(0);
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------

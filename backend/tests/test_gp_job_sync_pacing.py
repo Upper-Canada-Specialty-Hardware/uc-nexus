@@ -193,6 +193,41 @@ def test_the_health_read_is_batched_by_job_number(monkeypatch):
     assert [a["reads"] for a in asked] == [2, 2, 1]
 
 
+def test_only_active_jobs_are_health_checked(monkeypatch):
+    """#1875: a mirroring relay's list carries GP's closed history too, and every job checked is one
+    GP read from the shared budget. Only an active job takes Nexus writes, so only it is checked - and
+    a job listed with no state at all (an older relay's list) is checked as it always was."""
+    monkeypatch.setattr(gp_job_sync.relay_gateway, "_companies", frozenset({"TUBC"}))
+    listed = [
+        {"job_number": "J-ACTIVE", "gp_job_state": "active"},
+        {"job_number": "J-INACTIVE", "gp_job_state": "inactive"},
+        {"job_number": "J-CLOSED", "gp_job_state": "closed"},
+        {"job_number": "J-OLD-RELAY"},
+    ]
+    asked: list[tuple] = []
+
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        asked.append((op, payload, reads))
+        return {
+            "result": {"jobs": listed if op == "list_jobs" else []},
+            "meta": {},
+            "elapsed_ms": 1.0,
+            "cpu_ms": None,
+            "sql_cpu_pct": None,
+            "waited": 0.0,
+        }
+
+    monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
+    monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company, **_: (len(jobs), 0))
+    monkeypatch.setattr(gp_job_sync, "_persist_health", lambda jobs, company: 0)
+
+    total, _ = asyncio.run(gp_job_sync.run_once())
+
+    assert total == 4  # every listed job is still mirrored; only the health read is narrowed
+    health = [(payload, reads) for op, payload, reads in asked if op == "job_setup_health"]
+    assert health == [({"jobs": ["J-ACTIVE", "J-OLD-RELAY"]}, 2)]
+
+
 def test_the_health_read_skips_a_company_with_no_jobs(monkeypatch):
     called = []
     monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", lambda *a, **k: called.append(1))

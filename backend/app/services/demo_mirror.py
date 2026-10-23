@@ -38,7 +38,7 @@ from app.errors import RelayCallError
 from app.models.enums import GpJobState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
-from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import demo_mirror_state_repository as state
 from app.repositories import demo_snapshot_repository, import_repository
 from app.services import demo_gp, demo_snapshot
@@ -81,8 +81,9 @@ def configured() -> str:
     return MADE_UP if os.getenv("DEMO_SOURCE", "").strip().lower() == MADE_UP else UBC
 
 
-def load_source(session: Session) -> Source:
-    return made_up_source(session) if configured() == MADE_UP else ubc_source(session)
+def load_source(session: Session, *, summary: bool = False) -> Source:
+    """The source the demo is built from. `summary` is `ubc_source`'s: only for a reader that counts it."""
+    return made_up_source(session) if configured() == MADE_UP else ubc_source(session, summary=summary)
 
 
 # --- the made-up company -----------------------------------------------------------------------------
@@ -105,7 +106,11 @@ def mirrored(project: Project, holding: set[str]) -> bool:
     return project.gp_job_state == GpJobState.ACTIVE or project.project_id in holding
 
 
-def ubc_source(session: Session) -> Source:
+def ubc_source(session: Session, *, summary: bool = False) -> Source:
+    """UBC as it is. `summary` is for the readers that only count what it holds or name its vendors and
+    customers - the admin page's status, polled every few seconds while a build runs, and the GP masters
+    read (#1833): it has no schedules, which are every opening and hardware row of every mirrored project,
+    and its open POs are only their numbers and vendors, without their lines. Never for a build."""
     rows = demo_snapshot_repository.rows(session)
     holding = set(demo_snapshot.holding_jobs(rows))
     projects = [
@@ -115,7 +120,7 @@ def ubc_source(session: Session) -> Source:
         ).all()
         if mirrored(p, holding)
     ]
-    open_pos = _open_pos(session)
+    open_pos = _open_po_vendors(session) if summary else _open_pos(session)
     stored = state.get(session, state.GP_MASTERS) or {}
     return Source(
         name=UBC,
@@ -123,7 +128,7 @@ def ubc_source(session: Session) -> Source:
         rows=rows,
         masters=_masters(stored.get("masters"), open_pos),
         open_pos=open_pos,
-        schedules=_schedules(session, projects),
+        schedules={} if summary else _schedules(session, projects),
     )
 
 
@@ -150,18 +155,22 @@ def _job(project: Project) -> dict:
     }
 
 
+def _open_po_filter() -> tuple:
+    return (
+        PurchaseOrder.gp_company == MIRROR_COMPANY,
+        PurchaseOrder.status.in_(_OPEN),
+        PurchaseOrder.po_number.is_not(None),
+        PurchaseOrder.deleted_at.is_(None),
+    )
+
+
 def _open_pos(session: Session) -> list[dict]:
     """UBC's POs still open in GP, each as GP would read it back: its lines with what GP has received on
     them so far (`received_base`), so receipts in the demo count on from there. A PO with no lines is left
     out, as the GP PO mirror leaves out a read with none: there is nothing on it to receive."""
     pos = session.scalars(
         select(PurchaseOrder)
-        .where(
-            PurchaseOrder.gp_company == MIRROR_COMPANY,
-            PurchaseOrder.status.in_(_OPEN),
-            PurchaseOrder.po_number.is_not(None),
-            PurchaseOrder.deleted_at.is_(None),
-        )
+        .where(*_open_po_filter())
         .options(selectinload(PurchaseOrder.line_items))
         .order_by(PurchaseOrder.po_number)
     ).all()
@@ -209,6 +218,18 @@ def _open_pos(session: Session) -> list[dict]:
             }
         )
     return out
+
+
+def _open_po_vendors(session: Session) -> list[dict]:
+    """The POs `_open_pos` copies - open, with lines - as only their numbers and vendors, in its order: what a
+    summary counts and names them by (#1833), in one query and without a line loaded."""
+    has_lines = select(POLineItem.id).where(POLineItem.po_id == PurchaseOrder.id).exists()
+    rows = session.execute(
+        select(PurchaseOrder.po_number, PurchaseOrder.gp_vendor_id, PurchaseOrder.vendor_name_snapshot)
+        .where(*_open_po_filter(), has_lines)
+        .order_by(PurchaseOrder.po_number)
+    ).all()
+    return [{"po_number": n, "vendor_id": vendor_id, "vendor_name": name} for n, vendor_id, name in rows]
 
 
 def _masters(read: dict | None, open_pos: list[dict]) -> dict:
@@ -334,7 +355,7 @@ async def read_gp_masters() -> dict:
             return {}
 
     with SessionLocal() as session:
-        source = ubc_source(session)
+        source = ubc_source(session, summary=True)
     vendor_ids = sorted({po["vendor_id"] for po in source.open_pos if po.get("vendor_id")})
     customers = sorted({j["customer_number"] for j in source.jobs if j.get("customer_number")})
 
@@ -430,7 +451,7 @@ async def refresh_gp_masters() -> str | None:
             )
             # The demo there is answers with them from now on; the vendors its copied POs name stay in.
             if demo_gp.has_masters(session):
-                demo_gp.update_masters(session, ubc_source(session).masters)
+                demo_gp.update_masters(session, ubc_source(session, summary=True).masters)
             session.commit()
         return None
     except Exception as e:  # noqa: BLE001 - recorded, and the stored masters stand

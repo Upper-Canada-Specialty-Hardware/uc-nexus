@@ -80,6 +80,45 @@ it('lets a stock draft with no project pick one at register time', async () => {
   expect(screen.getByText(/this draft has no project yet/i)).toBeTruthy();
 });
 
+// #1949: a draft raised with no project stores every line off the job, there being none. Given its
+// project on the PO detail, the save puts its lines on the job (the backend's `update_po`); given it
+// here, picking the job does. A project draft's lines are otherwise shown as the buyer set them.
+it('leaves a project draft with every line off the job as the buyer set it', async () => {
+  const allOffTheJob: PurchaseOrder = {
+    ...stockDraft,
+    projectId: 'p1',
+    lineItems: [stockDraft.lineItems[0], { ...stockDraft.lineItems[0], id: 'li-2', productCode: 'LK-200' }],
+  };
+  renderDialog({ registerPo: allOffTheJob }, [...baseMocks(), costCodesMock()]);
+
+  expect(await screen.findByLabelText('Job cost line 1')).not.toBeChecked();
+  expect(screen.getByLabelText('Job cost line 2')).not.toBeChecked();
+});
+
+it('ticks job cost on a projectless draft when its project is picked here', async () => {
+  renderDialog({ registerPo: stockDraft });
+
+  const project = await screen.findByLabelText(/^Project/i);
+  typeInto(project, 'JOB-200');
+  fireEvent.click(await screen.findByText('Elm St Job'));
+
+  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
+});
+
+it('leaves a project draft whose lines were set one by one as they are', async () => {
+  const mixed: PurchaseOrder = {
+    ...projectDraft,
+    lineItems: [
+      projectDraft.lineItems[0],
+      { ...projectDraft.lineItems[0], id: 'li-2', productCode: 'LK-200', jobCost: false },
+    ],
+  };
+  renderDialog({ registerPo: mixed }, [...baseMocks(), costCodesMock()]);
+
+  expect(await screen.findByLabelText('Job cost line 1')).toBeChecked();
+  expect(screen.getByLabelText('Job cost line 2')).not.toBeChecked();
+});
+
 // #689: the field used to be a list of every project, scannable by name only. A PO user knows the job
 // by its number, and JOB-200's name says nothing about 200.
 it('finds a project by its number, not only by its name', async () => {
@@ -163,6 +202,33 @@ it('registers with a null Order As when the field is cleared', async () => {
   await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as { lineItems: { orderAs: string | null }[] };
   expect(input.lineItems[0].orderAs).toBeNull();
+});
+
+// #1912: the register sent parseFloat of the box, which read "1,250.00" as 1, while the check refused it.
+it('registers a unit cost typed with a thousands comma as the whole amount, and refuses a trailing letter', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+  await waitForVendorPreselect();
+
+  await selectTaxDetail();
+  fireEvent.change(screen.getByLabelText('Unit cost line 1'), { target: { value: '1250abc' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+  expect(await screen.findByText('Not a number')).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+
+  fireEvent.change(screen.getByLabelText('Unit cost line 1'), { target: { value: '1,250.00' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { unitCost: number }[] };
+  expect(input.lineItems[0].unitCost).toBe(1250);
 });
 
 it('gives a custom item row no Order As and registers it with none', async () => {

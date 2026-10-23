@@ -23,12 +23,16 @@ import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../graphql/warehouse';
 import { DELETE_PO_DOCUMENT, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
-import { GET_PROJECTS } from '../../graphql/shared';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import { extractGpError, GP_JOB_NOT_OPEN } from '../../graphql/gpError';
-import { gpJobStateLabel, isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
+import {
+  gpJobStateLabel,
+  isGpJobNotOpen,
+  isGpSetupBroken,
+  type PurchaseOrderProject,
+} from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
 import LoadError from '../../components/LoadError';
 import PackingSlipPicker from './PackingSlipPicker';
@@ -135,12 +139,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const noActiveWarehouse = !!warehousesData && warehouses.length === 0;
   // #1582: an unread warehouse list is not "the default building" - the draft would land there unasked.
   const warehousesUnread = !!warehousesError && !warehousesData;
-
-  // #425: the GP setup verdict lives on the project, and the PO only carries a project id. Read from
-  // the shared projects query, which every other screen already primes, so this is normally a cache
-  // hit rather than a round trip on modal open.
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !open });
-  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
 
   useEffect(() => {
     if (!warehouseId && warehouses.length > 0) {
@@ -315,33 +313,33 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // #425: POs whose project's GP job setup is broken. A WARNING here, not a block: the point of
   // drafting is that counting a pallet and recording GP's answer are no longer the same moment. The
   // approval is where it becomes a refusal, because that is where eConnect would reject it.
+  // #1877: the verdict is read off each PO's own project, not found in the projects list, which
+  // leaves archived jobs out - an archived job's broken setup went unwarned.
   const quarantinedProjects = useMemo(() => {
-    const byId = new Map(projects.map((p) => [p.id, p]));
-    const seen = new Map<string, Project>();
+    const seen = new Map<string, PurchaseOrderProject>();
     for (const details of receivablePoDetailsList) {
-      if (!details.projectId) continue;
-      const project = byId.get(details.projectId);
-      if (project && isGpSetupBroken(project)) seen.set(details.projectId, project);
+      const project = details.projectId ? details.project : null;
+      if (project && isGpSetupBroken(project)) seen.set(project.id, project);
     }
     return [...seen.values()];
-  }, [receivablePoDetailsList, projects]);
+  }, [receivablePoDetailsList]);
 
   // #730: POs whose project's GP job is inactive, closed or missing in GP. A hard block, unlike the
   // #425 warning above: GP refuses every GP RECEIVE ENTRY against such a job, so a count drafted now
   // could never be approved - the same reasoning as a PO that is not in GP at all.
+  // Off the PO's own project too (#1877): an archived job is the likeliest to be closed in GP, and
+  // the projects list left it out, so its count was entered only for the server to refuse it on submit.
   const notOpenJobs = useMemo(() => {
-    const byId = new Map(projects.map((p) => [p.id, p]));
-    const seen = new Map<string, { project: Project; poNumbers: string[] }>();
+    const seen = new Map<string, { project: PurchaseOrderProject; poNumbers: string[] }>();
     for (const details of receivablePoDetailsList) {
-      if (!details.projectId) continue;
-      const project = byId.get(details.projectId);
+      const project = details.projectId ? details.project : null;
       if (!project || !isGpJobNotOpen(project)) continue;
       const entry = seen.get(project.id) ?? { project, poNumbers: [] };
       entry.poNumbers.push(details.poNumber ?? 'PO');
       seen.set(project.id, entry);
     }
     return [...seen.values()];
-  }, [receivablePoDetailsList, projects]);
+  }, [receivablePoDetailsList]);
 
   // Why Submit is grey, named beside it - the FIRST unmet requirement in the disable chain, so the
   // user is never left reverse-engineering a dead button. blockedPos gets a caption too even though

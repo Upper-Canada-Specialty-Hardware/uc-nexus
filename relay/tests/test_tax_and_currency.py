@@ -762,7 +762,16 @@ def test_a_blank_or_overlong_detail_id_is_refused_at_the_model(bad):
 
 
 def test_a_retry_that_finds_the_po_answers_the_full_tax_and_writes_no_row(gp, monkeypatch):
+    # #1858: the full tax a retry answers is the TAXAMNT GP stored on the PO, read back off its header.
     monkeypatch.setattr(ops.econnect, "find_po_by_registration_note", lambda conn, **kw: "PO097492")
+    stored = {
+        "subtotal": Decimal("400.00"),
+        "tax_amount": Decimal("44.40"),
+        "currency": "CAD",
+        "doc_date": date(2026, 9, 21),
+        "vendor_id": "V",
+    }
+    monkeypatch.setattr(ops.econnect, "read_registered_po", lambda conn, po_number: stored)
     conn = _RecordingConn()
     request = models.CreatePoRequest(
         **{**_po_request(header=_two_detail_freight_header()).model_dump(), "idempotency_key": "key-1"}

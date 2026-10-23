@@ -43,6 +43,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
 import { hasEdits } from './draftOps';
 import { Appear } from '../../motion';
+import { parseUnitCost, unitCostProblem } from '../po/unitCost';
 
 export interface GpCostCode {
   costCode: string;
@@ -234,11 +235,12 @@ function DraftCostField({
   onCommit: (next: number) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
+  // #1912: the rule every unit cost box shares. It took any finite number of 0 or more, so 0.333 was
+  // committed to every line of the product for GP to refuse at registration; past the cent, it is held
+  // red while typed and the previous cost comes back on leaving, as for anything else it can't take.
+  const invalid = text !== null && text.trim() !== '' && unitCostProblem(text) !== null;
   const settle = () => {
-    if (text !== null && text.trim() !== '') {
-      const next = Number(text);
-      if (Number.isFinite(next) && next >= 0) onCommit(next);
-    }
+    if (text !== null && text.trim() !== '' && !invalid) onCommit(parseUnitCost(text));
     setText(null);
   };
   return (
@@ -251,6 +253,7 @@ function DraftCostField({
       onKeyDown={(e) => {
         if (e.key === 'Enter') settle();
       }}
+      error={invalid}
       slotProps={{
         input: {
           startAdornment: <InputAdornment position="start">$</InputAdornment>,

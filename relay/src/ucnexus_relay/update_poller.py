@@ -38,9 +38,10 @@ INTERVAL_JITTER_SECONDS = 7200
 DEFER_RETRY_SECONDS = 900
 MAX_DEFERRALS = 8
 
-# Treat the relay as busy for this long after the last job finished. The backend records a relay
+# Treat the relay as busy for this long after the last GP WRITE finished. The backend records a relay
 # result and then persists the UC Nexus side of the write; killing the relay inside that window is
-# survivable but pointlessly risky when the alternative is waiting two minutes.
+# survivable but pointlessly risky when the alternative is waiting two minutes. Writes only (#1927): the
+# backend's own loops read from the relay all day, so a window that every read reopened never closed.
 BUSY_GRACE_SECONDS = 120
 
 # The post-update self-check: how long the freshly updated build gets to bring its backend channel up
@@ -49,6 +50,11 @@ BUSY_GRACE_SECONDS = 120
 # that runs out this clock is a build that cannot connect at all.
 SELF_CHECK_SECONDS = 300.0
 SELF_CHECK_POLL_SECONDS = 15.0
+
+# How often the self-check re-reads a ledger the apply helper has not settled yet (#1926). The helper
+# relaunches this build and writes `success` only once its /health answers, so the new app's first read
+# almost always finds `applying`.
+LEDGER_SETTLE_POLL_SECONDS = 5.0
 
 
 def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[bool, str]:
@@ -91,30 +97,42 @@ def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[boo
     return True, f"update available: {latest}"
 
 
+def _write_counters(channel: dict) -> tuple[int, float | None]:
+    """(GP writes in flight, seconds since the last one finished) from a /health channel snapshot (#1927).
+    A serve build older than the write counters reports only the every-job pair, which is read in their
+    place: that can only make the relay look busier than it is, never less busy."""
+    if "writes_in_flight" in channel:
+        in_flight, last = channel.get("writes_in_flight"), channel.get("last_write_finished_ago")
+    else:
+        in_flight, last = channel.get("jobs_in_flight"), channel.get("last_job_finished_ago")
+    return int(in_flight or 0), (None if last is None else float(last))
+
+
 def is_busy(health: dict) -> bool:
-    """Whether the serve child is mid-GP-work (or unreachable). Fail-safe: an empty or malformed
+    """Whether the serve child is mid-GP-write (or unreachable). Fail-safe: an empty or malformed
     /health payload means we cannot tell, and "cannot tell" must never authorise killing the relay
-    while eConnect is holding a transaction open."""
+    while eConnect is holding a transaction open. Reads do not count (#1927): one killed by the swap is
+    retried, and the backend's loops keep one finishing every few seconds."""
     if not health:
         return True
     channel = health.get("channel")
     if not isinstance(channel, dict):
         return True
-    if int(channel.get("jobs_in_flight") or 0) > 0:
+    in_flight, last = _write_counters(channel)
+    if in_flight > 0:
         return True
-    last = channel.get("last_job_finished_ago")
-    if last is not None and float(last) < BUSY_GRACE_SECONDS:
+    if last is not None and last < BUSY_GRACE_SECONDS:
         return True
     return False
 
 
 def jobs_running(health: dict) -> bool:
-    """Whether a /health that ANSWERED reports GP work in flight. The manual "Update now" rule (#1212):
+    """Whether a /health that ANSWERED reports a GP write in flight. The manual "Update now" rule (#1212):
     unlike is_busy it is not fail-safe, because a person pressing the button on a relay whose serve child
-    is not answering is exactly the case an update may be needed to fix; only a job known to be running
-    holds it back."""
+    is not answering is exactly the case an update may be needed to fix; only a write known to be running
+    holds it back - a read is retried, for the same reason is_busy ignores reads (#1927)."""
     channel = health.get("channel") if isinstance(health, dict) else None
-    return isinstance(channel, dict) and int(channel.get("jobs_in_flight") or 0) > 0
+    return isinstance(channel, dict) and _write_counters(channel)[0] > 0
 
 
 def ready_for_scheduled_handoff() -> bool:
@@ -226,11 +244,24 @@ def needs_self_check(ledger: dict) -> bool:
 
 
 def _previous_version_dir(install_dir):
-    """The highest-build app-<build>/ folder that is NOT the one `current` points at, or None if this
-    install has no earlier version left to fall back to (layout keeps two)."""
+    """The folder to roll back to: the one the update replaced, as the apply helper recorded it in the
+    ledger (#1932), or None if this install has no earlier version left to fall back to.
+
+    It used to be the highest-build folder that is not `current`, which after 50 -> 51 (failed, back on
+    50) -> 52 is 51, the build that already failed - and cleanup had deleted 50 by then. The highest
+    folder that is neither current nor recorded as failed stands in only when the ledger names none (an
+    update applied by a helper older than the record) or the one it names is gone."""
+    ledger = updater.read_ledger(install_dir)
     current = layout.current_target(install_dir)
+    current_name = Path(current).name if current is not None else None
+    recorded = ledger.get("previous_dir")
+    if recorded:
+        previous = Path(recorded)
+        if previous.name != current_name and (previous / layout.ASSET_NAME).exists():
+            return previous
+    failed = set(ledger.get("failed_dirs") or ())
     for candidate in layout.version_dirs(install_dir):
-        if current is None or candidate.name != Path(current).name:
+        if candidate.name != current_name and candidate.name not in failed:
             return candidate
     return None
 
@@ -274,10 +305,35 @@ def _roll_back(install_dir, target: str) -> str:
     return "rolled_back"
 
 
+def _settled_ledger(install_dir, stop: threading.Event, monotonic) -> dict | None:
+    """The ledger once the apply helper has recorded its result, or None if the app shut down first.
+
+    This runs in the app the helper just relaunched, and the helper writes `success` only after that
+    app's /health answers - seconds AFTER this thread first looks (#1926). Reading once found `applying`
+    and skipped the check for good. So a staging/applying ledger is waited out, on the same rules the
+    rest of the updater uses: until the helper settles it, or until it is abandoned, when
+    reconcile_ledger settles it exactly as startup would (#369). A ledger that never reads as abandoned
+    (no readable timestamp) is still in flight after the wait, and in-flight is never judged."""
+    deadline = None
+    while True:
+        ledger = updater.read_ledger(install_dir)
+        if ledger.get("status") not in ("staging", "applying"):
+            return ledger
+        if updater.ledger_is_abandoned(ledger):
+            updater.reconcile_ledger(install_dir, logger)
+            return updater.read_ledger(install_dir)
+        if deadline is None:
+            deadline = monotonic() + updater.ABANDONED_AFTER_SECONDS
+        elif monotonic() >= deadline:
+            return ledger
+        if stop.wait(LEDGER_SETTLE_POLL_SECONDS):
+            return None
+
+
 def _self_check(app, stop: threading.Event, monotonic) -> str | None:
     install_dir = app._install_dir()
-    ledger = updater.read_ledger(install_dir)
-    if not needs_self_check(ledger):
+    ledger = _settled_ledger(install_dir, stop, monotonic)
+    if ledger is None or not needs_self_check(ledger):
         return None
     target = ledger.get("target_build") or ""
     deadline = monotonic() + SELF_CHECK_SECONDS

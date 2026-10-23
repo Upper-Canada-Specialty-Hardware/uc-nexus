@@ -159,7 +159,8 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
         query: GET_GP_OUTBOX,
         variables: (v: Record<string, unknown>) => {
           outboxAsked.push(v);
-          return Array.isArray(v.ops) && (v.ops as string[]).includes('create_po');
+          // #1948: the table's own read asks for the holding registrations; the held panel by op.
+          return v.holdingDrafts === true || (Array.isArray(v.ops) && (v.ops as string[]).includes('create_po'));
         },
       },
       result: { data: { gpOutbox: heldRegistrations } },
@@ -416,9 +417,10 @@ it('shows the held PO registrations on the PO table', async () => {
   );
 });
 
-// #1223: the queued chip (and the detail's Register/Cancel hold) reads only waiting registrations,
-// asked for by name, so 200 newer writes of other kinds can never push one off the list.
-it('marks a PO whose registration is waiting, asking only for waiting registrations', async () => {
+// #1223: the queued chip (and the detail's Register/Cancel hold) reads only registrations, so 200 newer
+// writes of other kinds can never push one off the list. #1948: only the ones holding their draft, picked
+// by the server, so a pile of failed ones nothing holds can't either.
+it('marks a PO whose registration is waiting, asking only for the registrations holding drafts', async () => {
   renderRegister([
     {
       __typename: 'GpOutboxEntry',
@@ -438,8 +440,38 @@ it('marks a PO whose registration is waiting, asking only for waiting registrati
 
   expect(await screen.findByText('GP registration queued')).toBeInTheDocument();
   await waitFor(() =>
-    expect(outboxAsked).toContainEqual({ ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 }),
+    expect(outboxAsked).toContainEqual({ holdingDrafts: true, limit: 500 }),
   );
+});
+
+// #1948: a failed registration GP took, or may have, still holds its draft, and the row says to Retry it.
+// One that failed with nothing in GP frees the draft, and the row carries no chip.
+it.each([
+  [true, 'GP registration held'],
+  [false, null],
+])('marks a PO whose failed registration holds its draft (holdsDraft %s)', async (holdsDraft, chip) => {
+  renderRegister([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'failed-1',
+      label: 'PO registration PO-REQ-001',
+      op: 'create_po',
+      company: 'TUBC',
+      status: 'FAILED',
+      attempts: 1,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: 'the save failed',
+      failureKind: 'persist_failed',
+      entityKey: 'po:po-draft',
+      createdAt: '2026-07-01T12:00:00Z',
+      holdsDraft,
+    },
+  ]);
+
+  expect(await screen.findByText('Held PO registrations')).toBeInTheDocument();
+  if (chip) expect(await screen.findByText(chip)).toBeInTheDocument();
+  else expect(screen.queryByText('GP registration held')).toBeNull();
+  expect(screen.queryByText('GP registration queued')).toBeNull();
 });
 
 // The normal state: nothing is held, and the table looks exactly as it did.
@@ -526,6 +558,18 @@ it('narrows to a pressed segment, which then reads as pressed', async () => {
 
   await waitFor(() => expect(lastPageAsk()).toMatchObject({ statuses: ['DRAFT'] }));
   expect(screen.getByRole('button', { name: 'Filter by Nexus Draft' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+// #1886: a cancelled PO is soft-deleted as well, so the segment asks the page for CANCELLED alone -
+// the one status the backend lets soft-deleted rows through for.
+it('narrows to the cancelled POs on the Cancelled segment', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Filter by Cancelled' }));
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ statuses: ['CANCELLED'] }));
+  expect(screen.getByRole('button', { name: 'Filter by Cancelled' })).toHaveAttribute('aria-pressed', 'true');
 });
 
 it('searches every status while the search box has text, and narrows again once it is cleared', async () => {
@@ -625,4 +669,27 @@ it('says the purchase orders failed to load rather than "no purchase orders matc
 
   expect(await screen.findByText(/couldn.t load the purchase orders/i)).toBeInTheDocument();
   expect(screen.queryByText(/no purchase orders match/i)).not.toBeInTheDocument();
+});
+
+it('shows no counts rather than 0 when the status counts fail to load (#1847)', async () => {
+  // The stats read fails; everything else answers as usual.
+  const failing = mocks().map((m) =>
+    m.request.query === GET_PO_STATISTICS
+      ? { request: m.request, maxUsageCount: INFINITE, error: new Error('Network down') }
+      : m,
+  );
+  render(
+    <MemoryRouter>
+      <MockedProvider mocks={failing}>
+        <ToastProvider>
+          <POModule />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/couldn.t load the counts/i)).toBeInTheDocument();
+  const segment = screen.getByRole('button', { name: 'Filter by Nexus Draft' });
+  expect(segment).toHaveTextContent('–');
+  expect(segment).not.toHaveTextContent('0');
 });

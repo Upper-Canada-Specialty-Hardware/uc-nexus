@@ -6,6 +6,7 @@ import { WizardProvider } from '../../../contexts/WizardContext';
 import { ToastProvider } from '../../../components/Toast';
 import ImportWizard from '../ImportWizard';
 import {
+  FINALIZE_IMPORT_SESSION,
   GET_PROJECT_EXCLUDED_ITEMS,
   GET_PROJECT_HARDWARE_SCHEDULE,
   RECONCILE_SCHEDULE,
@@ -14,6 +15,7 @@ import {
   GET_PROJECT_INVENTORY_AVAILABILITY,
 } from '../../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../../graphql/shipping';
+import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../../graphql/admin';
 import {
   useHardwareScheduleParser,
   type UseHardwareScheduleParserReturn,
@@ -390,6 +392,19 @@ describe('ImportWizard step transitions', () => {
     expect(screen.queryByRole('heading', { name: 'Select Import Purpose' })).not.toBeInTheDocument();
   });
 
+  // #1917: a contract with no openings or no hardware parsed "fine", and a schedule replace from it
+  // deleted every unordered opening and row.
+  it.each([
+    ['openings', { ...parseResult, openings: [] }, 'This file has no openings - check it is the right export.'],
+    ['hardware', { ...parseResult, hardwareItems: [] }, 'This file has no hardware - check it is the right export.'],
+  ])('holds Next on a file with no %s, saying why', (_what, empty, hint) => {
+    mockedUseParser.mockReturnValue(makeParser({ parseResult: empty }));
+    renderWizard({ purpose: 'schedule' });
+
+    expect(nextButton()).toBeDisabled();
+    expect(screen.getByText(hint)).toBeInTheDocument();
+  });
+
   it('po purpose carries Classification and Organize PO Drafts before Finalize', () => {
     renderWizard();
 
@@ -567,6 +582,7 @@ describe('ImportWizard schedule purpose', () => {
             productClassifications: [
               { hardwareCategory: 'Hinges', productCode: 'HNG-100', classification: 'SITE_HARDWARE' },
             ],
+            revision: 1,
           },
         },
       },
@@ -843,6 +859,60 @@ describe('ImportWizard over-ordering selection', () => {
   });
 });
 
+// #1844: the PO step's Ordered / Received / Available figures and finalize's over-buying check come from
+// the project's hardware status; a failed read showed them all as zero and said nothing.
+describe('ImportWizard failed inventory read', () => {
+  const RECONCILE_VARIABLES = {
+    projectId: 'proj-1',
+    items: [
+      { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+      { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+    ],
+  };
+  const reconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    result: {
+      data: {
+        reconcileSchedule: [
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 3, status: 'NOT_COVERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantity: 1, status: 'NOT_COVERED' },
+        ],
+      },
+    },
+  };
+  const statusFails: MockedResponse = {
+    request: { query: GET_HARDWARE_STATUS_BY_PRODUCT, variables: { projectIds: ['proj-1'] } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    error: new Error('network down'),
+  };
+
+  it('says so on the PO step, and finishing without the figures is ticked', async () => {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, reconcileMock, statusFails] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    fireEvent.click(screen.getByRole('button', { name: 'UCH Site (2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'UCH Site (2)' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByText(/Couldn't load this project's inventory figures/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+    // Include a draft, the one thing this step asks before Next.
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    clickNext();
+    await flushApollo();
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Finish without the inventory figures' }));
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeEnabled();
+  });
+});
+
 // #566: forward/back and the step position live in one fixed spot in the AppBar now, not in a
 // bottom row that moved with content height. The gate for each step is computed in the wizard, so
 // these walk the same buttons the earlier tests do - they just now sit in the toolbar.
@@ -981,6 +1051,7 @@ describe('ImportWizard deep link', () => {
             },
           ],
           productClassifications: [],
+          revision: 7,
         },
       },
     },
@@ -1015,6 +1086,62 @@ describe('ImportWizard deep link', () => {
     await flushApollo();
 
     expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  // #1918: finalize names the schedule revision the run started from, and the server's refusal of a
+  // stale one is said as it is.
+  it('sends the revision it loaded, and says so when the schedule has changed since', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const staleFinalize: MockedResponse = {
+      request: {
+        query: FINALIZE_IMPORT_SESSION,
+        variables: (vars: Record<string, unknown>) => {
+          sent.push(vars.input as Record<string, unknown>);
+          return true;
+        },
+      },
+      error: new Error('The schedule changed since you opened this. Reload it and start again.'),
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [availabilityMock, scheduleWithItems, requestCoverageMock, staleFinalize],
+      purpose: 'assembly',
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace Schedule' }));
+    await flushApollo();
+
+    expect(sent.at(-1)?.expectedScheduleRevision).toBe(7);
+    expect(screen.getByText(/The schedule changed since you opened this/)).toBeInTheDocument();
+  });
+
+  it('a first import says it expects no schedule yet', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const finalize: MockedResponse = {
+      request: {
+        query: FINALIZE_IMPORT_SESSION,
+        variables: (vars: Record<string, unknown>) => {
+          sent.push(vars.input as Record<string, unknown>);
+          return true;
+        },
+      },
+      error: new Error('refused'),
+    };
+    renderWizard({ mocks: [availabilityMock, requestCoverageMock, finalize], purpose: 'assembly' });
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Finalize' }));
+    await flushApollo();
+
+    expect(sent.at(-1)).toHaveProperty('expectedScheduleRevision', null);
   });
 
   it('falls back to the upload step when the project has no persisted schedule', async () => {

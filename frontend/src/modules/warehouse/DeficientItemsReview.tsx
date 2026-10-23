@@ -152,20 +152,23 @@ export default function DeficientItemsReview() {
       {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
 
       {rows.length === 0 && !loading ? (
-        <Card variant="outlined" sx={{ maxWidth: 620 }}>
-          <CardContent>
-            <Typography component="div" sx={microLabelSx}>
-              Clear
-            </Typography>
-            <Typography variant="h6" sx={{ mt: 0.25 }}>
-              No deficient items pending review
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Deficient items appear here when they're flagged during receiving, shop assembly, or
-              directly from the stock pool. Resolving moves them out of this queue.
-            </Typography>
-          </CardContent>
-        </Card>
+        // #1879: a failed read is not a clear queue - the error above stands alone.
+        error ? null : (
+          <Card variant="outlined" sx={{ maxWidth: 620 }}>
+            <CardContent>
+              <Typography component="div" sx={microLabelSx}>
+                Clear
+              </Typography>
+              <Typography variant="h6" sx={{ mt: 0.25 }}>
+                No deficient items pending review
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Deficient items appear here when they're flagged during receiving, shop assembly, or
+                directly from the stock pool. Resolving moves them out of this queue.
+              </Typography>
+            </CardContent>
+          </Card>
+        )
       ) : (
         <Box sx={{ height: 'calc(100vh - 320px)' }}>
           <DataGrid

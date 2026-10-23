@@ -19,6 +19,7 @@ from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository, po_repository
+from app.repositories import warehouse as warehouse_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
 from app.services.relay_gateway import (
@@ -304,6 +305,63 @@ def test_a_draft_adopting_a_project_at_register_gets_job_cost_lines(db_session):
     line = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).first()
     assert line.job_cost is True
     assert line.cost_code == "210-200-2"
+
+
+def test_a_stock_draft_given_a_project_books_its_lines_to_the_job(db_session):
+    """#1949: the draft's lines were stored off the job, there being none, and stayed off it once the
+    draft was given a project - the register dialog then sent them that way. They book to the job the
+    way a project PO's lines do from creation, on the PO's cost code when they carry none of their own."""
+    project = _make_project(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {"hardware_category": "HINGE", "product_code": "HG-100", "ordered_quantity": 2, "unit_cost": 10.0},
+            # The dialog sends an explicit false for every line of a projectless draft.
+            {
+                "hardware_category": "CLOSER",
+                "product_code": "CL-4000",
+                "ordered_quantity": 1,
+                "unit_cost": 90.0,
+                "job_cost": False,
+            },
+        ],
+        project_id=None,
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    assert all(li.job_cost is False for li in po.line_items)
+
+    po_repository.update_po(db_session, po.id, project_id=project.id)
+    db_session.flush()
+
+    lines = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).all()
+    assert [li.job_cost for li in lines] == [True, True]
+    assert {li.cost_code for li in lines} == {"210-200-2"}
+
+
+def test_resending_a_drafts_own_project_leaves_its_lines_alone(db_session):
+    """Only gaining a project moves the lines; a line deliberately off the job stays off it."""
+    project = _make_project(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[
+            {
+                "hardware_category": "HINGE",
+                "product_code": "HG-100",
+                "ordered_quantity": 2,
+                "unit_cost": 10.0,
+                "job_cost": False,
+            }
+        ],
+        project_id=project.id,
+        company="TUBC",
+    )
+
+    po_repository.update_po(db_session, po.id, project_id=project.id)
+    db_session.flush()
+
+    line = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).first()
+    assert line.job_cost is False
 
 
 def test_register_rejects_non_draft(db_session):
@@ -934,7 +992,14 @@ def _queued_write(key):
         row = session.scalars(sa_select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key)).first()
         if row is None:
             return None
-        return {"op": row.op, "relay_op": row.relay_op, "payload": row.payload, "status": row.status}
+        return {
+            "op": row.op,
+            "relay_op": row.relay_op,
+            "payload": row.payload,
+            "status": row.status,
+            "maybe_in_gp": row.maybe_in_gp,
+            "persist_context": row.persist_context,
+        }
 
 
 def _delete_queued_write(key) -> None:
@@ -979,6 +1044,8 @@ def test_a_registration_the_relay_never_answered_is_queued(monkeypatch, db_sessi
         assert queued["payload"]["idempotency_key"] == key
         # Nothing was registered: the PO is still a draft until the worker drains the row.
         assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
+        # #1948: the attempt may have reached GP, so however the row ends it keeps holding the draft.
+        assert queued["maybe_in_gp"] is True
     finally:
         _delete_queued_write(key)
 
@@ -1001,6 +1068,8 @@ def test_a_registration_with_no_relay_connected_at_all_is_still_queued(monkeypat
 
         assert result.queued is True
         assert _queued_write(key)["relay_op"] == "create_po"
+        # #1948: nothing left the backend, so nothing can be in GP.
+        assert _queued_write(key)["maybe_in_gp"] is False
     finally:
         _delete_queued_write(key)
 
@@ -1447,6 +1516,82 @@ def test_registering_a_line_at_a_higher_quantity_keeps_its_ties(db_session):
     _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 10), (lines["HG-200"], "HINGE", "HG-200", 1)])
 
     assert _tied_units(db_session, hinge.id) == 6
+
+
+@pytest.mark.parametrize(
+    ("revised", "tied_by_opening"),
+    [
+        ({"A02": 4}, {"A02": 4}),  # A01 dropped the product: all 4 of its units are surplus
+        ({"A01": 2, "A02": 2}, {"A01": 2, "A02": 2}),  # each opening needs 2 of its 4
+    ],
+)
+def test_lowering_a_line_past_a_revision_releases_the_surplus_first(db_session, revised, tied_by_opening):
+    """#1814: A01 and A02 each have 4 of HG-100 on one Draft line of 8, and a revision leaves the
+    schedule asking for 4 (#1491). Registering the line at 4 keeps the 4 scheduled units and lets the
+    surplus go - kept oldest opening first, A01's surplus stayed on the line and A02's scheduled units
+    went back as still to purchase."""
+    project = _make_project(db_session)
+    openings = [_opening_input(o) for o in ("A01", "A02")]
+    items = []
+    for opening in ("A01", "A02"):
+        item = _hardware_item_input(opening, "HG-100")
+        item["item_quantity"] = 4
+        items.append(item)
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": openings,
+            "hardware_items": items,
+            "po_drafts": [
+                {
+                    "po_number": None,
+                    "notes": None,
+                    "hardware_item_refs": [
+                        {"opening_number": o, "product_code": "HG-100", "hardware_category": "HINGE"}
+                        for o in ("A01", "A02")
+                    ],
+                    "line_item_aliases": [],
+                }
+            ],
+        },
+    )
+    db_session.flush()
+    revised_items = []
+    for opening, quantity in revised.items():
+        item = _hardware_item_input(opening, "HG-100")
+        item["item_quantity"] = quantity
+        revised_items.append(item)
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": openings,
+            "hardware_items": revised_items,
+            "replace_schedule": True,
+        },
+    )
+    db_session.flush()
+    po = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).one()
+    (hinge,) = po.line_items
+    assert _tied_units(db_session, hinge.id) == 8
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 4)])
+
+    numbers = {
+        o.id: o.opening_number for o in db_session.scalars(select(Opening).where(Opening.project_id == project.id))
+    }
+    tied: dict[str, int] = {}
+    for r in _hinge_rows(db_session, project):
+        if r.po_line_item_id == hinge.id:
+            tied[numbers[r.opening_id]] = tied.get(numbers[r.opening_id], 0) + r.item_quantity
+    assert tied == tied_by_opening
+    status = next(
+        r
+        for r in warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
+        if r["product_code"] == "HG-100"
+    )
+    assert (status["required_quantity"], status["surplus_quantity"], status["not_purchased"]) == (4, 0, 0)
 
 
 # --- the currency GP resolved (#1557) ------------------------------------------------------------

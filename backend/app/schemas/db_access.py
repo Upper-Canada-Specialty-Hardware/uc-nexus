@@ -31,6 +31,9 @@ class PostgresLogin:
     # The user is gone from Clerk but the login lives on - the one most in need of a revoke, so it is
     # flagged rather than dropped.
     clerk_missing: bool
+    # #1866: the holder no longer holds UC Nexus Admin, the role the login was granted for. Flagged so a
+    # DB Admin can revoke it; rotate refuses it.
+    lost_admin_role: bool
     # The role really is present in the cluster and a live nexus_rw member. False means the registry
     # says live but the cluster disagrees (a role dropped out from under the row).
     active: bool
@@ -67,6 +70,7 @@ def _login(d: dict) -> PostgresLogin:
         display_name=d["display_name"],
         email=d["email"],
         clerk_missing=d["clerk_missing"],
+        lost_admin_role=d["lost_admin_role"],
         active=d["active"],
         created_at=d["created_at"],
         last_rotated_at=d["last_rotated_at"],
@@ -127,7 +131,21 @@ class DbAccessMutations:
 
     @strawberry.mutation
     def rotate_postgres_admin(self, info: strawberry.Info, db_role: str) -> PostgresAccessCredential:
-        """A fresh password for an existing login, returned once."""
+        """A fresh password for an existing login, returned once.
+
+        Refuses a login whose holder no longer holds UC Nexus Admin (#1866): mint grants only to one
+        (#729), and a fresh password would hand the access back to someone no longer trusted with it.
+        Read off the same roster the grid's flag is, so a holder gone from Clerk is refused too. No live
+        row is left to the repository's own refusal."""
+        if not config.db_direct_access_enabled():
+            raise AppError("Direct database access is not enabled in this environment.", "FEATURE_DISABLED")
+        holder = db_access_repository.live_holder(db_role)
+        if holder is not None:
+            entry = next((u for u in user_roster(info.context) if u["id"] == holder), None)
+            if entry is None or NEXUS_ADMIN_ROLE not in (entry.get("roles") or []):
+                raise ValidationError(
+                    f"This login's holder no longer holds {NEXUS_ADMIN_ROLE}, so it can't be rotated. Revoke it."
+                )
         actor = current_user(info)["user_id"]
         return _credential(db_access_repository.rotate(db_role, actor_clerk_id=actor))
 

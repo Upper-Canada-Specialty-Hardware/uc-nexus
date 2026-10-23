@@ -6,6 +6,7 @@ import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { GET_PO_LINE_TIED_QUANTITIES, NEXUS_REGISTER_PO_LINES } from '../../graphql/po';
 import { GET_PROJECT_SCHEDULE_PRODUCTS } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
+import LoadError from '../../components/LoadError';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -54,7 +55,12 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
   const { showToast } = useToast();
   const isProjectPo = Boolean(po.projectId);
 
-  const { data: scheduleData } = useQuery<{ projectScheduleProducts: ScheduleProduct[] }>(
+  // #1848: a failed read left every product picker at "Not registered" alone, with nothing saying why.
+  const {
+    data: scheduleData,
+    error: scheduleError,
+    refetch: refetchSchedule,
+  } = useQuery<{ projectScheduleProducts: ScheduleProduct[] }>(
     GET_PROJECT_SCHEDULE_PRODUCTS,
     { variables: { projectIds: [po.projectId] }, skip: !isProjectPo },
   );
@@ -291,6 +297,15 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           ? "Say which product each GP line is for. Nexus then keeps that name instead of GP's, and ties the job's schedule hardware to the line for what is still outstanding."
           : "Say which product each GP line is for. Nexus then keeps that name instead of GP's. This PO is not on a job, so there is no schedule hardware to tie to it."}
       </Typography>
+
+      {scheduleError && (
+        <LoadError
+          what="this job's schedule products"
+          error={scheduleError}
+          onRetry={() => refetchSchedule()}
+          sx={{ mb: 1.5 }}
+        />
+      )}
 
       <Box ref={setGridBox} data-testid="nexus-registration-grid" sx={{ minWidth: 0 }}>
         <Box

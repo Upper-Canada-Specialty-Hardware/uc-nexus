@@ -433,9 +433,14 @@ def override_inventory_quantity(
         entity_id=il.id,
         action=AuditAction.ADJUSTMENT,
         performed_by=performed_by,
+        # #1895: what this row holds now. Units placed on another shelf are on the rows created
+        # below, so an increase can leave this one short of the total the override was set to, which
+        # is kept apart as requestedQuantity. `adjustment` is the key the history drawer reads.
         detail={
             "oldQuantity": old_quantity,
-            "newQuantity": new_quantity,
+            "newQuantity": il.quantity,
+            "adjustment": il.quantity - old_quantity,
+            "requestedQuantity": new_quantity,
             "delta": delta,
             "reason": reason,
             "override": True,
@@ -452,8 +457,13 @@ def override_inventory_quantity(
             entity_id=new_il.id,
             action=AuditAction.ADJUSTMENT,
             performed_by=performed_by,
+            # #1895: the row starts at nothing and holds what was placed on it, in the same keys as
+            # every other adjustment, so its first history entry reads as what it was created with.
             detail={
                 "createdByOverrideOf": str(il.id),
+                "oldQuantity": 0,
+                "newQuantity": new_il.quantity,
+                "adjustment": new_il.quantity,
                 "quantity": new_il.quantity,
                 "location": location_detail(new_il.aisle, new_il.row, new_il.bay, new_il.warehouse_id),
                 "reason": reason,
@@ -465,18 +475,28 @@ def override_inventory_quantity(
     return il
 
 
-def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[str, str]]:
+def get_scheduled_pairs(
+    session: Session, project_id: uuid.UUID, *, still_scheduled: bool = False
+) -> set[tuple[str, str]]:
     """Every (hardware_category, product_code) the project's imported schedule knows about.
+
+    `still_scheduled` keeps only the pairs the latest schedule still asks units of (#1825): a pair a
+    revision dropped keeps its ordered rows with every unit past the schedule (#1491, ruled on #1527),
+    and the stock pool's allocation check must not take it as on the schedule. The inventory view's
+    chip leaves it off - the rows are still the schedule's, as surplus.
 
     One grouped query, no relationship walking - this is called once per flat-inventory request and
     its result is checked in Python against rows already in memory, so it never becomes an N+1 (see
     the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
     """
-    rows = session.execute(
+    stmt = (
         select(HardwareItemModel.hardware_category, HardwareItemModel.product_code)
         .where(HardwareItemModel.project_id == project_id)
         .distinct()
-    ).all()
+    )
+    if still_scheduled:
+        stmt = stmt.where(HardwareItemModel.item_quantity > HardwareItemModel.beyond_schedule_quantity)
+    rows = session.execute(stmt).all()
     return {(cat, code) for cat, code in rows}
 
 

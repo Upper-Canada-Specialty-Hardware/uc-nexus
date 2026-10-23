@@ -85,7 +85,9 @@ function StagingRoute() {
           mb: 2,
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
+        {/* #1840: wraps, so on a phone the picker drops under All projects rather than pushing past the
+            screen; its 240px is a basis it fills from, not a floor it overflows at. */}
+        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, flex: 1, minWidth: 0 }}>
           {project && (
             <Button
               size="small"
@@ -99,7 +101,7 @@ function StagingRoute() {
           <ProjectPicker
             value={project}
             onChange={setProject}
-            sx={{ flex: 1, minWidth: 240, maxWidth: 420 }}
+            sx={{ flex: '1 1 240px', minWidth: 0, maxWidth: 420 }}
           />
         </Box>
         {canManage && (

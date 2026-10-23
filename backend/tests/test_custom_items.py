@@ -66,6 +66,26 @@ def test_an_explicit_code_is_normalized_rather_than_taken_verbatim(db_session):
     assert created.code == "WEATHER_STRIP"
 
 
+def test_a_derived_code_is_cut_to_gps_item_number(db_session):
+    """#1911: the code is a PO line's GP item number, which holds 30 characters."""
+    created = _type(db_session, name="Extra Long Acoustic Door Seal Kits Assorted")
+    # Cut at 30 lands on a word break, which is dropped as an uncut code would drop it.
+    assert created.code == "EXTRA_LONG_ACOUSTIC_DOOR_SEAL"
+
+
+def test_an_explicit_code_of_thirty_characters_is_taken(db_session):
+    assert _type(db_session, name="Thirty", code="C" * 30).code == "C" * 30
+
+
+def test_an_explicit_code_past_gps_item_number_is_refused():
+    """#1911: a code the user chose is never cut short - it could not be changed afterwards. Refused
+    before any read, so no database is needed."""
+    with pytest.raises(ValidationError) as exc:
+        catalog.create_item_type(None, name="Seals", code="C" * 31, company="TUBC")
+    assert exc.value.field == "code"
+    assert "30 characters" in exc.value.message
+
+
 def test_a_type_cannot_reuse_another_types_code(db_session):
     _type(db_session, name="Gaskets", code="GASKET")
     with pytest.raises(ConflictError):

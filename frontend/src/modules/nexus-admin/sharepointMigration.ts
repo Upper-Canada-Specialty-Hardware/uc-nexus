@@ -83,7 +83,9 @@ export interface ParsedLocation {
 }
 
 /**
- * `A-62R` -> aisle A, row 62, bay R. The bay letter is optional (`F-37`).
+ * `A-62R` -> aisle A, row 62, bay R. The bay letter is optional (`F-37`) to the parser, but a shelf
+ * without one is not a location Nexus can hold, so such a value is never resolved on its own - see
+ * `distinctLocations` (#1907).
  *
  * Aisles run A..L as single letters today, but the pattern allows up to three so a future `AA` row
  * parses rather than silently falling through to the manual-mapping list.
@@ -483,10 +485,14 @@ export function buildEntries({
       bay: resolution.bay,
       spItemId: c.item.spItemId,
     };
-    const pairs =
+    // A pair the schedule requires none of is one a revision dropped (#1491 keeps it at 0). It has
+    // no budget to split against, so it is no pair here; a code left with none takes the unmatched
+    // path below rather than splitting into nothing (#1906).
+    const pairs = (
       !isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId
         ? (scheduleProductsByProject.get(projectId)?.get(productCode) ?? [])
-        : [];
+        : []
+    ).filter((pair) => pair.requiredQuantity > 0);
     if (pairs.length > 0) {
       let remaining = c.quantity;
       const takes: { hardwareCategory: string; quantity: number }[] = [];
@@ -641,8 +647,10 @@ export function distinctLocations(
         parsed,
         // Only fully-read strings are auto-resolved. A partial read (`G-22L - Blue Stand Up Rack`)
         // goes to the user, because the leftover text may well be a location qualifier that
-        // changes where the hardware actually is.
-        autoParsed: parsed.length > 0 && unparsed.length === 0,
+        // changes where the hardware actually is. So does a coordinate with no bay (`F-37`): the
+        // server takes a whole aisle/row/bay or none (#1369), and which bay is the user's to say,
+        // not a reason for the whole batch to be refused (#1907).
+        autoParsed: parsed.length > 0 && unparsed.length === 0 && parsed.every((p) => p.bay !== null),
       };
     })
     .sort((a, b) => b.rowCount - a.rowCount || a.raw.localeCompare(b.raw));
@@ -709,6 +717,55 @@ export function autoLocationResolutions(
         row: null,
         bay: null,
       });
+    }
+  }
+  return out;
+}
+
+/** A defined location in the warehouse registry (#632), as the registry read returns it. */
+export interface RegistryLocation {
+  warehouseId: string;
+  aisle: string;
+  row: string;
+  bay: string;
+}
+
+/** Why an included location's shelf will be refused: not all of aisle, row and bay, or a whole one
+ *  the warehouse has not defined. */
+export type ShelfProblem = 'INCOMPLETE' | 'UNDEFINED';
+
+/** The server's normalize_location_value: trim, collapse inner spaces, uppercase. */
+const canonicalShelfPart = (value: string | null) => (value ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+/**
+ * The included locations whose shelf the migration would be refused for (#1907).
+ *
+ * The server takes a shelf only when it is a whole aisle/row/bay defined in the entry's warehouse
+ * (#1369), and refuses the batch otherwise - so the Locations step says so where the answer is given,
+ * rather than at the end of the wizard. A location with no shelf at all is fine and never listed.
+ * `registry` null (still loading, or failed) checks completeness only.
+ */
+export function shelfProblems(
+  resolutions: Map<string, LocationResolution>,
+  registry: RegistryLocation[] | null,
+  defaultWarehouseId: string,
+): Map<string, ShelfProblem> {
+  const shelfKey = (warehouseId: string, aisle: string, row: string, bay: string) =>
+    `${warehouseId}|${aisle}|${row}|${bay}`;
+  const defined = new Set(
+    (registry ?? []).map((l) =>
+      shelfKey(l.warehouseId, canonicalShelfPart(l.aisle), canonicalShelfPart(l.row), canonicalShelfPart(l.bay)),
+    ),
+  );
+  const out = new Map<string, ShelfProblem>();
+  for (const [raw, r] of resolutions) {
+    if (r.excluded) continue;
+    const parts = [r.aisle, r.row, r.bay].map(canonicalShelfPart);
+    const given = parts.filter(Boolean).length;
+    if (given === 0) continue;
+    if (given < 3) out.set(raw, 'INCOMPLETE');
+    else if (registry && !defined.has(shelfKey(r.warehouseId || defaultWarehouseId, parts[0], parts[1], parts[2]))) {
+      out.set(raw, 'UNDEFINED');
     }
   }
   return out;
@@ -1000,7 +1057,10 @@ export function matchPoLines(row: PoLinkRow, po: GpPo): GpPoLineItem[] {
 export type PoLinkReason =
   | 'UNPARSEABLE_CELL'
   | 'PO_NOT_IN_NEXUS'
+  | 'PO_RAISED_IN_NEXUS'
   | 'PO_ON_A_DIFFERENT_PROJECT'
+  | 'PO_HAS_NO_PROJECT'
+  | 'LINE_MATCHED_BY_ANOTHER_PART'
   | 'PO_CLOSED_NO_LINE_MATCHED'
   | 'SEVERAL_LINES_MATCHED'
   | 'NO_LINE_MATCHED';
@@ -1008,7 +1068,10 @@ export type PoLinkReason =
 export const PO_LINK_REASON_LABELS: Record<PoLinkReason, string> = {
   UNPARSEABLE_CELL: 'Unparseable cell',
   PO_NOT_IN_NEXUS: 'No such PO in Nexus',
+  PO_RAISED_IN_NEXUS: 'PO was raised in Nexus',
   PO_ON_A_DIFFERENT_PROJECT: 'PO is on a different project',
+  PO_HAS_NO_PROJECT: 'PO has no project',
+  LINE_MATCHED_BY_ANOTHER_PART: 'Line matched by another part',
   PO_CLOSED_NO_LINE_MATCHED: 'PO closed and no line matched',
   SEVERAL_LINES_MATCHED: 'Several lines matched',
   NO_LINE_MATCHED: 'No line matched',
@@ -1083,16 +1146,21 @@ export interface PoLinkResolution extends PoLinkCandidate {
  * several matches, none - goes to the step with the reason, and the user picks a line or skips the
  * row.
  *
- * The job check comes before the matching, because it is a fact about the purchase order rather than
- * about any one line: a PO GP raised against a different job than the row's units are going to is
- * evidence the number in the cell is not the number these units came off, whatever its descriptions
- * happen to say. It is not a refusal - the person can still pick a line, and the server accepts it.
+ * The purchase-order checks come before the matching, because they are facts about the purchase order
+ * rather than about any one line, and the server refuses a link that fails any of them (#1908): a PO
+ * Nexus raised itself takes no migrated stock, and a row going to a project takes a line only from
+ * that project's PO (#1368) - not another job's, and not a project-less one bought for the shelf. No
+ * line of such a PO is offered for the row (`linesOffered`); it is skipped or left unlinked.
+ *
+ * And a line takes one identity. Two rows of different parts matching the same line on their own
+ * would send the line two identities, which the server refuses for the whole batch - so neither
+ * links on its own, and the step asks which one the line is.
  */
 export function buildPoLinkResolutions(
   candidates: PoLinkCandidate[],
   posByNumber: Map<string, GpPo>,
 ): PoLinkResolution[] {
-  return candidates.map((candidate) => {
+  const resolutions = candidates.map((candidate): PoLinkResolution => {
     const cell = normalisePoCell(candidate.poCell);
     if (!cell.poNumber) {
       return { ...candidate, po: null, poLineItemId: null, reason: 'UNPARSEABLE_CELL' as PoLinkReason };
@@ -1102,12 +1170,16 @@ export function buildPoLinkResolutions(
     if (!po) {
       return { ...candidate, po: null, poLineItemId: null, reason: 'PO_NOT_IN_NEXUS' as PoLinkReason };
     }
-    if (po.projectId && candidate.projectId && po.projectId !== candidate.projectId) {
+    if (po.origin !== 'GP') {
+      return { ...candidate, po, poLineItemId: null, reason: 'PO_RAISED_IN_NEXUS' as PoLinkReason };
+    }
+    // A candidate's project is set only when its units go to a project (PROJECT destination).
+    if (candidate.projectId && po.projectId !== candidate.projectId) {
       return {
         ...candidate,
         po,
         poLineItemId: null,
-        reason: 'PO_ON_A_DIFFERENT_PROJECT' as PoLinkReason,
+        reason: (po.projectId ? 'PO_ON_A_DIFFERENT_PROJECT' : 'PO_HAS_NO_PROJECT') as PoLinkReason,
       };
     }
     const matches = matchPoLines(candidate, po);
@@ -1126,6 +1198,73 @@ export function buildPoLinkResolutions(
         : 'NO_LINE_MATCHED') as PoLinkReason,
     };
   });
+
+  // Same part on two shelves is one identity and both rows link; two parts on one line are not.
+  const identitiesByLine = new Map<string, Set<string>>();
+  for (const r of resolutions) {
+    if (!r.poLineItemId) continue;
+    const ids = identitiesByLine.get(r.poLineItemId) ?? new Set<string>();
+    ids.add(poLinkIdentity(r));
+    identitiesByLine.set(r.poLineItemId, ids);
+  }
+  return resolutions.map((r) =>
+    r.poLineItemId && (identitiesByLine.get(r.poLineItemId)?.size ?? 0) > 1
+      ? { ...r, poLineItemId: null, reason: 'LINE_MATCHED_BY_ANOTHER_PART' as PoLinkReason }
+      : r,
+  );
+}
+
+/** The (hardware category, product code) a row's link writes onto its line, as the server compares it. */
+export function poLinkIdentity(row: PoLinkRow): string {
+  return `${row.hardwareCategory.trim()}|${row.productCode.trim()}`;
+}
+
+/** The reasons whose purchase order the server refuses for the row whatever line is picked. */
+const REFUSED_PO_REASONS = new Set<PoLinkReason>([
+  'PO_RAISED_IN_NEXUS',
+  'PO_ON_A_DIFFERENT_PROJECT',
+  'PO_HAS_NO_PROJECT',
+]);
+
+/** GP PO LINE ITEM id -> every identity the rows linked to it carry, automatic links and picks together. */
+export function poLineClaims(
+  resolutions: PoLinkResolution[],
+  picks: Map<string, PoLinkPick>,
+): Map<string, Set<string>> {
+  const bySpItem = new Map(resolutions.map((r) => [r.spItemId, r]));
+  const out = new Map<string, Set<string>>();
+  for (const [spItemId, lineId] of resolvedPoLinks(resolutions, picks)) {
+    const row = bySpItem.get(spItemId);
+    if (!row) continue;
+    const ids = out.get(lineId) ?? new Set<string>();
+    ids.add(poLinkIdentity(row));
+    out.set(lineId, ids);
+  }
+  return out;
+}
+
+/**
+ * The lines the step offers a row - only ones the server would accept for it (#1908).
+ *
+ * None on a purchase order the server refuses for the row (see `REFUSED_PO_REASONS`). Otherwise every
+ * line except one that is already a NEXUS REGISTERED LINE for something else, and one another row has
+ * claimed for a different identity - picking either would have the whole batch refused. The row's
+ * current pick stays listed whatever, so the picker never holds a value it does not show.
+ */
+export function linesOffered(
+  row: PoLinkResolution,
+  claims: Map<string, Set<string>>,
+  pick?: PoLinkPick,
+): GpPoLineItem[] {
+  if (!row.po || (row.reason && REFUSED_PO_REASONS.has(row.reason))) return [];
+  const identity = poLinkIdentity(row);
+  return row.po.lines.filter((line) => {
+    if (line.id === pick) return true;
+    if (line.nexusRegistered && `${line.hardwareCategory.trim()}|${line.productCode.trim()}` !== identity) {
+      return false;
+    }
+    return [...(claims.get(line.id) ?? [])].every((claimed) => claimed === identity);
+  });
 }
 
 /** The user's answer of "this row has no PO line worth attaching to". */
@@ -1143,6 +1282,9 @@ export function resolvedPoLinks(
   for (const resolution of resolutions) {
     const pick = picks.get(resolution.spItemId);
     if (pick === SKIP_PO_LINK) continue;
+    // A pick left over from before an earlier step changed the row's project, onto a PO the server
+    // now refuses for it, is not sent (#1908).
+    if (resolution.reason && REFUSED_PO_REASONS.has(resolution.reason)) continue;
     const lineId = pick || resolution.poLineItemId;
     if (lineId) out.set(resolution.spItemId, lineId);
   }
@@ -1163,7 +1305,7 @@ export function poLinkCounts(
   for (const resolution of resolutions) {
     const pick = picks.get(resolution.spItemId);
     if (pick === SKIP_PO_LINK) skipped += 1;
-    else if (pick || resolution.poLineItemId) linked += 1;
+    else if (resolvedPoLinks([resolution], picks).size > 0) linked += 1;
     else unlinked += 1;
   }
   return { linked, skipped, unlinked };

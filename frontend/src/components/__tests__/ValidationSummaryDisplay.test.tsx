@@ -22,6 +22,25 @@ describe('ValidationSummaryDisplay', () => {
     expect(alert).toHaveTextContent('All rows parsed successfully');
   });
 
+  // #1917: 0 of 0 is a wrong or cut-off export, not a success.
+  it('does not call a file with no openings or no hardware a success', () => {
+    const { rerender } = render(
+      <ValidationSummaryDisplay
+        summary={{ totalOpenings: 0, totalHardwareItems: 0, skippedRows: [], warnings: [] }}
+      />,
+    );
+    expect(screen.queryByText('All rows parsed successfully')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('No openings found in this file.');
+
+    rerender(
+      <ValidationSummaryDisplay
+        summary={{ totalOpenings: 4, totalHardwareItems: 0, skippedRows: [], warnings: [] }}
+      />,
+    );
+    expect(screen.queryByText('All rows parsed successfully')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('No hardware items found in this file.');
+  });
+
   it('displays skipped rows with warning severity', () => {
     const summary: ValidationSummary = {
       totalOpenings: 98,

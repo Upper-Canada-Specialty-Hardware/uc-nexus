@@ -41,18 +41,26 @@ const ROWS = [
   item({ id: 'si-oh', productCode: 'HG-OVERHEAD', kind: 'OVERHEAD' }),
 ];
 
-function renderView(stockVariables: Record<string, unknown>[]) {
+function renderView(stockVariables: Record<string, unknown>[], { failStock = false } = {}) {
   const mocks: MockedResponse[] = [
-    {
-      request: { query: GET_STOCK_ITEMS, variables: () => true },
-      maxUsageCount: INFINITE,
-      result: (vars) => {
-        stockVariables.push(vars as Record<string, unknown>);
-        const kind = (vars as { kind?: string | null }).kind;
-        const rows = kind ? ROWS.filter((r) => r.kind === kind) : ROWS;
-        return { data: { stockItems: rows.map((r) => ({ ...r, __typename: 'StockItem' })) } };
-      },
-    },
+    failStock
+      ? {
+          request: { query: GET_STOCK_ITEMS, variables: () => true },
+          maxUsageCount: INFINITE,
+          error: new Error('Network down'),
+        }
+      : {
+          request: { query: GET_STOCK_ITEMS, variables: () => true },
+          maxUsageCount: INFINITE,
+          result: (vars) => {
+            stockVariables.push(vars as Record<string, unknown>);
+            const { kind, productCodeContains } = vars as { kind?: string | null; productCodeContains?: string | null };
+            const rows = ROWS.filter(
+              (r) => (!kind || r.kind === kind) && (!productCodeContains || r.productCode.includes(productCodeContains)),
+            );
+            return { data: { stockItems: rows.map((r) => ({ ...r, __typename: 'StockItem' })) } };
+          },
+        },
     {
       request: { query: GET_WAREHOUSES, variables: () => true },
       maxUsageCount: INFINITE,
@@ -100,5 +108,24 @@ describe('StockPoolView Stock and Overhead (#832)', () => {
     const overheadRow = (await screen.findByText('HG-OVERHEAD')).closest('[role="row"]') as HTMLElement;
     fireEvent.click(within(overheadRow).getByRole('checkbox'));
     expect(await screen.findByRole('button', { name: 'Mark as Stock' })).toBeInTheDocument();
+  });
+});
+
+// #1879: a failed read wore "Nothing in the stock pool yet", and so did a filter that matched nothing.
+describe('StockPoolView empty states (#1879)', () => {
+  it('says nothing is in the pool only when the read worked and no filter is on', async () => {
+    renderView([], { failStock: true });
+
+    expect(await screen.findByText(/network down|connection/i)).toBeInTheDocument();
+    expect(screen.queryByText('Nothing in the stock pool yet')).not.toBeInTheDocument();
+  });
+
+  it('says the filters match nothing rather than calling the pool empty', async () => {
+    renderView([]);
+
+    await screen.findByText('HG-STOCK');
+    fireEvent.change(screen.getByLabelText('Product code contains'), { target: { value: 'ZZ' } });
+    expect(await screen.findByText('No rows match these filters.')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing in the stock pool yet')).not.toBeInTheDocument();
   });
 });

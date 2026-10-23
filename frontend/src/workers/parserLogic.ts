@@ -1,4 +1,4 @@
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type {
   ParsedProject,
   ParsedOpening,
@@ -233,6 +233,10 @@ export function extractOpenings(
 // extractHardwareItems
 // ---------------------------------------------------------------------------
 
+/** #1938: a schedule row's prices and markup are stored as Numeric(10,4), at most 999,999.9999. One at
+ *  or past this overflowed at finalize as the masked server error, naming nothing; it is a row error here. */
+export const MAX_SCHEDULE_VALUE = 1_000_000;
+
 export function extractHardwareItems(
   contract: XmlNode,
   onProgress?: (percent: number) => void,
@@ -293,6 +297,15 @@ export function extractHardwareItems(
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
+    const tooLarge = (
+      [
+        ['Unit_Cost', unitCost],
+        ['Unit_Price', unitPrice],
+        ['List_Price', listPrice],
+        ['Vendor_Discount', vendorDiscount],
+        ['Markup_Pct', markupPct],
+      ] as const
+    ).filter(([, v]) => v !== null && Math.abs(v) >= MAX_SCHEDULE_VALUE);
 
     // #627: skip the whole Material_List when it is a door or frame (temporary - the import path only
     // orders hardware today). Fail-open: only the known door/frame category codes drop; an unknown or
@@ -323,6 +336,14 @@ export function extractHardwareItems(
         skippedRows.push({
           reason: 'Missing Material_ID',
           context: `Product_Code: ${productCode}, Opening: ${assignOpeningNumber}`,
+        });
+        continue;
+      }
+
+      if (tooLarge.length > 0) {
+        skippedRows.push({
+          reason: `${tooLarge.map(([name]) => name).join(', ')} must be under 1,000,000`,
+          context: `Product_Code: ${productCode}, Opening: ${assignOpeningNumber}, ${tooLarge.map(([name, v]) => `${name}: ${v}`).join(', ')}`,
         });
         continue;
       }
@@ -406,12 +427,38 @@ export function extractHardwareItems(
 // parseHardwareSchedule — main entry point
 // ---------------------------------------------------------------------------
 
+/** A file that stops before its closing </Contract> tag, located at its last character. */
+function cutOffError(trimmed: string): Error {
+  const lastBreak = trimmed.lastIndexOf('\n');
+  let line = 1;
+  for (let i = trimmed.indexOf('\n'); i !== -1; i = trimmed.indexOf('\n', i + 1)) line += 1;
+  const col = trimmed.length - lastBreak - 1;
+  return new Error(
+    `Invalid XML at line ${line}, column ${col}: the file ends before its closing </Contract> tag, so it was likely cut off. Export it again.`,
+  );
+}
+
 export function parseHardwareSchedule(
   xmlContent: string,
   onProgress?: (percent: number, phase: string) => void,
 ): ParseResult {
+  // #1916: XMLParser.parse doesn't validate, so a file cut off at a tag boundary parsed as everything
+  // before the cut and went on to replace the schedule with half of it. Refuse it, saying where it broke.
+  // Blank lines before the XML declaration parsed before the check came in, and the validator refuses
+  // them as a declaration not at the start; both read the file without them.
+  const content = xmlContent.trimStart();
+  const trimmed = content.trimEnd();
+  const cutOff = !trimmed.endsWith('</Contract>');
+  const validation = XMLValidator.validate(content);
+  if (validation !== true) {
+    const { code, msg, line, col } = validation.err;
+    // Tags still open at the end are reported at line 1, column 1; the break is the end of the file.
+    if (cutOff && (code === 'InvalidXml' || msg.startsWith('Unclosed tag'))) throw cutOffError(trimmed);
+    throw new Error(`Invalid XML at line ${line}, column ${col}: ${msg}`);
+  }
+
   const parser = new XMLParser(parserOptions);
-  const parsed = parser.parse(xmlContent);
+  const parsed = parser.parse(content);
   const contract = parsed.Contract;
 
   if (!contract) {
@@ -419,6 +466,7 @@ export function parseHardwareSchedule(
       'Invalid XML: missing root <Contract> element',
     );
   }
+  if (cutOff) throw cutOffError(trimmed);
 
   onProgress?.(10, 'Parsing XML');
 

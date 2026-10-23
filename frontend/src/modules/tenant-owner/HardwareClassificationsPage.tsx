@@ -91,7 +91,7 @@ interface PendingChange {
 // #1050: how a change works, said once at the top so nobody has to learn it from a refusal.
 const RULES = [
   'A change applies to what is still owed. Hardware that already went to the shop or shipped stays as it went, and the log keeps where it went.',
-  'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled.',
+  'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled - or, while its pull has not started, until the batch is discarded on the Shop Assembly page.',
   "A product that already has a classification - UCH Shop, UCH Site or a mix - can't be changed to By Others: By Others treats the item as if it doesn't exist. Only a product never classified can be set to By Others.",
   'Before anything that touches other work is saved, you see exactly what will happen.',
   "A schedule import adds new products here but doesn't change one the project already has classified - that is done on this page. A product a newer schedule dropped stays listed, marked Off schedule.",

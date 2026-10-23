@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { userMessage } from '../../graphql/userMessage';
 import RefreshFailedNote from '../../components/RefreshFailedNote';
+import LoadError from '../../components/LoadError';
 import {
   Box,
   Typography,
@@ -34,6 +35,7 @@ import {
   MIGRATE_SHAREPOINT_INVENTORY,
 } from '../../graphql/admin';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
+import { GET_WAREHOUSE_LOCATIONS } from '../../graphql/warehouse';
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
@@ -66,6 +68,8 @@ import {
   buildPoLinkResolutions,
   resolvedPoLinks,
   poLinkCounts,
+  shelfProblems,
+  type RegistryLocation,
   type SharepointInventoryItem,
   type LocationResolution,
   type NexusProject,
@@ -166,15 +170,37 @@ export default function SharePointMigrationPage() {
     // ground under answers the user already gave.
     { fetchPolicy: 'network-only', notifyOnNetworkStatusChange: true },
   );
-  const { data: whData } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
+  const {
+    data: whData,
+    error: whError,
+    refetch: refetchWarehouses,
+  } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
   });
   // cache-and-network: the project list gates the whole Projects step, and a cached empty list
   // from before a sync would silently drop every project row from the migration.
-  const { data: projData } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS, {
+  const {
+    data: projData,
+    error: projError,
+    refetch: refetchProjects,
+  } = useQuery<{ projects: NexusProject[] }>(GET_PROJECTS, {
     fetchPolicy: 'cache-and-network',
   });
+  // #1842: a failed projects read left every SharePoint project unset - "rows will be skipped" - with
+  // Migrate still enabled, so a run landed only the stock rows; a failed warehouses read did the same to
+  // the location mapping. Neither is a mapping anybody chose, so the wizard waits for both reads.
+  const referenceReadsBlocked = !whData || !projData || whError !== undefined || projError !== undefined;
   const { types: itemTypes } = useInventoryItemTypes({ activeOnly: true });
+  // #1907: the defined locations, so the Locations step can say which shelves the server will refuse
+  // before the whole batch is sent - active only, since that is what the server accepts.
+  const {
+    data: registryData,
+    error: registryError,
+    refetch: refetchRegistry,
+  } = useQuery<{ warehouseLocations: RegistryLocation[] }>(GET_WAREHOUSE_LOCATIONS, {
+    variables: { activeOnly: true },
+    fetchPolicy: 'cache-and-network',
+  });
 
   const [migrate, { loading: migrating }] = useMutation(MIGRATE_SHAREPOINT_INVENTORY);
   const [result, setResult] = useState<{
@@ -207,12 +233,18 @@ export default function SharePointMigrationPage() {
   const apollo = useApolloClient();
   const [posByNumber, setPosByNumber] = useState<Map<string, GpPo>>(new Map());
   const [poLookupLoading, setPoLookupLoading] = useState(false);
-  const [poLookupError, setPoLookupError] = useState<string | null>(null);
+  const [poLookupError, setPoLookupError] = useState<unknown>(null);
   const [poLookupAttempt, setPoLookupAttempt] = useState(0);
+  // The numbers the last successful lookup answered for.
+  const [poLookedUpKey, setPoLookedUpKey] = useState('');
   const poNumbers = useMemo(() => distinctPoNumbers(items), [items]);
   // A join, not the array itself: the array is rebuilt on every render of a new snapshot object and
   // would re-fire the whole lookup even when the numbers are identical.
   const poNumbersKey = poNumbers.join(',');
+  // #1909: until the lookup has answered for these numbers - still reading, or failed - every row
+  // naming a PO reads as "no such PO in Nexus" and would migrate unlinked, so Next past the Reconcile
+  // GP PO link step and Migrate wait for it, as the wizard waits for its other reads (#1842).
+  const poLookupBlocked = poNumbersKey !== '' && poLookedUpKey !== poNumbersKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -246,10 +278,9 @@ export default function SharePointMigrationPage() {
           }
         }
         setPosByNumber(merged);
+        setPoLookedUpKey(poNumbersKey);
       } catch (e) {
-        if (!cancelled) {
-          setPoLookupError(e instanceof Error ? userMessage(e) : 'Could not read the purchase orders');
-        }
+        if (!cancelled) setPoLookupError(e ?? new Error('Could not read the purchase orders'));
       } finally {
         if (!cancelled) setPoLookupLoading(false);
       }
@@ -281,6 +312,10 @@ export default function SharePointMigrationPage() {
     () =>
       mergeResolutions(autoLocationResolutions(locations, defaultWarehouseId), locationOverrides),
     [locations, defaultWarehouseId, locationOverrides],
+  );
+  const shelfFlags = useMemo(
+    () => shelfProblems(locationResolutions, registryData?.warehouseLocations ?? null, defaultWarehouseId),
+    [locationResolutions, registryData, defaultWarehouseId],
   );
   const projectResolutions = useMemo(
     () => mergeResolutions(autoProjectResolutions(spProjects, projects), projectOverrides),
@@ -411,17 +446,19 @@ export default function SharePointMigrationPage() {
   const setLocation = useCallback(
     (raw: string, patch: Partial<LocationResolution>) => {
       // Seed from the effective value so editing one field of an auto-parsed row keeps the rest,
-      // rather than the override starting from blank.
+      // rather than the override starting from blank. A value the parser read but left unresolved
+      // (`F-37`, no bay - #1907) seeds its aisle and row, so the bay is all the user has to give.
+      const parsed = locations.find((l) => l.raw === raw)?.parsed[0];
       const current = locationResolutions.get(raw) ?? {
         excluded: true,
         warehouseId: defaultWarehouseId,
-        aisle: null,
-        row: null,
-        bay: null,
+        aisle: parsed?.aisle ?? null,
+        row: parsed?.row ?? null,
+        bay: parsed?.bay ?? null,
       };
       setLocationOverrides((prev) => new Map(prev).set(raw, { ...current, ...patch }));
     },
-    [locationResolutions, defaultWarehouseId],
+    [locations, locationResolutions, defaultWarehouseId],
   );
 
   const handleCommit = useCallback(async () => {
@@ -537,6 +574,18 @@ export default function SharePointMigrationPage() {
         ))}
       </Stepper>
 
+      {whError && <LoadError what="the Nexus warehouses" error={whError} onRetry={refetchWarehouses} sx={{ mb: 2 }} />}
+      {projError && <LoadError what="the Nexus projects" error={projError} onRetry={refetchProjects} sx={{ mb: 2 }} />}
+      {/* The Reconcile GP PO link step says so in its own words, with its own Retry. */}
+      {poLookupError !== null && step !== PO_LINK_STEP && (
+        <LoadError
+          what="the purchase orders the list names"
+          error={poLookupError}
+          onRetry={() => setPoLookupAttempt((n) => n + 1)}
+          sx={{ mb: 2 }}
+        />
+      )}
+
       {result ? (
         <Card variant="outlined">
           <CardContent>
@@ -623,10 +672,21 @@ export default function SharePointMigrationPage() {
                   {locations.filter((l) => l.autoParsed).length} of {locations.length} location
                   values were read automatically. The rest need a warehouse and shelf, or excluding.
                 </Typography>
+                {registryError && (
+                  <LoadError
+                    what="the defined locations"
+                    error={registryError}
+                    onRetry={refetchRegistry}
+                    sx={{ mb: 2 }}
+                  />
+                )}
                 <FitTable storageKey="sharepoint-migration-locations" columns={LOCATION_COLUMNS} maxHeight={480}>
                       {locations.map((loc) => {
                         const r = locationResolutions.get(loc.raw);
                         const included = !!r && !r.excluded;
+                        const shelfFlag = shelfFlags.get(loc.raw);
+                        // Unresolved, the parser's read is the hint for what typing one field fills.
+                        const hint = r ? undefined : loc.parsed[0];
                         return (
                           <TableRow key={loc.raw || '(blank)'} hover>
                             <TableCell sx={monoSx} title={loc.raw || undefined}>
@@ -639,6 +699,15 @@ export default function SharePointMigrationPage() {
                                   size="small"
                                   color="info"
                                   label={`${loc.parsed.length} locations`}
+                                  sx={{ ml: 1 }}
+                                  variant="outlined"
+                                />
+                              )}
+                              {shelfFlag && (
+                                <Chip
+                                  size="small"
+                                  color="warning"
+                                  label={shelfFlag === 'INCOMPLETE' ? 'needs aisle, row and bay' : 'not a defined shelf'}
                                   sx={{ ml: 1 }}
                                   variant="outlined"
                                 />
@@ -672,6 +741,8 @@ export default function SharePointMigrationPage() {
                                   size="small"
                                   fullWidth
                                   value={r?.[field] ?? ''}
+                                  placeholder={hint?.[field] ?? undefined}
+                                  error={!!shelfFlag}
                                   inputProps={{ maxLength: 20 }}
                                   onChange={(e) =>
                                     // Only the Include button changes inclusion. Typing a shelf into
@@ -708,6 +779,14 @@ export default function SharePointMigrationPage() {
                   <Alert severity="info" sx={{ mt: 2 }}>
                     {unresolvedLocations.length} location values are still unset and their rows will
                     be skipped.
+                  </Alert>
+                )}
+                {shelfFlags.size > 0 && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    {shelfFlags.size} included location value{shelfFlags.size === 1 ? ' names' : 's name'} a
+                    shelf that is not a whole aisle, row and bay defined in its warehouse, and the
+                    migration is refused while any does. Complete each one, define it on the warehouse
+                    Locations tab, or exclude it.
                   </Alert>
                 )}
               </CardContent>
@@ -993,7 +1072,7 @@ export default function SharePointMigrationPage() {
               picks={poLinkPicks}
               onPick={setPoLink}
               loading={poLookupLoading}
-              error={poLookupError}
+              error={poLookupError ? userMessage(poLookupError, { reading: true }) : null}
               onRetry={() => setPoLookupAttempt((n) => n + 1)}
             />
           )}
@@ -1131,7 +1210,9 @@ export default function SharePointMigrationPage() {
                 // snap, the classification rows and the marking are all built from it.
                 disabled={
                   (step === CLASSIFICATION_STEP && unclassifiedRequired.length > 0) ||
-                  (step >= 2 && scheduleProductsBlocked)
+                  (step >= 2 && scheduleProductsBlocked) ||
+                  (step >= PO_LINK_STEP && poLookupBlocked) ||
+                  referenceReadsBlocked
                 }
                 onClick={() => setStep((s) => s + 1)}
               >
@@ -1146,6 +1227,8 @@ export default function SharePointMigrationPage() {
                   undecidedTypes.length > 0 ||
                   unclassifiedRequired.length > 0 ||
                   scheduleProductsBlocked ||
+                  referenceReadsBlocked ||
+                  poLookupBlocked ||
                   // A re-run adds every row again; the server refuses it unless confirmed (#1366).
                   (alreadyMigrated && !rerunConfirmed)
                 }

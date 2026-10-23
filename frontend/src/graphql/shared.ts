@@ -3,9 +3,7 @@ import { gql } from '@apollo/client/core';
 // gpSetupOk / gpSetupIssues (#425) ride along on every project read: they are scalar columns on the
 // project row (no relationship walk, no N+1), and every module that lets a user pick a project has to
 // be able to badge a quarantined one rather than discovering it at the submit button.
-export const GET_PROJECTS = gql`
-  query GetProjects {
-    projects {
+const PICKER_PROJECT_FIELDS = `
       id
       projectId
       description
@@ -26,6 +24,22 @@ export const GET_PROJECTS = gql`
       }
       # #730: inactive, closed or missing in GP. Tagged in every picker, and the GP-bound ones grey it out.
       gpJobState
+`;
+
+export const GET_PROJECTS = gql`
+  query GetProjects {
+    projects {
+      ${PICKER_PROJECT_FIELDS}
+    }
+  }
+`;
+
+// #1877: one project by its id, archived included, with the picker's fields - for a screen scoped to
+// a project by a link, where `projects` (which leaves archived jobs out) cannot fill the picker.
+export const GET_PROJECT = gql`
+  query GetProject($id: ID!) {
+    project(id: $id) {
+      ${PICKER_PROJECT_FIELDS}
     }
   }
 `;
@@ -39,9 +53,12 @@ export const GET_PRIOR_ORDER_AS_VALUES = gql`
   }
 `;
 
-export const GET_NOTIFICATIONS = gql`
-  query GetNotifications($projectId: ID, $unreadOnly: Boolean, $limit: Int) {
-    notifications(projectId: $projectId, unreadOnly: $unreadOnly, limit: $limit) {
+// The bell's one poll (#1894): the latest few and the unread count ride together, so every open tab
+// makes one request a tick rather than two. #1112: the badge reads the count, not the length of a
+// capped list.
+export const GET_NOTIFICATION_BELL = gql`
+  query GetNotificationBell($limit: Int) {
+    notifications(limit: $limit) {
       id
       projectId
       recipientRole
@@ -50,12 +67,6 @@ export const GET_NOTIFICATIONS = gql`
       isRead
       createdAt
     }
-  }
-`;
-
-// #1112: the badge reads a count, not the length of a capped list.
-export const GET_NOTIFICATION_UNREAD_COUNT = gql`
-  query GetNotificationUnreadCount {
     notificationUnreadCount
   }
 `;
@@ -117,8 +128,14 @@ export const GET_GP_OUTBOX_SUMMARY = gql`
 // it is responsible for - `create_po` on the PO table, `create_receipt` on Receiving - while the
 // admin queue asks for all of them.
 export const GET_GP_OUTBOX = gql`
-  query GetGpOutbox($status: GpOutboxStatus, $limit: Int, $ops: [String!], $statuses: [GpOutboxStatus!]) {
-    gpOutbox(status: $status, limit: $limit, ops: $ops, statuses: $statuses) {
+  query GetGpOutbox(
+    $status: GpOutboxStatus
+    $limit: Int
+    $ops: [String!]
+    $statuses: [GpOutboxStatus!]
+    $holdingDrafts: Boolean
+  ) {
+    gpOutbox(status: $status, limit: $limit, ops: $ops, statuses: $statuses, holdingDrafts: $holdingDrafts) {
       id
       label
       op
@@ -131,6 +148,19 @@ export const GET_GP_OUTBOX = gql`
       failureKind
       entityKey
       createdAt
+      # #1948: a PO registration that still holds its draft, FAILED ones included.
+      holdsDraft
+      # #1948: GP took the write (no Cancel), or may have (Cancel warns to check GP first).
+      gpTook
+      maybeInGp
+      # #1948: a registration GP took whose GP PO the mirror already copied into Nexus - let go with Cancel.
+      alreadyInNexusAs
+      # #1961, #1965: a receipt whose draft has moved on (deleted included) - Nexus will never book it, and
+      # Cancel lets it go. gpAnswered says whether GP holds it, or only may.
+      receiptDraftMovedOn
+      gpAnswered
+      # #1965: why Retry would be refused, or null - the panel disables Retry and says why.
+      retryRefusal
     }
   }
 `;

@@ -17,6 +17,7 @@ The build identity comes from _build.py, which CI stamps into the package at bui
 .github/workflows/relay-release.yml). A dev checkout has no _build.py, so current_build() is 'dev', which
 compares unequal to any release tag (always "behind")."""
 
+import http.client
 import json
 import logging
 import os
@@ -48,6 +49,13 @@ _STATE_FILE = "update-state.json"  # the attempt ledger the helper reads/writes 
 _CANCEL_FLAG = "update-cancel"  # touched by a user-initiated shutdown to abort an in-flight update
 _UPDATE_LOG = "update.log"  # the helper's own log, next to config.toml
 _DOWNLOAD_NAME = "ucnexus-relay-download.zip"
+# The bundle download's bounds (#1928). urlretrieve had none, so a connection that stalled mid-body held
+# the poller's thread - and with it every later update check - forever. The socket timeout bounds each
+# connect and read; the deadline bounds the whole body, which a ~27MB bundle clears in well under a
+# minute on any line a workstation has.
+_DOWNLOAD_TIMEOUT_SECONDS = 30.0
+_DOWNLOAD_DEADLINE_SECONDS = 600.0
+_DOWNLOAD_CHUNK_BYTES = 1 << 16
 MAX_ATTEMPTS = 3  # circuit breaker: give up on a target build after this many helper runs
 _GLOBAL_DEADLINE_SECONDS = 90.0  # hard wall-clock cap on the whole sequence
 # How long a staging/applying ledger may sit untouched before it is read as abandoned rather than
@@ -164,8 +172,16 @@ def _unlink_quietly(p: Path) -> None:
 # --- attempt ledger (update-state.json) ---------------------------------------------------------------
 # One small JSON file the staging step seeds and the helper updates, so a failure is recorded (surfaced in
 # the Updates tab) and repeated attempts at the SAME target build are capped. Shape:
-#   {status, target_build, target_url, target_dir, attempts, last_error, first_attempt_at, updated_at}
-# status in: staging | applying | success | failed | cancelled.
+#   {status, target_build, target_url, target_dir, attempts, last_error, first_attempt_at, updated_at,
+#    previous_dir, failed_dirs, self_check}
+# status in: staging | applying | success | failed | cancelled | rolled_back.
+#
+# previous_dir and failed_dirs outlive the target they were written for (#1932). previous_dir is the folder
+# `current` pointed at before the last update replaced it: what the post-update self-check rolls back to,
+# so cleanup keeps it. failed_dirs names the folders of builds that failed or were rolled back, which
+# cleanup does not count toward the builds it keeps - a failed build held the second slot otherwise, and
+# the good folder it had failed over was deleted out from under the next rollback.
+_FAILED_DIRS_KEPT = 10  # the record only has to outlive a cleanup or two; it is not a history
 
 
 def _now_iso() -> str:
@@ -204,8 +220,22 @@ def _stage_ledger(install_dir: Path, target_build: str, target_url: str, target_
             "last_error": prev.get("last_error") if same else None,
             "first_attempt_at": prev.get("first_attempt_at") if same else None,
             "updated_at": _now_iso(),
+            "previous_dir": prev.get("previous_dir"),
+            "failed_dirs": list(prev.get("failed_dirs") or []),
         },
     )
+
+
+def _record_dir_outcome(ledger: dict, ok: bool) -> None:
+    """Add the target's folder to failed_dirs on a failure, or take it off on a success (a build retried
+    after a failure that then lands is not a failed build)."""
+    name = Path(ledger.get("target_dir") or "").name
+    if not name:
+        return
+    failed = [d for d in (ledger.get("failed_dirs") or []) if d != name]
+    if not ok:
+        failed.append(name)
+    ledger["failed_dirs"] = failed[-_FAILED_DIRS_KEPT:]
 
 
 def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
@@ -213,7 +243,20 @@ def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
     ledger["status"] = status
     ledger["last_error"] = error
     ledger["updated_at"] = _now_iso()
+    if status in ("success", "failed"):
+        _record_dir_outcome(ledger, ok=status == "success")
     _write_ledger(install_dir, ledger)
+
+
+def versions_to_keep(install_dir: str | Path, extra=()) -> set[str]:
+    """layout.versions_to_keep with what the ledger knows (#1932): the folder the last update replaced is
+    always kept, and folders of builds that failed or were rolled back do not count toward the newest two."""
+    ledger = read_ledger(install_dir)
+    return layout.versions_to_keep(
+        install_dir,
+        extra=(*extra, ledger.get("previous_dir")),
+        exclude=ledger.get("failed_dirs") or (),
+    )
 
 
 def record_self_check(install_dir: str | Path, verdict: str) -> None:
@@ -237,6 +280,7 @@ def mark_rolled_back(install_dir: str | Path, error: str) -> None:
     install_dir = Path(install_dir)
     ledger = read_ledger(install_dir)
     ledger.update(status="rolled_back", last_error=error, self_check="rolled_back", updated_at=_now_iso())
+    _record_dir_outcome(ledger, ok=False)
     _write_ledger(install_dir, ledger)
 
 
@@ -520,12 +564,44 @@ def _current_target(install_dir: Path) -> Path | None:
 # --- staging + applying -------------------------------------------------------------------------------
 
 
+def _download(url: str, dest: Path) -> None:
+    """Fetch `url` to `dest` within the bounds above, or raise OSError and leave no file behind (#1928).
+
+    Written to a .part file and moved into place only once whole, and refused when the body is shorter
+    than the Content-Length the server announced: a dropped connection otherwise reads as a clean end of
+    file, and only the size floor stood between a truncated zip and the extract."""
+    part = dest.with_name(dest.name + ".part")
+    deadline = _monotonic() + _DOWNLOAD_DEADLINE_SECONDS
+    try:
+        with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as resp:  # noqa: S310 (release asset URL)
+            announced = (resp.headers.get("Content-Length") or "").strip()
+            written = 0
+            with open(part, "wb") as out:
+                while True:
+                    if _monotonic() >= deadline:
+                        raise TimeoutError(f"not finished after {int(_DOWNLOAD_DEADLINE_SECONDS)}s")
+                    chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    written += len(chunk)
+        if announced.isdigit() and written != int(announced):
+            raise OSError(f"got {written} of the {announced} bytes announced")
+        os.replace(part, dest)
+    except http.client.HTTPException as e:
+        _unlink_quietly(part)
+        raise OSError(f"{type(e).__name__}: {e}") from e
+    except BaseException:
+        _unlink_quietly(part)
+        raise
+
+
 def _download_and_extract(url: str, install_dir: Path, target_build: str | None) -> tuple[Path | None, str | None]:
     """Download the bundle zip and extract it to a versioned app-<build>/ folder. Returns (version_dir,
     None) on success or (None, error)."""
     zip_path = install_dir / _DOWNLOAD_NAME
     try:
-        urllib.request.urlretrieve(url, str(zip_path))  # noqa: S310 (release asset URL from latest_release)
+        _download(url, zip_path)
     except OSError as e:
         return None, f"download failed: {e}"
     if zip_path.stat().st_size < _MIN_ZIP_BYTES:
@@ -641,6 +717,12 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
         return {"ok": False, "error": msg}
 
     old_target = _current_target(install_dir)  # for rollback
+    if old_target is not None and Path(old_target).name != new_dir.name:
+        # Recorded before anything moves (#1932): the self-check that judges the new build later rolls
+        # back to exactly this folder, and cleanup keeps it until another update replaces it.
+        ledger = read_ledger(install_dir)
+        ledger["previous_dir"] = str(old_target)
+        _write_ledger(install_dir, ledger)
     deadline = _monotonic() + _GLOBAL_DEADLINE_SECONDS
 
     _wait_for_pid_exit(app_pid, deadline, log)
@@ -668,7 +750,7 @@ def apply_staged_update(app_pid, install_dir: str | Path) -> dict:
         _finish_ledger(install_dir, "success", None)
         # Keep the version we just left as well as the new one. WE are still running from it, and it is
         # what the next update rolls back to if that one fails (#376). Anything older goes now.
-        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(new_dir, old_target)))
+        layout.cleanup_old_versions(install_dir, versions_to_keep(install_dir, extra=(new_dir, old_target)))
         log.info("update applied: now on %s", target)
         return {"ok": True}
 
@@ -700,7 +782,7 @@ def apply_update(url: str, install_dir: str | Path) -> dict:
     except Exception:  # noqa: BLE001
         pass
     if ok:
-        layout.cleanup_old_versions(install_dir, layout.versions_to_keep(install_dir, extra=(ver, old_target)))
+        layout.cleanup_old_versions(install_dir, versions_to_keep(install_dir, extra=(ver, old_target)))
         return {"ok": True, "restarted": True, "note": "reopen the window to load the updated UI"}
     if old_target is not None:
         layout.repoint_current(install_dir, old_target)

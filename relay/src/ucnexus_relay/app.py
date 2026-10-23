@@ -21,13 +21,18 @@ import threading
 import time
 
 from . import setup, single_instance, update_poller
-from .config import DEFAULT_CONFIG_PATH
-from .logging_setup import get_logger
+from .config import DEFAULT_CONFIG_PATH, get_settings
+from .logging_setup import configure_logging, get_logger
 from .ui import Api, _HTML, config_summary, relay_health
 
 logger = get_logger()
 
 _APP: "RelayApp | None" = None
+
+# This process's own log, beside config.toml and serve's relay.log (#1931). Its own file rather than
+# relay.log because the two processes would otherwise rotate one file from both sides, and on Windows the
+# rename of a file the other process holds open fails.
+APP_LOG = "app.log"
 
 
 def current() -> "RelayApp | None":
@@ -272,7 +277,8 @@ class RelayApp:
 
     def _cleanup_old_versions(self) -> None:
         """Discard stale app-<build>/ version folders a past update left behind, keeping the one we run
-        from, the one `current` points at, and the previous build as a rollback target.
+        from, the one `current` points at, and the previous build as a rollback target - the folder the
+        last update replaced, as the ledger recorded it, rather than merely the next-highest (#1932).
 
         Skipped outright while an update is still in flight. This runs in the app the update helper just
         relaunched, and that helper is executing from the PREVIOUS version folder while it health-gates
@@ -290,7 +296,7 @@ class RelayApp:
                 logger.info("skipping stale version cleanup: an update is still in flight")
                 return
             running = layout.running_version_dir()
-            keep = layout.versions_to_keep(install_dir, extra=(running, layout.current_target(install_dir)))
+            keep = updater.versions_to_keep(install_dir, extra=(running, layout.current_target(install_dir)))
             layout.cleanup_old_versions(install_dir, keep)
         except Exception:
             logger.exception("error cleaning up old relay versions")
@@ -375,5 +381,23 @@ class RelayApp:
         return 0
 
 
+def _configure_app_logging() -> None:
+    """Send this process's logging to app.log in the install dir (#1931). serve configures its own in
+    main.create_app; nothing did here, so everything the app process logs - the update poller, the
+    post-update self-check, staging, rollback - went nowhere. The path is absolute because, unlike serve,
+    the app is not always started with the install dir as its working directory. Never fatal: a relay
+    that cannot open its log must still come up."""
+    try:
+        level = get_settings().logging.level
+    except Exception:  # noqa: BLE001 - a broken config.toml is the Setup tab's to report, not this
+        level = "INFO"
+    try:
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        configure_logging(level, str(DEFAULT_CONFIG_PATH.parent / APP_LOG))
+    except (OSError, ValueError):
+        pass
+
+
 def run_app(minimized: bool = False, force: bool = False) -> int:
+    _configure_app_logging()
     return RelayApp().run(minimized=minimized, force=force)

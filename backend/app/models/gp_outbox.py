@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text, Uuid, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -66,6 +66,11 @@ class GpWriteOutbox(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     failure_kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1849: an attempt ended with the write possibly in GP (on the wire when the link died, timed out,
+    # or left in flight by a stopped worker). Sticky - no later outcome or manual retry clears it - so a
+    # receipt that then exhausts or is cancelled is never taken for one GP never received, and its draft
+    # is never sent back to be approved under a new key the relay would not recognise.
+    maybe_in_gp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

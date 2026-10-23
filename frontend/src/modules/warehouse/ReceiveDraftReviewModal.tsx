@@ -20,12 +20,13 @@ import { useNavigate } from 'react-router-dom';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import { GET_WAREHOUSES, GET_PROJECTS } from '../../graphql/shared';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PO_RECEIVING_DETAILS,
   APPROVE_RECEIVE_DRAFT,
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
+  RELEASE_HELD_RECEIVE_APPROVAL,
 } from '../../graphql/warehouse';
 import { GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
 import { FileText } from 'lucide-react';
@@ -33,10 +34,16 @@ import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import GpCompanyTag from '../../components/GpCompanyTag';
-import { extractGpError, GP_JOB_NOT_OPEN, type GpError } from '../../graphql/gpError';
+import {
+  extractGpError,
+  GP_JOB_NOT_OPEN,
+  NETWORK_ERROR,
+  RECEIPT_MAY_BE_IN_GP,
+  type GpError,
+} from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
-import { isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
+import { isGpJobNotOpen, isGpSetupBroken } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
 import { PostedReceiptLines, type PostedReceipt } from './ReceiveOutcomePanels';
 import {
@@ -55,6 +62,19 @@ interface WarehouseOption {
   name: string;
   code: string;
   isPrimary: boolean;
+}
+
+/**
+ * #1963: hold an approval key for a draft only while an approval of it is in progress - the draft
+ * APPROVING under that key, which a retry resumes - and drop it otherwise, so the next approval mints
+ * its own. The server refuses a fresh approval under a key already written under.
+ */
+function syncApprovalKey(keys: Record<string, string>, draft: ReceiveDraft): void {
+  if (draft.status === 'APPROVING' && draft.approvalIdempotencyKey) {
+    keys[draft.id] = draft.approvalIdempotencyKey;
+  } else {
+    delete keys[draft.id];
+  }
 }
 
 interface ReceiveDraftReviewModalProps {
@@ -91,6 +111,14 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  const [releaseOpen, setReleaseOpen] = useState(false);
+  // #1945: when a claimed draft's attempt has run out of time, and whether that moment has come. A timer
+  // flips it, so Release comes on while the modal is open.
+  const releasableAt = draft?.status === 'APPROVING' ? (draft.approvalReleasableAt ?? null) : null;
+  const [attemptRunOut, setAttemptRunOut] = useState<{ at: string | null; out: boolean }>({ at: null, out: true });
+  // #1945: an approval refused with its claim held because GP may hold the receipt - only a manager who
+  // checked GP can let it go.
+  const [heldOnGp, setHeldOnGp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [slipLoading, setSlipLoading] = useState(false);
@@ -125,6 +153,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   }>(APPROVE_RECEIVE_DRAFT);
   const [updateDraft] = useMutation<{ updateReceiveDraft: ReceiveDraft }>(UPDATE_RECEIVE_DRAFT);
   const [rejectDraft] = useMutation(REJECT_RECEIVE_DRAFT);
+  const [releaseHeldApproval] = useMutation(RELEASE_HELD_RECEIVE_APPROVAL);
 
   // Same key across retries of this approval, so a retry after a dropped connection resumes the
   // approval that is already in flight rather than posting a second GP receipt.
@@ -137,8 +166,6 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     skip: !open,
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
-
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !open });
 
   // network-only: the reviewer is deciding against what the PO owes RIGHT NOW, which another receive
   // may have moved since the draft was written.
@@ -165,26 +192,37 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     setPosted(null);
     setQueued(false);
     setApproveFailed(false);
+    setHeldOnGp(false);
     setRejectReason('');
-    // An approval that died ambiguously left the draft claimed under a key the browser no longer
-    // holds - a reload, or a different manager picking it up. Resuming with the SAME key is the only
-    // way through the idempotency ledger to the receipt GP may already have posted; a fresh key
-    // would be a second approval.
-    if (draft.approvalIdempotencyKey) {
-      idempotencyKeyRef.current[draft.id] = draft.approvalIdempotencyKey;
-    }
+    // The key follows the draft as the server last showed it (#1963). An approval that died ambiguously
+    // left the draft claimed under a key the browser may no longer hold - a reload, or a different manager
+    // picking it up. Resuming with the SAME key is the only way through the idempotency ledger to the
+    // receipt GP may already have posted; a fresh key would be a second approval. Anything else - back for
+    // review, approved, rejected - means no approval of it is in progress, so a key kept from an earlier
+    // one is spent: its queued receipt was cancelled or failed, or its claim was released while GP held
+    // the receipt. Sent again it would relink that dead receipt or book a receipt GP may have reversed
+    // since, and the server refuses it, so the next approval mints its own.
+    syncApprovalKey(idempotencyKeyRef.current, draft);
   }, [open, draft]);
+
+  useEffect(() => {
+    const wait = releasableAt ? parseServerDate(releasableAt).getTime() - Date.now() : 0;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the release window, read from the clock
+    setAttemptRunOut({ at: releasableAt, out: wait <= 0 });
+    if (wait <= 0) return;
+    const timer = window.setTimeout(() => setAttemptRunOut({ at: releasableAt, out: true }), wait);
+    return () => window.clearTimeout(timer);
+  }, [releasableAt]);
 
   // Relay presence: the approval posts a GP receipt. Advisory, not a blocker (#376) - an unreachable
   // relay means the receipt queues itself, which is a legitimate outcome the panel below explains.
   const relay = useRelayStatus({ skip: !open || succeeded });
   const relayStatus: boolean | null = open ? relay.connected : null;
 
-  const projectId = draft?.projectId ?? null;
-  const project = useMemo(() => {
-    if (!projectId) return null;
-    return (projectsData?.projects ?? []).find((p) => p.id === projectId) ?? null;
-  }, [projectId, projectsData]);
+  // #1877: the verdict is read off the PO's own project, as the receive modal reads it, not found in the
+  // projects list - which leaves archived jobs out, so an archived job's banners hid and Approve stayed on
+  // for the server to refuse.
+  const project = poDetails?.projectId ? (poDetails.project ?? null) : null;
   const quarantined = project !== null && isGpSetupBroken(project);
   // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing. A hard block
   // for the same reason as #425: queuing would only drain into the same refusal.
@@ -222,8 +260,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   // retried, not edited or rejected. The backend refuses both on APPROVING, and an edit sent first
   // would stop the same-key approve, the only way to finish the post, from ever being reached.
   const retrying = draft?.status === 'APPROVING' || approveFailed;
+  // #1945: approved with nothing booked, and the queued receipt behind it cancelled or failed with no answer
+  // from GP. Nothing here approves it again; a manager who checked GP releases it.
+  const stoppedQueued = draft?.status === 'APPROVED' && !draft.receiveRecordId && !!draft.queuedReceiptStopped;
   // #1593: approved or rejected by someone else meanwhile - there is nothing left to approve or edit here.
-  const finishedElsewhere = draft?.status === 'APPROVED' || draft?.status === 'REJECTED';
+  const finishedElsewhere = (draft?.status === 'APPROVED' && !stoppedQueued) || draft?.status === 'REJECTED';
 
   // ---- Actions ----
 
@@ -273,9 +314,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       setApprovedCount(totalUnits);
       if (result?.queued) {
         // #353 PR E: the relay was unreachable, so the receipt is on the durable outbox and will
-        // post itself. The key is deliberately NOT cleared - the outbox row owns it now, and
-        // reusing it is what makes a resubmit a no-op instead of a second queued receipt. Nothing is
-        // in inventory yet, so no inventory refetch.
+        // post itself. The key is not cleared here - the outbox row owns it now, and a resubmit under
+        // it is refused as already approved rather than queued a second time. It goes once the draft is
+        // next seen not claimed (#1963): if the receipt is cancelled or fails and the draft comes back for
+        // review, that key is spent and the next approval mints its own. Nothing is in inventory yet, so
+        // no inventory refetch.
         setQueued(true);
         showToast(
           'Queued — the GP relay is offline. This receipt will post automatically when it reconnects.',
@@ -310,12 +353,23 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       // the receipt down - releases the claim and the draft is pending again: nothing was posted, a retry
       // is refused the same way, and the reviewer needs the count and Reject back. Only a draft still
       // APPROVING (an answer that never came back) is the retry case.
-      const captured = extractGpError(err);
+      //
+      // #1933: a dropped connection is not GP's detail - it is worded from the error itself, so it reads
+      // as the connection rather than fetch's own "Failed to fetch".
+      const gpSays = extractGpError(err);
+      const captured = gpSays?.code === NETWORK_ERROR ? null : gpSays;
       const serverSays = captured ? userMessage(captured) : err instanceof Error ? userMessage(err) : '';
+      // #1945: a resumed approval refused with its claim held - GP may hold the receipt an earlier attempt
+      // sent, so whatever the re-read says, it is never worded as nothing posted.
+      const mayBeInGp = captured?.code === RECEIPT_MAY_BE_IN_GP;
+      if (mayBeInGp) setHeldOnGp(true);
       if (approveSent) {
         const fresh = await reload().catch(() => undefined);
-        if (fresh && fresh.status !== 'APPROVING') {
-          delete idempotencyKeyRef.current[draft.id];
+        // #1963: kept only while the draft is still claimed under it. A may-be-in-GP refusal on a draft back
+        // for review is an approval released while its attempt was out at GP: that key is spent too. With no
+        // re-read the outcome is unknown, and the same press retried under the same key is the safe one.
+        if (fresh) syncApprovalKey(idempotencyKeyRef.current, fresh);
+        if (fresh && fresh.status !== 'APPROVING' && !mayBeInGp) {
           // Pending again: nothing reached GP and the reviewer decides. Approved or rejected: another
           // manager finished it meanwhile - there is nothing here to fix or reject.
           const lead =
@@ -340,9 +394,9 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
         });
         return;
       }
-      if (captured?.code === GP_JOB_NOT_OPEN) {
+      if (captured && (captured.code === GP_JOB_NOT_OPEN || mayBeInGp)) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
-        // nothing a retry would change.
+        // nothing a retry would change. #1945: the may-be-in-GP refusal says itself what to do next.
         setApproveNotice({ on: draftProp, message: userMessage(captured), gpError: null });
         return;
       }
@@ -389,6 +443,28 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       setSubmitting(false);
     }
   }, [draft, rejectReason, rejectDraft, showToast, client, onClose]);
+
+  // #1945: the manager checked GP and it holds no receipt for this count, so the claim is let go and the
+  // draft is pending again - to be approved afresh under a new key, or rejected.
+  const handleRelease = useCallback(async () => {
+    if (!draft) return;
+    setReleaseOpen(false);
+    setSubmitting(true);
+    setMutationError(null);
+    try {
+      await releaseHeldApproval({ variables: { id: draft.id } });
+      delete idempotencyKeyRef.current[draft.id];
+      setApproveNotice(null);
+      setApproveFailed(false);
+      setHeldOnGp(false);
+      showToast('Approval released - the draft is back awaiting approval.', 'success');
+      await reload().catch(() => undefined);
+    } catch (err: unknown) {
+      setMutationError(err instanceof Error ? userMessage(err) : 'Releasing this approval failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [draft, releaseHeldApproval, showToast, reload]);
 
   // #504: view the packing slip this count was made against. The presigned URL is minted on click
   // rather than carried on every draft row, so the queue stays a single cheap query.
@@ -447,7 +523,8 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
           quarantined ||
           jobNotOpen ||
           submitting ||
-          finishedElsewhere
+          finishedElsewhere ||
+          stoppedQueued
         }
         onClick={() => setConfirmOpen(true)}
       >
@@ -457,6 +534,16 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   );
 
   const lastChanged = draftLastChanged(draft)?.toLocaleString() ?? null;
+  // #1945: held on GP with nothing booked here - refused just now as maybe in GP, or reopened still claimed.
+  // #1945: an APPROVING draft is offered the release only once its attempt has run out of time, or when it
+  // was refused as maybe in GP just now; while an attempt may still be out at GP the button waits, saying why.
+  const attemptMayBeRunning =
+    draft.status === 'APPROVING' && !(attemptRunOut.at === releasableAt && attemptRunOut.out);
+  const canRelease =
+    !succeeded &&
+    (heldOnGp ||
+      (draft.status === 'APPROVING' && !draft.receiveRecordId && !attemptMayBeRunning) ||
+      stoppedQueued);
 
   // #1354: inventory moves when GP accepts the receipt, which is now only while the relay is up.
   const inventoryNote =
@@ -555,6 +642,39 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
             {mutationError}
           </Alert>
         )}
+        {stoppedQueued && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This count was approved and its GP receipt queued, but the queued receipt was cancelled or failed
+            without an answer from GP, so nothing was booked here. It stays approved until a manager checks GP:
+            if GP holds no receipt for it, release it back for review; if GP has it, have it reconciled.
+          </Alert>
+        )}
+        {canRelease && (
+          <Box sx={{ mb: 2 }}>
+            <Button
+              size="small"
+              color="warning"
+              variant="outlined"
+              disabled={submitting || attemptMayBeRunning}
+              onClick={() => setReleaseOpen(true)}
+            >
+              I've checked GP - no receipt was posted: release it
+            </Button>
+            {attemptMayBeRunning && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                display="block"
+                sx={{ mt: 0.5 }}
+                data-testid="release-wait-reason"
+              >
+                An approval attempt may still be posting this receipt to GP. Release it once that has had time to
+                finish{releasableAt ? ` - after ${parseServerDate(releasableAt).toLocaleTimeString()}` : ''}, and
+                check GP again first.
+              </Typography>
+            )}
+          </Box>
+        )}
 
         {poLoading && (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -598,7 +718,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 labelId="review-warehouse-label"
                 label="Receive into warehouse"
                 value={warehouseId}
-                disabled={retrying || finishedElsewhere}
+                disabled={retrying || finishedElsewhere || stoppedQueued}
                 onChange={(e) => setWarehouseId(e.target.value)}
               >
                 {warehouses.map((w) => (
@@ -614,7 +734,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 receiveQuantities={receiveQuantities}
                 onQuantityChange={handleQuantityChange}
                 showPoHeaders={false}
-                readOnly={retrying || finishedElsewhere}
+                readOnly={retrying || finishedElsewhere || stoppedQueued}
               />
             )}
           </>
@@ -628,6 +748,17 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
         confirmLabel={retrying ? 'Retry' : 'Approve'}
         onConfirm={handleApprove}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={releaseOpen}
+        title="Release this held approval"
+        message={`Only release it if you have checked GP and it holds no receipt for this count against ${draft.poNumber ?? 'this PO'}. The draft goes back to awaiting approval. If GP does hold the receipt, releasing it lets the count be approved again and posted to GP twice.`}
+        confirmLabel="Release it"
+        confirmColor="warning"
+        busy={submitting}
+        onConfirm={handleRelease}
+        onCancel={() => setReleaseOpen(false)}
       />
 
       <Modal

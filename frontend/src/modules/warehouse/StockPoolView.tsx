@@ -151,6 +151,8 @@ export default function StockPoolView() {
   }, [warehouses]);
 
   const rows = useMemo(() => data?.stockItems ?? [], [data]);
+  const filtersActive =
+    !!productCodeFilter.trim() || !!categoryFilter.trim() || onlyDeficient || !!warehouseFilter || kindFilter !== 'ALL';
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
@@ -383,26 +385,34 @@ export default function StockPoolView() {
       {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
 
       {rows.length === 0 && !loading ? (
-        <Card variant="outlined" sx={{ maxWidth: 620 }}>
-          <CardContent>
-            <Typography component="div" sx={microLabelSx}>
-              Empty
-            </Typography>
-            <Typography variant="h6" sx={{ mt: 0.25 }}>
-              Nothing in the stock pool yet
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Items arrive in stock by being destocked from a project's inventory, by being received
-              from a PO that has no project assignment, or as the outcome of a deficiency review
-              that sent items here.
-            </Typography>
-            <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
-              <Chip size="small" label="destock from project" />
-              <Chip size="small" label="receive stock PO" />
-              <Chip size="small" label="resolve deficient → stock" />
-            </Stack>
-          </CardContent>
-        </Card>
+        // #1879: a failed read is not an empty pool - the error above stands alone - and a filter that
+        // matches nothing says so rather than calling the pool empty.
+        error ? null : filtersActive ? (
+          <Typography variant="body2" color="text.secondary">
+            No rows match these filters.
+          </Typography>
+        ) : (
+          <Card variant="outlined" sx={{ maxWidth: 620 }}>
+            <CardContent>
+              <Typography component="div" sx={microLabelSx}>
+                Empty
+              </Typography>
+              <Typography variant="h6" sx={{ mt: 0.25 }}>
+                Nothing in the stock pool yet
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Items arrive in stock by being destocked from a project's inventory, by being received
+                from a PO that has no project assignment, or as the outcome of a deficiency review
+                that sent items here.
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
+                <Chip size="small" label="destock from project" />
+                <Chip size="small" label="receive stock PO" />
+                <Chip size="small" label="resolve deficient → stock" />
+              </Stack>
+            </CardContent>
+          </Card>
+        )
       ) : (
         <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)' }}>
           <DataGrid

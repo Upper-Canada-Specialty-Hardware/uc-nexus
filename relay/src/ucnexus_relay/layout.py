@@ -9,7 +9,7 @@ the active one. An update extracts the new version alongside, repoints the junct
 rename or copy of a running folder. Repointing a junction is safe while the old relay runs: its open .pyd
 handles resolved the old real path at launch and are unaffected by swapping the reparse point.
 
-Data (config.toml, relay.log, relay.pid, app.lock, update-state.json, update.log) lives in the data dir
+Data (config.toml, relay.log, app.log, relay.pid, app.lock, update-state.json, update.log) lives in the data dir
 itself, NOT in a version folder, so it survives updates. config._default_config_path is LOCALAPPDATA-based
 (not exe-relative), so config resolves to the data dir regardless of which version is current.
 """
@@ -75,13 +75,20 @@ def current_target(data_dir) -> Path | None:
     return None
 
 
-def versions_to_keep(data_dir, extra=()) -> set[str]:
+def versions_to_keep(data_dir, extra=(), exclude=()) -> set[str]:
     """The version-folder NAMES cleanup must preserve: the newest KEEP_RECENT_VERSIONS builds, plus
-    anything named in `extra` (the folder we run from, the one `current` points at). Keeping a previous
-    build is the point - it is what a failed update rolls back to, and the run that motivated this deleted
-    it, leaving nothing bootable to fall back to (#376)."""
+    anything named in `extra` (the folder we run from, the one `current` points at, the one the last
+    update replaced). Keeping a previous build is the point - it is what a failed update rolls back to,
+    and the run that motivated this deleted it, leaving nothing bootable to fall back to (#376).
+
+    Folders named in `exclude` (builds that failed to install or were rolled back) do not count toward
+    the newest KEEP_RECENT_VERSIONS (#1932): counted, a failed build held the second slot and pushed out
+    the good one it had failed over, so the next rollback had only the failed build left to go to. One
+    in `extra` is still kept - the running folder may well be the build just rolled back."""
+    excluded = {Path(k).name for k in exclude if k}
     keep = {Path(k).name for k in extra if k}
-    keep |= {p.name for p in version_dirs(data_dir)[:KEEP_RECENT_VERSIONS]}
+    counted = [p for p in version_dirs(data_dir) if p.name not in excluded]
+    keep |= {p.name for p in counted[:KEEP_RECENT_VERSIONS]}
     return keep
 
 

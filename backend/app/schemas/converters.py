@@ -7,6 +7,7 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 from datetime import datetime
 
 import strawberry
+from sqlalchemy.orm import object_session
 
 from app.models.enums import PoolKind as PoolKindDB
 from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatusDB
@@ -14,6 +15,7 @@ from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestSta
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
 from app.repositories.shipping_requests import lines_version as shipping_lines_version
+from app.repositories.warehouse.receive_drafts import approval_releasable_at
 
 from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
@@ -68,6 +70,7 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
+    PurchaseOrderProject,
     ReceiveDraft,
     ReceiveDraftLineItem,
     ReceiveDraftLocation,
@@ -185,7 +188,9 @@ def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
     )
 
 
-def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft:
+def receive_draft_to_type(
+    draft, po, labels: dict | None = None, *, queued_receipt_stopped: bool = False
+) -> ReceiveDraft:
     """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
     walked off a relationship so a list read stays one query. `labels` is the caller's batched
     `project_labels` read (#1196), so the project name costs one query per list, not one per row."""
@@ -218,6 +223,8 @@ def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft
         created_at=draft.created_at,
         updated_at=draft.updated_at,
         line_items=[receive_draft_line_item_to_type(li) for li in draft.line_items],
+        queued_receipt_stopped=queued_receipt_stopped,
+        approval_releasable_at=approval_releasable_at(draft),
     )
 
 
@@ -409,9 +416,9 @@ def po_document_data_to_type(d) -> PODocumentData:
         ship_to=d.ship_to,
         shipping_method=d.shipping_method,
         quotation_number=d.quotation_number,
-        freight=float(d.freight),
-        miscellaneous=float(d.miscellaneous),
-        tax_amount=float(d.tax_amount),
+        freight=float(d.freight) if d.freight is not None else None,
+        miscellaneous=float(d.miscellaneous) if d.miscellaneous is not None else None,
+        tax_amount=float(d.tax_amount) if d.tax_amount is not None else None,
         tax_label=d.tax_label,
         tariff_amount=float(d.tariff_amount),
         trade_discount=float(d.trade_discount) if d.trade_discount is not None else None,
@@ -453,13 +460,42 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
     )
 
 
-def po_to_type(po, receive_records=None) -> PurchaseOrder:
+def po_project_to_type(p: ProjectModel) -> PurchaseOrderProject:
+    return PurchaseOrderProject(
+        id=strawberry.ID(str(p.id)),
+        project_id=p.project_id,
+        description=p.description,
+        archived=p.archived,
+        gp_job_state=p.gp_job_state,
+        gp_setup_ok=p.gp_setup_ok,
+        gp_setup_issues=[
+            GpSetupIssue(cost_code=issue["cost_code"], account_index=issue["account_index"])
+            for issue in project_repository.parse_gp_setup_issues(p.gp_setup_detail)
+        ],
+    )
+
+
+def po_to_type(po, receive_records=None, *, projects: dict | None = None) -> PurchaseOrder:
+    """`projects` is a list caller's batched `projects_by_id` read (#1877). A single-PO caller leaves it
+    out and the PO's own project is read here, by primary key (no query when the session holds it)."""
     documents = getattr(po, "documents", None) or []
     # Read document_data ONLY if the caller eager-loaded it (in __dict__): a bare attribute access would
     # lazy-load, turning list resolvers that don't need it into an N+1. get_purchase_orders /
     # get_purchase_order selectinload it (that's what the generate dialog reads); everything else gets None.
     doc_data = po.__dict__.get("document_data")
     line_items = list(po.line_items)
+    project = None
+    if po.project_id is not None:
+        if projects is not None:
+            project = projects.get(po.project_id)
+        elif (session := object_session(po)) is not None:
+            project = session.get(ProjectModel, po.project_id)
+    # #1950: read by primary key, and only for a draft still under a claim - a handful at any time.
+    unrecorded = None
+    if po.registering_key is not None and (session := object_session(po)) is not None:
+        from app.repositories.po_repository import unrecorded_registration
+
+        unrecorded = unrecorded_registration(session, po)
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
@@ -485,6 +521,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         vendor_quote_number=po.vendor_quote_number,
         shipping_cost=float(po.shipping_cost) if po.shipping_cost is not None else None,
         tariff_amount=float(po.tariff_amount) if po.tariff_amount is not None else None,
+        currency=po.currency,
         notes=po.notes,
         preferred_delivery_date=po.preferred_delivery_date,
         expected_delivery_date=po.expected_delivery_date,
@@ -495,6 +532,9 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         receive_records=[receive_record_to_type(rr) for rr in (receive_records or [])],
         documents=[po_document_to_type(doc) for doc in documents],
         document_data=po_document_data_to_type(doc_data) if doc_data is not None else None,
+        project=po_project_to_type(project) if project is not None else None,
+        registering_key=unrecorded[0] if unrecorded else None,
+        registering_gp_po_number=unrecorded[1] if unrecorded else None,
     )
 
 
@@ -699,6 +739,7 @@ def project_hardware_schedule_to_type(data: dict) -> ProjectHardwareSchedule:
             ProjectProductClassification(hardware_category=category, product_code=code, classification=classification)
             for (category, code), classification in sorted(data["product_classifications"].items())
         ],
+        revision=data["project"].schedule_revision,
     )
 
 
@@ -785,6 +826,7 @@ def shop_assembly_request_to_type(
     return_note: str | None = None,
     pull_status_by_id: dict | None = None,
     project=None,
+    include_lines: bool = True,
 ) -> ShopAssemblyRequest:
     """Model -> type. `stage`, `return_note` and the batches' pull statuses are resolved by the
     *caller* in one query for the whole list.
@@ -792,6 +834,9 @@ def shop_assembly_request_to_type(
     Passed in rather than derived here for the same reason `pull_request_to_type` takes its
     staging counts: a converter that queries is an N+1 waiting to happen on a list page
     (CLAUDE.md perf rules).
+
+    include_lines=False leaves items, openings and batches empty, for a read that selected none of
+    them and so never loaded them (#1856) - walking them would lazy-load every request's.
     """
     statuses = pull_status_by_id or {}
     return ShopAssemblyRequest(
@@ -807,14 +852,18 @@ def shop_assembly_request_to_type(
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         integrity_note=sar.integrity_note,
-        items=[shop_assembly_request_item_to_type(i) for i in sar.items],
+        items=[shop_assembly_request_item_to_type(i) for i in sar.items] if include_lines else [],
         openings=[
             shop_assembly_request_opening_to_type(o) for o in sorted(sar.openings, key=lambda o: o.opening_number)
-        ],
+        ]
+        if include_lines
+        else [],
         batches=[
             shop_assembly_batch_to_type(b, pull_status=statuses.get(b.pull_request_id))
             for b in sorted(sar.batches, key=lambda b: b.sequence)
-        ],
+        ]
+        if include_lines
+        else [],
         stage=RequestStage(stage or _fallback_stage(sar)),
         return_note=return_note,
         project_number=project.project_id if project is not None else None,
@@ -1030,6 +1079,7 @@ def shipment_photo_to_type(p) -> ShipmentPhoto:
         packing_slip_id=strawberry.ID(str(p.packing_slip_id)) if p.packing_slip_id else None,
         file_name=p.file_name,
         taken_by=p.taken_by,
+        taken_by_user_id=p.taken_by_user_id,
         taken_at=p.taken_at,
         s3_key=p.s3_key,
     )
@@ -1237,9 +1287,19 @@ def deficient_item_row_to_type(row: dict, labels: dict | None = None) -> Deficie
     )
 
 
-def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
+def gp_outbox_entry_to_type(
+    row,
+    *,
+    holds_draft: bool = False,
+    gp_took: bool = False,
+    already_in_nexus_as: str | None = None,
+    receipt_draft_moved_on: bool = False,
+    gp_answered: bool = False,
+    retry_refusal: str | None = None,
+) -> GpOutboxEntry:
     """Reads only the row's own scalar columns - no relationships, so nothing here can trigger a
-    lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md)."""
+    lazy load (see the GraphQL/SQLAlchemy rules in CLAUDE.md). `holds_draft` and `gp_took` are worked
+    out by the caller, over the whole list in one read (#1948)."""
     return GpOutboxEntry(
         id=strawberry.ID(str(row.id)),
         label=row.label,
@@ -1253,6 +1313,13 @@ def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
         entity_key=row.entity_key,
         last_error=row.last_error,
         failure_kind=row.failure_kind,
+        holds_draft=holds_draft,
+        gp_took=gp_took,
+        maybe_in_gp=bool(row.maybe_in_gp),
+        already_in_nexus_as=already_in_nexus_as,
+        receipt_draft_moved_on=receipt_draft_moved_on,
+        gp_answered=gp_answered,
+        retry_refusal=retry_refusal,
     )
 
 

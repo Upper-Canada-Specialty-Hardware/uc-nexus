@@ -102,6 +102,21 @@ _REGISTRATION_NOTE_DAYS = 7
 _RECEIPT_NOTE_COLUMNS = tuple(f"RCPTNOTE_{i}" for i in range(1, 9))
 
 
+# The one escape character both key lookups declare on their LIKE (#1860). The models already hold a
+# key to letters, digits and hyphens, so nothing in one should ever need it; escaping anyway means a key
+# that somehow carried a wildcard would match only itself rather than whatever the pattern spelled.
+_LIKE_ESCAPE = "\\"
+
+
+def _like_containing(key: str) -> str:
+    """A LIKE pattern matching `key` anywhere in the text, with every character LIKE reads as syntax -
+    the escape itself, `%`, `_` and `[` - escaped, for use with ESCAPE _LIKE_ESCAPE."""
+    escaped = key
+    for char in (_LIKE_ESCAPE, "%", "_", "["):
+        escaped = escaped.replace(char, _LIKE_ESCAPE + char)
+    return f"%{escaped}%"
+
+
 def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: date) -> str | None:
     """Read-only: the PO carrying this registration key on its record note, or None.
 
@@ -117,9 +132,11 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
     headers and reads only their notes.
 
     Matching on a substring is safe because the key is a UUID: it cannot appear in a note somebody
-    typed, and it cannot collide with another attempt's key. Table, note column and note table are
+    typed, and it cannot collide with another attempt's key. The model holds it to letters, digits and
+    hyphens and the pattern is escaped besides (#1860), so a key never reads as a wildcard that matches
+    some other PO's note. Table, note column and note table are
     compile-time constants; only the buyer, the date and the key are bound."""
-    like = f"%{key}%"
+    like = _like_containing(key)
     since = doc_date - timedelta(days=_REGISTRATION_NOTE_DAYS)
     for table in ("POP10100", "POP30100"):
         row = (
@@ -127,7 +144,8 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
             .execute(
                 f"SELECT TOP 1 h.PONUMBER FROM dbo.{table} h "
                 f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX = h.{_PO_NOTE_INDEX_COLUMN} "
-                f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ? "
+                f"ESCAPE '{_LIKE_ESCAPE}'",
                 buyer_id,
                 since,
                 like,
@@ -151,7 +169,7 @@ def find_receipt_by_note(conn, *, key: str, po_number: str) -> tuple[str, str] |
     it is where GP leaves orphan notes no document can reach (see _note_fields) - a slot holding 0 is an
     empty slot, never a match. Table and column names are compile-time constants; only the PO number
     and the key are bound."""
-    like = f"%{key}%"
+    like = _like_containing(key)
     slots = ", ".join(f"h.{column}" for column in _RECEIPT_NOTE_COLUMNS)
     for table in ("POP10300", "POP30300"):
         row = (
@@ -159,7 +177,8 @@ def find_receipt_by_note(conn, *, key: str, po_number: str) -> tuple[str, str] |
             .execute(
                 f"SELECT TOP 1 h.POPRCTNM, h.BACHNUMB FROM dbo.{table} h "
                 f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX IN ({slots}) "
-                f"WHERE h.VNDDOCNM = ? AND n.NOTEINDX <> 0 AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                f"WHERE h.VNDDOCNM = ? AND n.NOTEINDX <> 0 AND CAST(n.TXTFIELD AS varchar(max)) LIKE ? "
+                f"ESCAPE '{_LIKE_ESCAPE}'",
                 po_number,
                 like,
             )
@@ -579,11 +598,15 @@ def apply_wennsoft_integration(
         .fetchone()
     )
     if row.error_state != 0:
+        message = (row.err_string or "").strip()
+        # #1862: a WennSoft proc, so its states are not taErrorCode entries - its own text is the reason,
+        # carried on proc_message the way _exec_job_master carries wsiJCJobMaster's.
         raise EConnectError(
             f"wsiWSCreateUpdatePurchaseOrderIntegration failed for line ORD={line_ord} (PI={product_indicator}): "
-            f"{row.err_string.strip()}",
+            f"{message}",
             proc="wsiWSCreateUpdatePurchaseOrderIntegration",
             error_state=row.error_state,
+            proc_message=message or None,
         )
 
 
@@ -815,7 +838,7 @@ def read_po_receipt_context(conn, po_number: str):
         .execute(
             "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
             "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
-            "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST, "
+            "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.QTYCANCE, l.UNITCOST, "
             "l.POLNESTA, ISNULL(r.prev_received, 0) AS prev_received "
             "FROM dbo.POP10110 l "
             "LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
@@ -839,6 +862,8 @@ def read_po_receipt_context(conn, po_number: str):
             "uofm": r.uofm,
             "vnditnum": r.vnditnum or r.item,  # legacy uses item number when VNDITNUM is blank
             "qtyorder": r.QTYORDER,
+            # #1861: what GP cancelled on the line is not there to receive; the guard nets it off
+            "qtycance": r.QTYCANCE or 0,
             "unitcost": r.UNITCOST,  # AUTOCOST pulls this onto the receipt line; header subtotal must match
             "polnesta": int(r.POLNESTA),  # PO line status; the legacy only receives lines with < 4
             "prev_received": r.prev_received,  # SUM(POP10500.QTYSHPPD) already received against this line
@@ -860,17 +885,28 @@ def get_vendor_contact(conn, vendor_id: str) -> dict | None:
     EmailToAddress is a `text` column on some GPs (UBC's), and RTRIM refuses text (SQL 8116) when the
     statement is prepared, which fails the read for every vendor, so it is cast to varchar(max) before
     the trim (#1685). INET1 is char and trims as it is.
+
+    SY01200 holds a row per vendor ADDRESS (ADRSCODE), so a vendor with several has several rows, and
+    an unordered TOP 1 took whichever SQL Server met first - the remit-to's accounts payable inbox as
+    readily as the ordering desk (#1864). The rows are ranked instead: one carrying an email before one
+    that does not, then the vendor's purchase address (PM00200.VADCDPAD, where GP sends a PO), then its
+    primary (VADDCDPR), then any other in code order, so the same vendor always reads the same email.
+    The blank test casts the text column too, and leans on SQL Server ignoring trailing spaces in `<>`.
     """
     row = (
         conn.cursor()
         .execute(
-            "SELECT RTRIM(ISNULL(CAST(i.EmailToAddress AS varchar(max)), '')) AS email_to, "
+            "SELECT TOP 1 RTRIM(ISNULL(CAST(i.EmailToAddress AS varchar(max)), '')) AS email_to, "
             "RTRIM(ISNULL(i.INET1, '')) AS inet1, "
             "RTRIM(ISNULL(v.VNDCNTCT, '')) AS contact_name, "
             "RTRIM(v.VENDNAME) AS vendor_name "
             "FROM dbo.PM00200 v "
             "LEFT JOIN dbo.SY01200 i ON i.Master_ID = v.VENDORID AND i.Master_Type = 'VEN' "
-            "WHERE v.VENDORID = ?",
+            "WHERE v.VENDORID = ? "
+            "ORDER BY CASE WHEN ISNULL(CAST(i.EmailToAddress AS varchar(max)), '') <> '' "
+            "OR ISNULL(i.INET1, '') <> '' THEN 0 ELSE 1 END, "
+            "CASE WHEN i.ADRSCODE = v.VADCDPAD THEN 0 WHEN i.ADRSCODE = v.VADDCDPR THEN 1 ELSE 2 END, "
+            "i.ADRSCODE",
             (vendor_id,),
         )
         .fetchone()
@@ -1528,6 +1564,33 @@ def read_po_totals(conn, po_number: str) -> dict | None:
                 "miscellaneous": float(row.misc or 0),
                 "tax_amount": float(row.tax or 0),
                 "trade_discount": float(row.trade_discount or 0),
+            }
+    return None
+
+
+def read_registered_po(conn, po_number: str) -> dict | None:
+    """Read-only: what GP stored on a PO's header when it was registered - SUBTOTAL, TAXAMNT, the
+    currency, the document date and the vendor - work table first, then history, like read_po_totals.
+
+    What a create_po retry answers with once find_po_by_registration_note has found the PO an earlier
+    attempt made (#1858). The retry no longer runs the pre-checks and the tax plan before that lookup,
+    so its figures are GP's own rather than recomputed from masters that may have changed since.
+    Decimals, not floats: the backend snapshots these exactly as a create's. None if the PO isn't in GP."""
+    cur = conn.cursor()
+    for table in ("POP10100", "POP30100"):
+        row = cur.execute(
+            f"SELECT SUBTOTAL AS subtotal, TAXAMNT AS tax, RTRIM(CURNCYID) AS currency, DOCDATE AS doc_date, "
+            f"RTRIM(VENDORID) AS vendor_id FROM dbo.{table} WHERE PONUMBER = ?",
+            po_number,
+        ).fetchone()
+        if row is not None:
+            doc_date = row.doc_date.date() if isinstance(row.doc_date, datetime) else row.doc_date
+            return {
+                "subtotal": Decimal(str(row.subtotal or 0)),
+                "tax_amount": Decimal(str(row.tax or 0)),
+                "currency": (row.currency or "").strip() or None,
+                "doc_date": doc_date,
+                "vendor_id": (row.vendor_id or "").strip() or None,
             }
     return None
 
@@ -2360,6 +2423,29 @@ def customer_address_exists(conn, customer_number: str, address_code: str) -> bo
         .fetchone()
     )
     return row.n > 0
+
+
+def jobs_using_customer_address(conn, customer_number: str, address_code: str, *, excluding_job: str) -> list[str]:
+    """Read-only: the jobs other than `excluding_job` whose site (JC00102.Job_Address_Code) is this
+    customer's address code, in job-number order.
+
+    What keeps a job's own site rewrite its own (#1859): the code is rewritten in place with
+    UpdateIfExists=1, which would move every other job pointed at the same record - two long job numbers
+    that once truncated to the same code, or a job accounting pointed at another's site. Matched the
+    way customer_address_exists matches: RTRIM'd columns, stripped arguments, comparison left to SQL."""
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(WS_Job_Number) AS job_number FROM dbo.JC00102 "
+            "WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(Job_Address_Code) = ? AND RTRIM(WS_Job_Number) <> ? "
+            "ORDER BY WS_Job_Number",
+            customer_number.strip(),
+            address_code.strip(),
+            excluding_job.strip(),
+        )
+        .fetchall()
+    )
+    return [row.job_number for row in rows]
 
 
 def get_customer_address(conn, customer_number: str, address_code: str) -> dict | None:

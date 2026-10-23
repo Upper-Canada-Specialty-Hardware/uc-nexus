@@ -205,11 +205,81 @@ def test_a_slip_alone_on_its_load_is_not_moved_to_a_new_one(db_session):
     assert first.load.load_number == number
 
 
+def test_a_cancelled_slip_on_the_load_is_no_company(db_session):
+    # #1820: it stays on the load as the record of it, but the live slip still rides alone.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead)
+    cancelled = _ship(db_session, other, load_id=first.load_id)
+    cancelled.status = ShipmentStatus.CANCELLED
+    db_session.flush()
+    with pytest.raises(ValidationError, match="load of its own"):
+        shipment_loads.move_slip_to_load(db_session, first, None, "tester")
+
+
 def test_moving_onto_its_own_load_is_refused(db_session):
     project = _project(db_session)
     first = _ship(db_session, project)
     with pytest.raises(ValidationError, match="already on that load"):
         shipment_loads.move_slip_to_load(db_session, first, first.load_id, "tester")
+
+
+def test_a_new_load_takes_the_pickup_date_being_saved(db_session):
+    # #1940: the edit dialog moves the slip before it saves the header, so the new load is named for
+    # the date the header is about to carry, not the stored one.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    second = _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+
+    load = shipment_loads.move_slip_to_load(db_session, second, None, "tester", pickup_date=date(2026, 10, 20))
+    assert load.load_number == f"{other.project_id}-10202026"
+    assert load.ship_date == date(2026, 10, 20)
+
+
+def _edit_pickup(session, slip, day):
+    details = {field: getattr(slip, field) for field in shipping_repository.SITE_FORM_FIELDS}
+    details["pickup_date"] = day
+    details["delivery_date"] = None
+    return shipping_repository.update_shipment_details(session, slip.id, details)
+
+
+def test_a_lone_slips_load_follows_its_pickup_date_and_keeps_its_number(db_session):
+    # #1940: a load of one slip is that slip's truck. The number stays: the dock and the driver have it.
+    project = _project(db_session)
+    first = _ship(db_session, project, pickup=date(2026, 10, 15))
+    number = first.load.load_number
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    load = db_session.get(ShipmentLoad, first.load_id)
+    assert load.ship_date == date(2026, 10, 22)
+    assert load.load_number == number
+
+
+def test_a_shared_loads_date_is_not_one_slips_to_change(db_session):
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    assert db_session.get(ShipmentLoad, first.load_id).ship_date == date(2026, 10, 15)
+
+
+def test_a_cancelled_slip_does_not_hold_the_loads_date(db_session):
+    # #1820: a cancelled slip stays on the load as its record but rides nothing.
+    lead = _project(db_session)
+    other = _project(db_session)
+    first = _ship(db_session, lead, pickup=date(2026, 10, 15))
+    cancelled = _ship(db_session, other, load_id=first.load_id, pickup=date(2026, 10, 15))
+    cancelled.status = ShipmentStatus.CANCELLED
+    db_session.flush()
+
+    _edit_pickup(db_session, first, date(2026, 10, 22))
+    db_session.flush()
+    assert db_session.get(ShipmentLoad, first.load_id).ship_date == date(2026, 10, 22)
 
 
 # --- the shipments list (#1724) -----------------------------------------------------------------
@@ -309,3 +379,50 @@ def test_a_projects_racks_are_listed_per_product_net_of_condemned_units(db_sessi
             "locations": [{"warehouse_code": wh.code, "aisle": "A", "row": "1", "bay": "2", "quantity": 6}],
         }
     ]
+
+
+def test_a_products_racks_are_in_natural_order(db_session):
+    """#1881: the racks were in text order, so bay 10 came before bay 2."""
+    from datetime import datetime
+
+    from app.models.inventory import InventoryLocation
+    from app.models.stock_item import StockItem
+    from app.models.warehouse import Warehouse
+    from app.repositories.rack_locations import project_rack_locations
+
+    project = _project(db_session)
+    wh = Warehouse(id=uuid.uuid4(), name="Main", code=f"M{uuid.uuid4().hex[:4]}", company="TUBC")
+    db_session.add(wh)
+    db_session.flush()
+
+    for bay in ("10", "2", "1"):
+        stock = StockItem(
+            id=uuid.uuid4(),
+            warehouse_id=wh.id,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            quantity=0,
+            received_at=datetime(2026, 10, 1),
+        )
+        db_session.add(stock)
+        db_session.flush()
+        db_session.add(
+            InventoryLocation(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                stock_item_id=stock.id,
+                warehouse_id=wh.id,
+                hardware_category="HINGE",
+                product_code="HG-100",
+                quantity=1,
+                deficient_quantity=0,
+                aisle="A",
+                row="1",
+                bay=bay,
+                received_at=datetime(2026, 10, 1),
+            )
+        )
+    db_session.flush()
+
+    [product] = project_rack_locations(db_session, project.id)
+    assert [loc["bay"] for loc in product["locations"]] == ["1", "2", "10"]

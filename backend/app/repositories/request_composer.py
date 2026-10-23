@@ -214,6 +214,72 @@ def _owed_quantities(
     return out
 
 
+def slip_shipped_stmt(project_id: uuid.UUID, opening_numbers: list[str] | None = None):
+    """What the project's packing slips carried, per (opening, category, product). The import reconcile
+    reads the same statement (#1941), so the two can never count shipped out differently.
+
+    #1107: a manual line is free text that never came off inventory. Counting it let a spare that
+    happened to share a product code read as the opening's hardware having shipped, hiding a real
+    shortfall - the staged pool already leaves it out the same way.
+    """
+    stmt = (
+        select(
+            PackingSlipItem.opening_number,
+            PackingSlipItem.hardware_category,
+            PackingSlipItem.product_code,
+            func.sum(PackingSlipItem.quantity),
+        )
+        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
+        .where(PackingSlip.project_id == project_id, PackingSlipItem.is_manual.is_(False))
+        .group_by(
+            PackingSlipItem.opening_number,
+            PackingSlipItem.hardware_category,
+            PackingSlipItem.product_code,
+        )
+    )
+    if opening_numbers is not None:
+        stmt = stmt.where(PackingSlipItem.opening_number.in_(opening_numbers))
+    return stmt
+
+
+def came_back_stmt(project_id: uuid.UUID, opening_numbers: list[str] | None = None):
+    """What came back off the project's slips that the opening is owed again, per (opening, category,
+    product, back on the project's shelf). Shared with the import reconcile (#1941).
+
+    #1107 (ruling: re-offer it): a return to the project puts the units back in the project's
+    inventory, and a cancelled slip (#973: everything came back before pickup) never left at all - in
+    either case the opening is owed them again. A return into stock or RMA off a slip that did go out
+    is hardware the site no longer has but the project does not hold either, so it stays counted as
+    sent. The fourth column says which of the two kinds a row is: only a return to the project is
+    back on its shelf.
+    """
+    to_project = ShipmentReturnItem.disposition == ReturnDisposition.RETURN_TO_PROJECT
+    stmt = (
+        select(
+            ShipmentReturnItem.opening_number,
+            ShipmentReturnItem.hardware_category,
+            ShipmentReturnItem.product_code,
+            to_project.label("to_project"),
+            func.sum(ShipmentReturnItem.quantity),
+        )
+        .join(ShipmentReturn, ShipmentReturnItem.shipment_return_id == ShipmentReturn.id)
+        .join(PackingSlip, ShipmentReturn.packing_slip_id == PackingSlip.id)
+        .where(
+            PackingSlip.project_id == project_id,
+            or_(to_project, PackingSlip.status == ShipmentStatus.CANCELLED),
+        )
+        .group_by(
+            ShipmentReturnItem.opening_number,
+            ShipmentReturnItem.hardware_category,
+            ShipmentReturnItem.product_code,
+            to_project,
+        )
+    )
+    if opening_numbers is not None:
+        stmt = stmt.where(ShipmentReturnItem.opening_number.in_(opening_numbers))
+    return stmt
+
+
 def _sent_quantities(
     session: Session,
     project_id: uuid.UUID,
@@ -261,58 +327,14 @@ def _sent_quantities(
 
     shipped: dict[_OpeningComboKey, int] = {}
     for opening_number, category, code, quantity in session.execute(
-        select(
-            PackingSlipItem.opening_number,
-            PackingSlipItem.hardware_category,
-            PackingSlipItem.product_code,
-            func.sum(PackingSlipItem.quantity),
-        )
-        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
-        .where(
-            PackingSlip.project_id == project_id,
-            PackingSlipItem.opening_number.in_(opening_numbers),
-            # #1107: a manual line is free text that never came off inventory. Counting it here let a
-            # spare that happened to share a product code read as the opening's hardware having
-            # shipped, hiding a real shortfall - the staged pool already leaves it out the same way.
-            PackingSlipItem.is_manual.is_(False),
-        )
-        .group_by(
-            PackingSlipItem.opening_number,
-            PackingSlipItem.hardware_category,
-            PackingSlipItem.product_code,
-        )
+        slip_shipped_stmt(project_id, opening_numbers)
     ).all():
         key = (opening_number, category, code)
         shipped[key] = shipped.get(key, 0) + int(quantity or 0)
 
-    # #1107 (ruling: re-offer it): what came back. A return to the project puts the units back in
-    # the project's inventory, and a cancelled slip (#973: everything came back before pickup) never
-    # left at all - in either case the opening is owed them again. A return into stock or RMA off a
-    # slip that did go out is hardware the site no longer has but the project does not hold either,
-    # so it stays counted as sent.
     came_back: dict[_OpeningComboKey, int] = {}
-    for opening_number, category, code, quantity in session.execute(
-        select(
-            ShipmentReturnItem.opening_number,
-            ShipmentReturnItem.hardware_category,
-            ShipmentReturnItem.product_code,
-            func.sum(ShipmentReturnItem.quantity),
-        )
-        .join(ShipmentReturn, ShipmentReturnItem.shipment_return_id == ShipmentReturn.id)
-        .join(PackingSlip, ShipmentReturn.packing_slip_id == PackingSlip.id)
-        .where(
-            PackingSlip.project_id == project_id,
-            ShipmentReturnItem.opening_number.in_(opening_numbers),
-            or_(
-                ShipmentReturnItem.disposition == ReturnDisposition.RETURN_TO_PROJECT,
-                PackingSlip.status == ShipmentStatus.CANCELLED,
-            ),
-        )
-        .group_by(
-            ShipmentReturnItem.opening_number,
-            ShipmentReturnItem.hardware_category,
-            ShipmentReturnItem.product_code,
-        )
+    for opening_number, category, code, _to_project, quantity in session.execute(
+        came_back_stmt(project_id, opening_numbers)
     ).all():
         key = (opening_number, category, code)
         came_back[key] = came_back.get(key, 0) + int(quantity or 0)

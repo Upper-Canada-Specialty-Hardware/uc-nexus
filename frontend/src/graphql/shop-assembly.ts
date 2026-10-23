@@ -63,9 +63,25 @@ const REQUEST_FIELDS = `
     }
   }`;
 
+// The Worked and Rejected tabs page with limit/offset, newest first (#1888); the Pending board sends
+// neither and reads every waiting request.
 export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
-  query GetShopAssemblyRequests($projectId: ID, $status: ShopAssemblyRequestStatus, $reopenableOnly: Boolean) {
-    shopAssemblyRequests(projectId: $projectId, status: $status, reopenableOnly: $reopenableOnly) {
+  query GetShopAssemblyRequests(
+    $projectId: ID
+    $status: ShopAssemblyRequestStatus
+    $reopenableOnly: Boolean
+    $limit: Int
+    $offset: Int
+    $newestFirst: Boolean
+  ) {
+    shopAssemblyRequests(
+      projectId: $projectId
+      status: $status
+      reopenableOnly: $reopenableOnly
+      limit: $limit
+      offset: $offset
+      newestFirst: $newestFirst
+    ) {
       ${REQUEST_FIELDS}
     }
   }

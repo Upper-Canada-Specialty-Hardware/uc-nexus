@@ -372,3 +372,28 @@ def test_cleanup_old_versions_runs_again_once_the_stuck_ledger_is_abandoned(monk
         "app-relay-v0.1.0-build.36",
         "app-relay-v0.1.0-build.37",
     ]
+
+
+def test_run_app_sends_the_app_process_logging_to_app_log_in_the_install_dir(monkeypatch, tmp_path):
+    # #1931: only serve configured logging, so the update poller, the self-check, staging and rollback -
+    # all of which run in the app process - logged to nowhere.
+    calls = []
+    monkeypatch.setattr(appmod, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(appmod, "configure_logging", lambda level, path: calls.append((level, path)))
+    monkeypatch.setattr(appmod.RelayApp, "run", lambda self, minimized=False, force=False: calls.append("run") or 0)
+
+    assert appmod.run_app() == 0
+
+    assert calls[0] == ("INFO", str(tmp_path / appmod.APP_LOG))  # absolute, beside config.toml and relay.log
+    assert calls[1] == "run"  # configured before anything in the app can log
+
+
+def test_run_app_still_starts_when_the_log_cannot_be_opened(monkeypatch, tmp_path):
+    def _no_file(level, path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(appmod, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(appmod, "configure_logging", _no_file)
+    monkeypatch.setattr(appmod.RelayApp, "run", lambda self, minimized=False, force=False: 0)
+
+    assert appmod.run_app() == 0

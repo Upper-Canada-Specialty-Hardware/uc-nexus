@@ -59,11 +59,21 @@ def is_configured() -> bool:
     return get_config() is not None
 
 
-def send(*, to: list[str], subject: str, text: str | None, html: str | None = None, idempotency_key: str) -> None:
+def send(
+    *,
+    to: list[str],
+    subject: str,
+    text: str | None,
+    html: str | None = None,
+    idempotency_key: str,
+    attempts: int = _ATTEMPTS,
+    timeout: float = 30.0,
+) -> None:
     """Send one message, with `text`, `html` or both. Raises MailerError when it is not sent.
 
     `idempotency_key` makes a retry safe: within ten minutes the mailer answers the same key and body
-    with the first result and sends nothing new, so the retries below can never mail twice.
+    with the first result and sends nothing new, so the retries below can never mail twice. A caller
+    with retries of its own (Clerk's webhook) asks for fewer attempts and a shorter wait.
     """
     config = get_config()
     if config is None:
@@ -77,9 +87,9 @@ def send(*, to: list[str], subject: str, text: str | None, html: str | None = No
 
     last = "no attempt made"
     code: str | None = None
-    for attempt in range(1, _ATTEMPTS + 1):
+    for attempt in range(1, attempts + 1):
         try:
-            resp = httpx.post(f"{config.url}/v1/send", json=body, headers=headers, timeout=30.0)
+            resp = httpx.post(f"{config.url}/v1/send", json=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as exc:
             last = f"the mailer could not be reached: {exc}"
             code = None
@@ -93,7 +103,7 @@ def send(*, to: list[str], subject: str, text: str | None, html: str | None = No
             last = f"the mailer refused it: {resp.status_code} {code or resp.text}"
             if resp.status_code != _RETRYABLE_STATUS:
                 break
-        if attempt < _ATTEMPTS:
+        if attempt < attempts:
             time.sleep(_RETRY_DELAY_SECONDS * attempt)
     if code != RECIPIENT_NOT_INTERNAL:
         # The recipients are logged, the body is not: a report carries what a user typed.

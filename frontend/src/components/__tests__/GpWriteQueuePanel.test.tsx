@@ -201,6 +201,142 @@ it('lets a po user act on a held po registration', async () => {
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
 });
 
+// #1948: the backend refuses to cancel a write GP took, so the button is off and says why.
+it('offers no cancel on a write GP took, and says to finish it with retry', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', gpTook: true })]);
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  expect(screen.getByLabelText(/GP already took this write, so it can't be cancelled/)).toBeInTheDocument();
+});
+
+it('warns before cancelling a registration GP may hold to check GP first', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [
+    entry({ status: 'FAILED', failureKind: 'exhausted', maybeInGp: true, gpTook: false }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this PO/)).toBeInTheDocument();
+  expect(screen.getByText(/Check GP first/)).toBeInTheDocument();
+});
+
+// #1948: GP took it, but its PO is already in Nexus as the mirror's copy - so it can be let go.
+it('offers cancel on a registration whose po is already in nexus, and says the draft goes with it', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [
+    entry({ status: 'FAILED', failureKind: 'persist_failed', maybeInGp: true, gpTook: false, alreadyInNexusAs: '0001948' }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP's PO 0001948 is already in Nexus as a GP PO/)).toBeInTheDocument();
+  expect(screen.getByText(/cancels its draft/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this PO/)).toBeNull();
+});
+
+// #1945: a receipt that may be in GP never sends its draft back, so the warning says it stays approved.
+it('warns before cancelling a receipt GP may hold that its draft stays approved until a manager releases it', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'exhausted',
+      maybeInGp: true,
+      gpTook: false,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this receipt/)).toBeInTheDocument();
+  expect(screen.getByText(/the draft stays approved until a Warehouse Manager checks GP/)).toBeInTheDocument();
+  expect(screen.queryByText(/whoever submitted it will have to redo it/)).toBeNull();
+});
+
+// #1961: a receipt GP answered after its approval was released is in GP, with nothing booked here for it.
+it('warns before letting go of a receipt whose draft moved on that GP holds it and to reconcile it there', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'persist_failed',
+      maybeInGp: true,
+      gpTook: false,
+      gpAnswered: true,
+      receiptDraftMovedOn: true,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP holds this receipt, and Nexus booked nothing for it/)).toBeInTheDocument();
+  expect(screen.getByText(/Reconcile it in GP first/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this receipt/)).toBeNull();
+});
+
+// #1965: GP may hold it, with no answer back, and its draft moved on - nothing here holds the draft approved.
+it('warns before cancelling a receipt GP may hold whose draft moved on, without saying the draft stays approved', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      failureKind: 'ambiguous',
+      maybeInGp: true,
+      gpTook: false,
+      gpAnswered: false,
+      receiptDraftMovedOn: true,
+    }),
+  ]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/GP may already hold this receipt .* and its draft has moved on/)).toBeInTheDocument();
+  expect(screen.queryByText(/the draft stays approved/)).toBeNull();
+  expect(screen.queryByText(/GP holds this receipt/)).toBeNull();
+});
+
+// #1965: the backend refuses Retry on a let-go row or a receipt whose draft moved on, so Retry is off and says why.
+it('turns retry off on a row the backend would refuse, and says why', async () => {
+  const why = "This receipt's draft was deleted, so nothing here waits to book it and a retry can only fail.";
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({
+      op: 'create_receive',
+      relayOp: 'create_receipt',
+      label: 'GP receive entry',
+      status: 'FAILED',
+      maybeInGp: true,
+      receiptDraftMovedOn: true,
+      retryRefusal: why,
+    }),
+  ]);
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeDisabled();
+  expect(screen.getByLabelText(why)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+});
+
+it('keeps retry on for a failed row nothing refuses', async () => {
+  renderPanel({ ops: ['create_receipt'], compact: true }, [
+    entry({ op: 'create_receive', relayOp: 'create_receipt', status: 'FAILED', retryRefusal: null }),
+  ]);
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
+});
+
+it('keeps the plain cancel words for a write nothing says reached GP', async () => {
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED', maybeInGp: false })]);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+  expect(await screen.findByText(/This abandons the write/)).toBeInTheDocument();
+  expect(screen.queryByText(/GP may already hold this PO/)).toBeNull();
+});
+
 it('keeps a held po registration out of a warehouse manager hands', async () => {
   identity.roles = ['Warehouse Manager'];
   identity.ownsTenant = false;

@@ -7,12 +7,12 @@ import strawberry
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
+from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestModel
 from app.repositories import (
     import_repository,
     po_repository,
     project_repository,
     shipping_repository,
-    shop_assembly_repository,
     tenancy,
 )
 from app.services import notification_service
@@ -27,6 +27,7 @@ from .converters import (
 from .inputs import FinalizeImportSessionInput, ReconciliationItemInput
 from .types import (
     FinalizeImportResult,
+    PODraftOutcome,
     ProjectExcludedItem,
     ProjectHardwareSchedule,
     ProjectOpeningRow,
@@ -256,6 +257,13 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
         # than an argument (#427). A receive against one of those POs later asks them whether the
         # shipment stays in the project's inventory or ships straight out.
         "created_by_user_id": created_by_user_id,
+        # #1918: only when sent - a caller that omits it is not checked, while null is a real answer
+        # ("no schedule yet").
+        **(
+            {"expected_schedule_revision": input.expected_schedule_revision}
+            if input.expected_schedule_revision is not strawberry.UNSET
+            else {}
+        ),
     }
 
 
@@ -287,8 +295,13 @@ class ImportMutations:
                 raise
             session.commit()
 
-            # Re-load everything with the relationships the response types walk
-            project = project_repository.get_project_with_openings(session, result["project"].id)
+            # Re-load everything with the relationships the response types walk. The project goes back
+            # without its openings (#1890): the wizard reads a few of its scalars, and building every
+            # opening of a full schedule for that was the response's biggest cost. The count keeps the
+            # normalized Project's openingCount true (#1874). The POs keep their lines, which the demo
+            # build reads off this response.
+            project = project_repository.get_project(session, result["project"].id)
+            opening_count = project_repository.count_project_openings(session, project.id)
             pos = po_repository.reload_pos(session, [po_obj.id for po_obj in result["purchase_orders"]])
             shipping_requests = [
                 shipping_repository.get_shipping_out_request(session, req_obj.id)
@@ -297,14 +310,26 @@ class ImportMutations:
 
             sar_type = None
             if result["shop_assembly_request"] is not None:
-                refreshed_sar = shop_assembly_repository.get_shop_assembly_request(
-                    session, result["shop_assembly_request"].id
-                )
-                sar_type = shop_assembly_request_to_type(refreshed_sar, project=project)
+                # Its scalars alone (#1890): every reader of this response asks for the id, number and
+                # status, and a request just raised is PENDING, so its stage reads no batches either.
+                refreshed_sar = session.get(ShopAssemblyRequestModel, result["shop_assembly_request"].id)
+                sar_type = shop_assembly_request_to_type(refreshed_sar, project=project, include_lines=False)
 
             return FinalizeImportResult(
-                project=project_to_type(project),
-                purchase_orders=[po_to_type(po) for po in pos],
+                project=project_to_type(project, include_openings=False, opening_count=opening_count),
+                # #1877: every PO here is this project's, so it is handed over rather than read per PO.
+                purchase_orders=[po_to_type(po, projects={project.id: project}) for po in pos],
                 shipping_out_requests=[shipping_out_request_to_type(req) for req in shipping_requests],
                 shop_assembly_request=sar_type,
+                po_draft_outcomes=[
+                    PODraftOutcome(
+                        draft_index=o["draft_index"],
+                        purchase_order_id=(
+                            strawberry.ID(str(o["purchase_order"].id)) if o["purchase_order"] is not None else None
+                        ),
+                        requested_quantity=o["requested_quantity"],
+                        claimed_quantity=o["claimed_quantity"],
+                    )
+                    for o in result["po_draft_outcomes"]
+                ],
             )

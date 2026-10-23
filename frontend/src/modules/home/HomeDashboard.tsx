@@ -75,6 +75,8 @@ const ACTION_LABELS: Record<string, string> = {
   PULL_STAGED: 'Staged',
   PULL_RESTOCK: 'Restocked',
   PULL_CANCELLED: 'Cancelled',
+  // #832: a stock pool row moved between stock and overhead (#1900).
+  POOL_KIND_CHANGE: 'Changed the pool kind of',
 };
 
 /** Every `AuditEntityType`, in the words the floor uses for them. */

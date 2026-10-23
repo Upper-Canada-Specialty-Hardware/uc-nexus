@@ -5,11 +5,16 @@ import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } 
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 import { microLabelSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { auditActionLabel } from './auditActions';
 
 interface AuditDetail {
   fromLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
   toLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
   targetLocation?: { aisle?: string | null; row?: string | null; bay?: string | null };
+  // Every receive writer stores its shelf here, as do a pool kind change and an override's new row.
+  location?: { aisle?: string | null; row?: string | null; bay?: string | null };
+  quantity?: number;
+  createdByOverrideOf?: string;
   oldQuantity?: number;
   newQuantity?: number;
   adjustment?: number;
@@ -54,6 +59,7 @@ function summarize(entry: AuditEntry): string {
     case 'UNLOCATE':
       return `Unlocated from ${formatLoc(d.fromLocation)}`;
     case 'ADJUSTMENT':
+      if (d.createdByOverrideOf) return `Created by override with ${d.quantity} at ${formatLoc(d.location)}`;
       return `Adjusted qty ${d.oldQuantity} → ${d.newQuantity}${reason ? ` — ${reason}` : ''}`;
     case 'SPOT_CHECK': {
       const system = d.systemQuantity ?? d.oldQuantity;
@@ -61,14 +67,25 @@ function summarize(entry: AuditEntry): string {
       return `Spot check: system ${system} → physical ${physical}`;
     }
     case 'RECEIVE':
-      return `Received at ${formatLoc(d.targetLocation)}`;
+      // #1896: every receive writer stores `location`; `targetLocation` is the older spelling.
+      return `Received ${qty(d)}at ${formatLoc(d.location ?? d.targetLocation)}`;
     case 'DESTOCK':
       return `Destocked to ${formatLoc(d.targetLocation)}`;
     case 'ALLOCATE_FROM_STOCK':
       return `Allocated from stock to ${formatLoc(d.targetLocation)}`;
-    default:
-      return entry.action;
+    case 'TRANSFER':
+      return `Transferred ${qty(d)}from ${formatLoc(d.fromLocation)} to ${formatLoc(d.toLocation)}`;
+    default: {
+      // #1896: an action with no sentence of its own still reads as words, with the shelf it touched.
+      const where = d.location ?? d.toLocation ?? d.targetLocation ?? d.fromLocation;
+      return `${auditActionLabel(entry.action)}${where ? ` at ${formatLoc(where)}` : ''}`;
+    }
   }
+}
+
+/** "3 " ahead of a location, or nothing when the event carries no quantity. */
+function qty(d: AuditDetail): string {
+  return d.quantity != null ? `${d.quantity} ` : '';
 }
 
 interface Props {

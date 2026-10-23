@@ -293,6 +293,40 @@ def _adopt_mirrored_copy(session: Session, po: PurchaseOrder, po_number: str, co
         session.flush()
 
 
+def _mirrored_copy_of(session: Session, po: PurchaseOrder, po_number: str, company: str) -> PurchaseOrder | None:
+    """The GP sync's live copy of `po_number` in the company, other than `po` itself (#1948)."""
+    return session.scalars(
+        select(PurchaseOrder).where(
+            PurchaseOrder.po_number == po_number,
+            PurchaseOrder.id != po.id,
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.origin == POOrigin.GP,
+            or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+        )
+    ).first()
+
+
+def live_po_id_numbered(
+    session: Session, po_number: str, company: str, *, exclude_po_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The id of a live Nexus PO in the company that already carries `po_number`, if there is one (#1948)."""
+    return session.scalar(
+        select(PurchaseOrder.id)
+        .where(
+            PurchaseOrder.po_number == po_number,
+            PurchaseOrder.id != exclude_po_id,
+            PurchaseOrder.deleted_at.is_(None),
+            or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+        )
+        .limit(1)
+    )
+
+
+def live_po_numbered(session: Session, po_number: str, company: str, *, exclude_po_id: uuid.UUID) -> bool:
+    """Whether a live Nexus PO in the company already carries `po_number` (#1948)."""
+    return live_po_id_numbered(session, po_number, company, exclude_po_id=exclude_po_id) is not None
+
+
 # The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
 _MAX_ORDER_COST = Decimal("10000000000")
 
@@ -333,11 +367,24 @@ def unit_cost_past_cents(unit_cost) -> bool:
     return Decimal(str(unit_cost)).normalize().as_tuple().exponent < -_UNIT_COST_PLACES
 
 
+# A line's unit_cost column is Numeric(19,5), so anything at or above this overflows at flush (#1936) - the
+# masked server error, on a draft save or a cost edit, where a typo of a few extra digits should be named.
+_MAX_UNIT_COST = Decimal(10) ** 14
+
+
+def refuse_unit_cost_too_large(unit_cost) -> None:
+    """Refuse a unit cost too large for its column, as a field error rather than an overflow (#1936)."""
+    if unit_cost is not None and Decimal(str(unit_cost)) >= _MAX_UNIT_COST:
+        raise ValidationError(f"Unit cost must be less than {_MAX_UNIT_COST:,}", field="unit_cost")
+
+
 def validate_line_unit_costs(line_items: list[dict]) -> None:
     """Refuse a PO whose line unit costs GP would refuse, before anything reaches GP or the outbox (#1394).
 
     GP holds a line's unit cost to the cent, so 0.33333 fails inside eConnect with an error a buyer can't
     act on. Refused here instead, naming each line, so the buyer rounds it and registers again."""
+    for li in line_items:
+        refuse_unit_cost_too_large(li.get("unit_cost"))
     past = [
         f"{li.get('product_code') or li.get('hardware_category') or 'a line'} at {li['unit_cost']}"
         for li in line_items
@@ -476,6 +523,7 @@ def create_po(
         unit_cost = li_data.get("unit_cost")
         if unit_cost is not None and unit_cost < 0:
             raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+        refuse_unit_cost_too_large(unit_cost)
 
         line_job_cost = gp_po.line_is_job_cost(li_data, has_project=has_project)
         # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
@@ -496,7 +544,7 @@ def create_po(
             custom_inventory_item_id=catalog_item_id,
             job_cost=line_job_cost,
             cost_code=line_cost_code,
-            uofm=gp_po.line_uofm(li_data),
+            uofm=gp_po.checked_line_uofm(li_data),
             # A NEXUS REGISTERED LINE from birth: the category and code above came off the schedule,
             # so the OPEN-POS SYNC must never overwrite them with GP's item number and description.
             nexus_registered=True,
@@ -632,6 +680,14 @@ def register_po_in_gp(
     # #1492: the sync may have mirrored this very PO a moment before this persist; its bare copy gives
     # way. Anything more than a copy is a real duplicate and is refused below.
     _adopt_mirrored_copy(session, po, cleaned_po_number, cleaned_company)
+    # #1948: a copy that could not give way - it has a receipt or a document by now - is GP's PO already in
+    # Nexus. No retry gets past it, so the refusal says what does: let the held registration go.
+    if _mirrored_copy_of(session, po, cleaned_po_number, cleaned_company) is not None:
+        raise ValidationError(
+            f"GP's PO {cleaned_po_number} is already in Nexus as a GP PO; cancel this held registration and "
+            "work from that PO",
+            field="po_number",
+        )
     # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
     _assert_po_number_available(
         session, cleaned_po_number, company=po.company, project_id=po.project_id, exclude_po_id=po.id
@@ -681,6 +737,7 @@ def register_po_in_gp(
         unit_cost = li_data.get("unit_cost")
         if unit_cost is None or unit_cost < 0:
             raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+        refuse_unit_cost_too_large(unit_cost)
 
         classification_val = li_data.get("classification")
         if isinstance(classification_val, str):
@@ -690,7 +747,7 @@ def register_po_in_gp(
         # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
         # a line that books to no job carries none at all.
         line_cost_code = _line_cost_code(li_data, cleaned_cost_code) if line_job_cost else None
-        line_uofm = gp_po.line_uofm(li_data)
+        line_uofm = gp_po.checked_line_uofm(li_data)
         if line_job_cost:
             job_cost_line_codes.append(line_cost_code)
 
@@ -819,7 +876,9 @@ def get_purchase_orders(
     return list(session.scalars(stmt).unique().all())
 
 
-def get_purchase_order(session: Session, po_id: uuid.UUID, *, company: str | None = None) -> PurchaseOrder | None:
+def get_purchase_order(
+    session: Session, po_id: uuid.UUID, *, company: str | None = None, include_cancelled: bool = False
+) -> PurchaseOrder | None:
     """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents."""
     stmt = (
         select(PurchaseOrder)
@@ -832,7 +891,11 @@ def get_purchase_order(session: Session, po_id: uuid.UUID, *, company: str | Non
         )
         .where(
             PurchaseOrder.id == po_id,
-            PurchaseOrder.deleted_at.is_(None),
+            # A cancelled PO is soft-deleted on the way (#1886), and the register lists them; the read that
+            # opens one asks for it. Every write path leaves it out.
+            or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED)
+            if include_cancelled
+            else PurchaseOrder.deleted_at.is_(None),
         )
     )
     if company is not None:
@@ -925,12 +988,17 @@ def _link_available_items(
 ) -> int:
     """Greedily attach `quantity` units of a schedule combo to a PO line for coverage tracking
     (gp-owned-po mirror). Marks AVAILABLE HardwareItem rows for the project IN_PO with po_line_item_id,
-    oldest opening first. Returns the units actually linked, which is `quantity` whenever that many are
-    AVAILABLE.
+    oldest opening first. Returns the units actually linked, which is `quantity` whenever that many
+    scheduled units are AVAILABLE.
 
     The row that would overshoot is split (#1128): the part the line needs goes IN_PO and the rest stays
     behind as an AVAILABLE row on the same opening. Skipping it instead, as this used to, left a line
-    asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit."""
+    asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit.
+
+    Only a row's scheduled units are tied (#1814): its units past the latest schedule (#1491) are not in
+    `_available_schedule_units_by_product`, the cap on `quantity`, so tying them would leave as many
+    scheduled units AVAILABLE and still to purchase. They stay behind in the split-off part. So the units
+    linked are exactly what that figure loses, which a caller tying several lines counts down by."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -956,13 +1024,16 @@ def _link_available_items(
     linked = 0
     remaining = quantity
     for hi in rows:
-        if hi.item_quantity > remaining:
-            session.add(_split_off_hardware_row(hi, hi.item_quantity - remaining))
-            hi.item_quantity = remaining
+        take = min(remaining, hi.item_quantity - (hi.beyond_schedule_quantity or 0))
+        if take <= 0:
+            continue
+        if hi.item_quantity > take:
+            session.add(_split_off_hardware_row(hi, hi.item_quantity - take))
+            hi.item_quantity = take
         hi.state = HardwareItemState.IN_PO
         hi.po_line_item_id = po_line_item_id
-        remaining -= hi.item_quantity
-        linked += hi.item_quantity
+        remaining -= take
+        linked += take
         if remaining <= 0:
             break
     return linked
@@ -971,8 +1042,13 @@ def _link_available_items(
 def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, keep: int) -> int:
     """Release the schedule rows tied to a PO line beyond its first `keep` units back to AVAILABLE
     (#1167), the reverse of `_link_available_items`: rows are kept in its order (oldest opening first)
-    and the row that straddles `keep` is split, its kept part staying IN_PO and the rest going back as an
-    AVAILABLE row on the same opening. Returns the units released."""
+    and a row kept in part is split, its kept part staying IN_PO and the rest going back as an AVAILABLE
+    row on the same opening. Returns the units released.
+
+    Scheduled units are kept before surplus ones (#1814): every row's units the latest schedule still
+    asks for are kept first, and its units past that schedule (#1491) only from what `keep` has left.
+    Kept in opening order alone, a trim kept an opening's surplus and released another opening's
+    scheduled units, leaving them both surplus on the line and still to purchase."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -990,20 +1066,29 @@ def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, k
         .scalars()
         .all()
     )
-    released = 0
     remaining = max(keep, 0)
+    kept = []
     for hi in rows:
-        if remaining >= hi.item_quantity:
-            remaining -= hi.item_quantity
+        take = min(remaining, hi.item_quantity - (hi.beyond_schedule_quantity or 0))
+        kept.append(take)
+        remaining -= take
+    for i, hi in enumerate(rows):
+        take = min(remaining, hi.beyond_schedule_quantity or 0)
+        kept[i] += take
+        remaining -= take
+
+    released = 0
+    for hi, keep_here in zip(rows, kept, strict=True):
+        if keep_here >= hi.item_quantity:
             continue
-        if remaining > 0:
-            excess = _split_off_hardware_row(hi, hi.item_quantity - remaining)
+        if keep_here > 0:
+            # The split-off part takes the row's surplus first, so what stays is what was counted above.
+            excess = _split_off_hardware_row(hi, hi.item_quantity - keep_here)
             excess.state = HardwareItemState.AVAILABLE
             excess.po_line_item_id = None
             session.add(excess)
-            hi.item_quantity = remaining
+            hi.item_quantity = keep_here
             released += excess.item_quantity
-            remaining = 0
             continue
         hi.state = HardwareItemState.AVAILABLE
         hi.po_line_item_id = None
@@ -1011,29 +1096,38 @@ def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, k
     return released
 
 
-def _available_schedule_units(
+def _available_schedule_units_by_product(
     session: Session,
     *,
     project_id: uuid.UUID,
-    hardware_category: str,
-    product_code: str,
-) -> int:
-    """How many units of a project's schedule combo are still AVAILABLE - not yet on any PO. The
-    ceiling on what a NEXUS REGISTERED LINE may tie, and the number `_link_available_items` draws
-    from."""
+    products: set[tuple[str, str]],
+) -> dict[tuple[str, str], int]:
+    """How many units of each of a project's schedule combos are still AVAILABLE - not yet on any PO.
+    The ceiling on what a NEXUS REGISTERED LINE may tie, and the number `_link_available_items` draws
+    from. One grouped read for every product a save names (#1891), not one per line; a combo with
+    nothing available is absent."""
     from app.models.hardware import HardwareItem
 
+    if not products:
+        return {}
     # #1491: a released row's units past the latest schedule are not units the schedule still needs, the
     # same figure get_project_schedule_products shows the panel as the cap.
-    total = session.scalar(
-        select(func.coalesce(func.sum(HardwareItem.item_quantity - HardwareItem.beyond_schedule_quantity), 0)).where(
+    rows = session.execute(
+        select(
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            func.sum(HardwareItem.item_quantity - HardwareItem.beyond_schedule_quantity),
+        )
+        .where(
             HardwareItem.project_id == project_id,
-            HardwareItem.hardware_category == hardware_category,
-            HardwareItem.product_code == product_code,
+            HardwareItem.product_code.in_({code for _, code in products}),
             HardwareItem.state == HardwareItemState.AVAILABLE,
         )
-    )
-    return int(total or 0)
+        .group_by(HardwareItem.hardware_category, HardwareItem.product_code)
+    ).all()
+    # Narrowed by code in SQL and by the pair here: a save names a handful of products, so the rows of a
+    # code under a category nobody named are few.
+    return {(category, code): int(total or 0) for category, code, total in rows if (category, code) in products}
 
 
 def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
@@ -1097,6 +1191,10 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
+    # #1957: the status below is decided under the PO's row lock, read fresh - the mirror cancels or closes
+    # a PO holding that lock, and an unlocked read let ties land on a PO it had just cancelled. The PO row
+    # before the project and the lines, the order every PO writer takes.
+    _lock_po_row(session, po)
     if po.origin != POOrigin.GP:
         raise InvalidStateTransitionError(
             "This purchase order was raised in Nexus - its lines already carry their schedule identity"
@@ -1125,6 +1223,11 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
     tied = 0
     # Units each schedule product has given earlier entries of this same save, for the refusal below.
     tied_here: dict[tuple[str, str], int] = {}
+    # #1891: what every line already has tied, and what every product the save names still has
+    # available, are each read once, on the first entry that ties, and counted down here as entries
+    # tie - not re-read per line. The project lock above keeps anyone else from moving either.
+    tied_by_line: dict[uuid.UUID, int] | None = None
+    available_by_product: dict[tuple[str, str], int] | None = None
     for entry in lines:
         line = by_id.get(entry["po_line_item_id"])
         if line is None:
@@ -1161,16 +1264,21 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
         if po.project_id is not None and quantity:
             # What is already tied counts against what is outstanding, so a registered line can be
             # topped up later (#1128) without tying more than it still has coming (#1371, #1398).
-            already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
+            if tied_by_line is None:
+                tied_by_line = tied_units_by_line(session, list(by_id))
+                available_by_product = _available_schedule_units_by_product(
+                    session,
+                    project_id=po.project_id,
+                    products={
+                        ((e.get("hardware_category") or "").strip(), (e.get("product_code") or "").strip())
+                        for e in lines
+                    },
+                )
+            already_tied = tied_by_line.get(line.id, 0)
             # A first registration records what had arrived; a re-registration uses what was recorded.
             before = line.received_before_registration if line.nexus_registered else line.received_quantity
             outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied, before)
-            available = _available_schedule_units(
-                session,
-                project_id=po.project_id,
-                hardware_category=hardware_category,
-                product_code=product_code,
-            )
+            available = available_by_product.get((hardware_category, product_code), 0)
             cap = min(outstanding, available)
             if quantity > cap:
                 # #1372: two lines for one product draw on one schedule. Say when earlier lines of this
@@ -1208,6 +1316,8 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             tied += linked
             key = (hardware_category, product_code)
             tied_here[key] = tied_here.get(key, 0) + linked
+            tied_by_line[line.id] = tied_by_line.get(line.id, 0) + linked
+            available_by_product[key] = available_by_product.get(key, 0) - linked
 
     session.flush()
     return po, tied
@@ -1319,11 +1429,16 @@ def get_po_statistics(
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
     cancelled. `origin` narrows the counts the way the register's origin filter narrows its rows
-    (#1358), so the status strip counts what the table shows."""
+    (#1358), so the status strip counts what the table shows.
+
+    #1886: every way a PO becomes CANCELLED also soft-deletes it (cancel_po, the GP sync's stage), so
+    `cancelled` counts soft-deleted CANCELLED rows too - it was always 0. They stay out of `total`, as
+    they stay out of the unfiltered register; every other status still counts live rows only."""
+    live = PurchaseOrder.deleted_at.is_(None)
     stmt = (
-        select(PurchaseOrder.status, func.count())
-        .where(PurchaseOrder.deleted_at.is_(None))
-        .group_by(PurchaseOrder.status)
+        select(PurchaseOrder.status, live, func.count())
+        .where(or_(live, PurchaseOrder.status == POStatus.CANCELLED))
+        .group_by(PurchaseOrder.status, live)
     )
     if project_id is not None:
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
@@ -1350,11 +1465,12 @@ def get_po_statistics(
         POStatus.CLOSED: "closed",
         POStatus.CANCELLED: "cancelled",
     }
-    for status_val, count in rows:
+    for status_val, is_live, count in rows:
         key = status_key_map.get(status_val)
         if key:
-            counts[key] = count
-            counts["total"] += count
+            counts[key] += count
+            if is_live:
+                counts["total"] += count
 
     return counts
 
@@ -1391,7 +1507,13 @@ def get_purchase_orders_page(
     (page rows without line_items, {po_id: line_item_count}, total_count). The count comes from one
     grouped query over the page's ids, honoring the N+1 rules - list rows carry a scalar, not a
     collection. Detail/expand loads lines through the existing purchaseOrder(id) query."""
-    filters = [PurchaseOrder.deleted_at.is_(None)]
+    # #1886: a cancelled PO is always soft-deleted too (cancel_po, the GP sync), so asking for CANCELLED
+    # lets the soft-deleted CANCELLED rows through - the Cancelled segment listed nothing. Only those: a
+    # soft-deleted row of any other status, and every soft-deleted row on an unfiltered page, stays out.
+    if statuses and POStatus.CANCELLED in statuses:
+        filters = [or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED)]
+    else:
+        filters = [PurchaseOrder.deleted_at.is_(None)]
     if company is not None:
         filters.append(PurchaseOrder.company == company)
     if statuses:
@@ -1496,6 +1618,14 @@ def registration_digest(session: Session, po_id: uuid.UUID) -> str | None:
 
 
 QUEUED_REGISTRATION_EDIT_REFUSAL = "This PO's registration is queued for GP, so it can't be changed until it posts."
+LIVE_REGISTRATION_EDIT_REFUSAL = (
+    "This PO is being registered in GP right now, so it can't be changed until that finishes. Reopen it in a moment."
+)
+# Never clears on its own, unlike a live attempt: only finishing the registration does (#1950).
+UNRECORDED_REGISTRATION_EDIT_REFUSAL = (
+    "GP already made a PO for this draft that Nexus never recorded, so it can't be changed. Reopen Register on "
+    "this PO to finish recording it - nothing is sent to GP again."
+)
 
 
 def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> None:
@@ -1504,8 +1634,19 @@ def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> No
     reaches GP and is overwritten. Called under the PO row lock, the order cancel and the queue take."""
     from app.repositories import gp_outbox_repository
 
-    if po.status == POStatus.DRAFT and gp_outbox_repository.queued_po_registration(session, po.id) is not None:
-        raise ConflictError(QUEUED_REGISTRATION_EDIT_REFUSAL)
+    held = gp_outbox_repository.queued_po_registration(session, po.id) if po.status == POStatus.DRAFT else None
+    if held is not None:
+        # #1948: and one that failed after GP took it, or may have - its Retry saves that snapshot too.
+        raise ConflictError(gp_outbox_repository.queued_registration_refusal(held, QUEUED_REGISTRATION_EDIT_REFUSAL))
+    # #1903: a registration waiting on GP right now is the same - its save writes back the project and
+    # lines it sent, and a project chosen meanwhile on a draft with none won over the one GP was given.
+    # So is one GP answered that was never recorded here. A refused or failed attempt lets its claim go.
+    if po.status != POStatus.DRAFT:
+        return
+    if _registration_claim_is_live(po, datetime.utcnow()):
+        raise ConflictError(LIVE_REGISTRATION_EDIT_REFUSAL)
+    if _unrecorded_gp_po_number(session, po) is not None:
+        raise ConflictError(UNRECORDED_REGISTRATION_EDIT_REFUSAL)
 
 
 def _update_po_after_receiving_started(
@@ -1618,6 +1759,13 @@ def update_po(
                     f"Project {project.project_id} belongs to {project.company}, not {po.company}",
                     field="project_id",
                 )
+            # #1949: a projectless draft's lines were stored booking to no job, there being none, and
+            # nothing moved them when it gained one - so it registered with every line off the job. A
+            # line on a project PO books to the job by default, create_po's rule; a line with no cost
+            # code of its own takes the PO's, as there.
+            for li in po.line_items:
+                li.job_cost = True
+                li.cost_code = li.cost_code or po.cost_code
         po.project_id = project_id
         # A PO moved onto a job no longer receives into the pool, so its pool kind reverts (#832).
         po.pool_kind = PoolKind.STOCK
@@ -1730,8 +1878,6 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     can still receive against it on the GP side. A registered PO is GP's record now, so unwinding one
     starts there and syncs back, rather than being something Nexus can decide on its own.
     """
-    from app.models.hardware import HardwareItem
-
     # The PO's row lock, the one a queued registration is taken under (gp_outbox_enqueue), so a cancel
     # and a registration cannot both pass their checks at once (#1166). Taken before the read below,
     # which then sees the status the lock holder left.
@@ -1750,10 +1896,16 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     # relay returns. Cancelling now would drop a PO GP is about to hold, the phantom this guard exists for.
     from app.repositories import gp_outbox_repository
 
-    if gp_outbox_repository.queued_po_registration(session, po_id) is not None:
+    held = gp_outbox_repository.queued_po_registration(session, po_id)
+    if held is not None:
+        # #1948: a registration that failed after GP took it, or may have, holds the draft as well -
+        # cancelled, GP keeps a PO that Nexus has no row for and the mirror passes over.
         raise InvalidStateTransitionError(
-            "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
-            "Once it is in GP, cancel it there."
+            gp_outbox_repository.queued_registration_refusal(
+                held,
+                "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
+                "Once it is in GP, cancel it there.",
+            )
         )
     # #1274: the same goes for a registration on its way to GP right now, or one GP already took
     # that was never recorded here.
@@ -1761,12 +1913,19 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     if gp_number is not None:
         raise InvalidStateTransitionError(
             f"GP already created PO {gp_number} for this draft, but it was not recorded here, so the draft "
-            "cannot be cancelled. Retry the registration from the window that started it, or have it reconciled."
+            "cannot be cancelled. Reopen Register on this PO to finish recording it, or have it reconciled."
         )
     if _registration_claim_is_live(po, datetime.utcnow()):
         raise InvalidStateTransitionError(
             "This PO is being registered in GP right now, so it cannot be cancelled. Once it is in GP, cancel it there."
         )
+
+    _cancel_draft(session, po)
+    return po
+
+
+def _cancel_draft(session: Session, po: PurchaseOrder) -> None:
+    from app.models.hardware import HardwareItem
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()
@@ -1784,7 +1943,19 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
         )
 
-    return po
+
+def cancel_draft_gp_po_already_in_nexus(session: Session, po_id: uuid.UUID) -> None:
+    """Cancel the draft of a held registration let go because its GP PO is already in Nexus (#1948).
+
+    Cancelled as any draft is, ties released, rather than left a draft: Register on it would push a second
+    GP PO for an order GP already holds under the mirrored copy. The buyer works from that PO instead.
+    The caller holds the PO's row lock."""
+    po = session.get(PurchaseOrder, po_id, populate_existing=True)
+    if po is None or po.deleted_at is not None or po.status != POStatus.DRAFT:
+        return
+    po.registering_key = None
+    po.registering_since = None
+    _cancel_draft(session, po)
 
 
 # #1274: how long a registration attempt holds its draft. The attempt makes two relay round trips at
@@ -1817,6 +1988,42 @@ def _unrecorded_gp_po_number(session: Session, po: PurchaseOrder) -> str | None:
     return str((row.relay_result or {}).get("po_number") or "") or "(number not recorded)"
 
 
+def unrecorded_registration(session: Session, po: PurchaseOrder) -> tuple[str, str] | None:
+    """The claiming attempt's key and GP's PO number, for a draft GP answered that Nexus never recorded
+    (#1950). The key lived only in the dialog that pushed it; handed back, reopening Register resumes it."""
+    if po.status != POStatus.DRAFT or po.deleted_at is not None or po.registering_key is None:
+        return None
+    gp_number = _unrecorded_gp_po_number(session, po)
+    return (po.registering_key, gp_number) if gp_number is not None else None
+
+
+# #1950: where the online push keeps the context it sent beside GP's answer in the ledger. Nexus's own key,
+# never GP's; the resume takes it off again before the answer is saved (`schemas/po.py`).
+REGISTRATION_PUSHED_CONTEXT_KEY = "nexus_persist_context"
+
+
+def _refuse_a_key_gp_answered_for_another_po(session: Session, po: PurchaseOrder, key: str) -> None:
+    """A key GP already answered resumes only the registration it answered (#1962).
+
+    The resume saves GP's answer onto the draft it claims, from the context kept with the answer where there
+    is one. Any draft with no claim took the key, so one PO's answer - another company's included - could be
+    recorded against a second PO, or the context's own PO registered under the caller's. The key's answer is
+    this PO's only while its claim is still under the key, or a write is held under the key for it, and the
+    context kept with the answer, where there is one, is for this PO."""
+    from app.models.gp_write import GpWriteIdempotency
+    from app.repositories import gp_outbox_repository
+
+    ledger = session.get(GpWriteIdempotency, key)
+    if ledger is None or ledger.relay_result is None or ledger.result_id is not None:
+        return
+    pushed = (ledger.relay_result or {}).get(REGISTRATION_PUSHED_CONTEXT_KEY)
+    pushed_po_id = pushed.get("po_id") if isinstance(pushed, dict) else None
+    held = gp_outbox_repository.registration_for_key(session, key)
+    ours = po.registering_key == key or (held is not None and held.entity_key == f"po:{po.id}")
+    if not ours or (pushed_po_id is not None and pushed_po_id != str(po.id)):
+        raise ValidationError("This registration key was already used for another PO.", field="idempotency_key")
+
+
 def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
     """Take the draft for one registration attempt, under the PO's row lock (#1274).
 
@@ -1839,9 +2046,14 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
         raise InvalidStateTransitionError(
             f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
         )
-    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key) is not None:
+    _refuse_a_key_gp_answered_for_another_po(session, po, key)
+    held = gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key)
+    if held is not None:
+        # #1948: so does a failed one GP took or may have; a second key would make a second GP PO.
         raise InvalidStateTransitionError(
-            "This PO's registration is already queued and will post to GP when the relay is back"
+            gp_outbox_repository.queued_registration_refusal(
+                held, "This PO's registration is already queued and will post to GP when the relay is back"
+            )
         )
     now = datetime.utcnow()
     # A claim whose attempt GP already answered never goes stale (#1274 review). Another window is not
@@ -1852,9 +2064,9 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
         gp_number = _unrecorded_gp_po_number(session, po)
         if gp_number is not None:
             raise InvalidStateTransitionError(
-                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Retry the "
-                "registration from the window that started it, or have it reconciled; registering again "
-                "would create a second PO in GP."
+                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Reopen "
+                "Register on this PO to finish recording it, or have it reconciled; registering again under "
+                "a new attempt would create a second PO in GP."
             )
     if _registration_claim_is_live(po, now) and po.registering_key != key:
         raise InvalidStateTransitionError(
@@ -1909,6 +2121,7 @@ def update_line_item_unit_cost(
     # #1172: zero is a no-charge line, which drafting and registration already accept.
     if unit_cost < 0:
         raise ValidationError("Unit cost cannot be negative", field="unit_cost")
+    refuse_unit_cost_too_large(unit_cost)
     if unit_cost_past_cents(unit_cost):
         raise ValidationError("GP keeps a unit cost to the cent - use at most 2 decimal places", field="unit_cost")
 
@@ -2195,6 +2408,9 @@ _DOC_DATA_TEXT_FIELDS = (
     "tax_label",
 )
 _DOC_DATA_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount", "tariff_amount")
+# #1885: the totals GP fills. Null is stored as null - the buyer did not type it - so the next open
+# prefills GP's figure; tariff is Nexus's own and still reads null as 0.
+_DOC_DATA_GP_MONEY_FIELDS = ("freight", "miscellaneous", "tax_amount")
 _DOC_DATA_BOOL_FIELDS = ("include_fsc", "include_usa_tariff", "include_customs")
 
 
@@ -2235,7 +2451,9 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
             # Bounded like the order-time costs (#1207): a negative or a column-overflowing amount is a
             # field error, not a numeric overflow masked as a server error at flush.
             amount = _coerce_order_cost(value, key)
-            setattr(data, key, amount if amount is not None else Decimal("0"))
+            if amount is None and key not in _DOC_DATA_GP_MONEY_FIELDS:
+                amount = Decimal("0")
+            setattr(data, key, amount)
 
     # #1236: the trade discount stays null until a value is sent, so a document saved before it existed
     # still prefills GP's discount; a sent value is stored as given (0 included).
@@ -2252,8 +2470,9 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
             setattr(data, key, bool(fields[key]))
 
     if "currency" in fields:
-        currency = (fields["currency"] or "CAD").strip().upper()
-        data.currency = currency if currency in ("CAD", "USD") else "CAD"
+        # #1885: null stays null (the buyer did not pick one); anything else is CAD or USD.
+        currency = (fields["currency"] or "").strip().upper()
+        data.currency = (currency if currency in ("CAD", "USD") else "CAD") if currency else None
 
     if "required_by_override" in fields:
         data.required_by_override = fields["required_by_override"]

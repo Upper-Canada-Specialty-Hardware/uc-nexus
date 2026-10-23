@@ -18,16 +18,18 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import inspect as sa_inspect
 
 from app import auth
 from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, SHOP_ASSEMBLY_MANAGERS
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
+from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
-from app.repositories import import_repository, user_repository, warehouse_admin_repository
+from app.repositories import import_repository, shop_assembly_repository, user_repository, warehouse_admin_repository
 from app.schemas import shop_assembly as shop_assembly_module
 from main import schema
-from tests.shop_assembly_helpers import with_schedule
+from tests.shop_assembly_helpers import batch_request, with_schedule
 
 REQUEST_FIELDS = """
   id
@@ -319,6 +321,70 @@ def test_rejecting_a_batched_request_is_refused_with_its_code(as_manager, db_ses
     )
     assert result.errors
     assert result.errors[0].extensions["code"] == "INVALID_STATE_TRANSITION"
+
+
+# --- the landing's stages read (#1856) ----------------------------------------------------------
+
+
+@pytest.fixture
+def spied_reads(monkeypatch):
+    """How often the list read asks for the pulls' statuses, and a return note that must not be built."""
+    calls = {"pull_statuses": 0, "return_notes": 0}
+    real_statuses = shop_assembly_repository.get_pull_statuses
+    real_notes = shop_assembly_repository.get_return_notes
+
+    def statuses(session, requests):
+        calls["pull_statuses"] += 1
+        return real_statuses(session, requests)
+
+    def notes(session, requests):
+        calls["return_notes"] += 1
+        return real_notes(session, requests)
+
+    monkeypatch.setattr(shop_assembly_repository, "get_pull_statuses", statuses)
+    monkeypatch.setattr(shop_assembly_repository, "get_return_notes", notes)
+    return calls
+
+
+def test_the_stages_read_loads_only_what_the_stage_needs(as_manager, db_session, spied_reads):
+    """`{ id stage }` is the landing gauge's whole ask. It gets the right rung off the batches alone,
+    reads the pulls once, and builds no return note - the lines, openings and batch items that cost
+    are never loaded."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    sar = _raise_request(db_session, project, qty=2)
+    batch_request(db_session, sar.id)  # every opening: the request closes out, its pull waiting
+    db_session.flush()
+    db_session.expire_all()
+
+    result = _execute("{ shopAssemblyRequests(status: APPROVED) { __typename id stage } }")
+
+    assert result.errors is None, result.errors
+    assert {"id": str(sar.id), "stage": "ACCEPTED", "__typename": "ShopAssemblyRequest"} in result.data[
+        "shopAssemblyRequests"
+    ]
+    assert spied_reads == {"pull_statuses": 1, "return_notes": 0}
+    assert {"items", "openings"} <= sa_inspect(db_session.get(ShopAssemblyRequest, sar.id)).unloaded
+
+
+def test_a_read_asking_for_more_than_the_stage_still_gets_it_all(as_manager, db_session, spied_reads):
+    """The contract is unchanged: a field past the light ones, even through a fragment, takes the full read."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    sar = _raise_request(db_session, project, qty=2)
+    batch_request(db_session, sar.id)
+    db_session.flush()
+
+    result = _execute(
+        "{ shopAssemblyRequests(status: APPROVED) { id stage ...More } }"
+        " fragment More on ShopAssemblyRequest { openings { openingNumber } }"
+    )
+
+    assert result.errors is None, result.errors
+    row = next(r for r in result.data["shopAssemblyRequests"] if r["id"] == str(sar.id))
+    assert row["stage"] == "ACCEPTED"
+    assert [o["openingNumber"] for o in row["openings"]] == ["A01", "A02"]
+    assert spied_reads == {"pull_statuses": 1, "return_notes": 1}
 
 
 # --- the role gate ------------------------------------------------------------------------------

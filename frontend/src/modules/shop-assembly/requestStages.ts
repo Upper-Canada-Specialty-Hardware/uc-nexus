@@ -14,6 +14,13 @@ export type RequestStage = 'REQUESTED' | 'ACCEPTED' | 'PULLING' | 'DONE' | 'REJE
 
 export const STAGE_ORDER: RequestStage[] = ['REQUESTED', 'ACCEPTED', 'PULLING', 'DONE'];
 
+/**
+ * #1888: a board's finished tabs (worked or accepted, and rejected) only accumulate, so both boards
+ * read them one server page at a time, newest first, as pull history does (#1268); a full page means
+ * older ones exist and Load more is offered. The live tabs read every request they hold.
+ */
+export const HISTORY_PAGE_SIZE = 200;
+
 export const STAGE_LABEL: Record<RequestStage, string> = {
   REQUESTED: 'Requested',
   ACCEPTED: 'Accepted',

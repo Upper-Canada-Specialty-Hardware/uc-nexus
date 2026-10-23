@@ -23,11 +23,20 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
+import httpx
 import pytest
 
-from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNERS, ForbiddenError, caller_company, tenant_scope
+from app.auth import (
+    NEXUS_ADMIN_ROLE,
+    TENANT_OWNERS,
+    ForbiddenError,
+    caller_company,
+    caller_demo_mode,
+    caller_roles,
+    tenant_scope,
+)
 from app.auth_policy import ROOT_FIELD_POLICY
-from app.errors import NotFoundError, ValidationError
+from app.errors import AppError, NotFoundError, ValidationError
 from app.models.enums import POStatus, PullRequestSource, PullRequestStatus, ShippingOutRequestStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
@@ -44,6 +53,7 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from app.repositories import gp_po_sync_repository as sync_repo
+from app.repositories import user_repository as _user_repository
 from app.repositories import warehouse as warehouse_repository
 
 OTHER = "TFAKE"
@@ -116,6 +126,61 @@ def test_an_unassigned_account_is_memoised_too(monkeypatch):
     assert caller_company(ctx) is None
     assert caller_company(ctx) is None
     assert calls == ["u_1"]
+
+
+# The real one read, taken before the autouse fixture in conftest stands a stub in for it.
+_real_get_user_access = _user_repository.get_user_access
+
+
+class _FakeClerk:
+    """Stands in for the Clerk Backend API client, counting the user reads a request makes."""
+
+    def __init__(self, metadata=None, error=None):
+        self.metadata = metadata or {}
+        self.error = error
+        self.reads: list[str] = []
+
+    def get(self, path, headers=None):
+        self.reads.append(path)
+        if self.error:
+            raise self.error
+        return httpx.Response(200, json={"public_metadata": self.metadata}, request=httpx.Request("GET", path))
+
+
+def _fake_clerk(monkeypatch, **kw):
+    clerk = _FakeClerk(**kw)
+    monkeypatch.setattr(_user_repository, "_client", clerk)
+    monkeypatch.setattr(_user_repository, "_headers", lambda: {})
+    monkeypatch.setattr(_user_repository, "get_user_access", _real_get_user_access)
+    return clerk
+
+
+def test_a_scoped_request_reads_clerk_once_for_roles_company_and_demo(monkeypatch):
+    """#1894: roles and the company were read apart, two `GET /users/{id}` calls in series on every
+    scoped request. One read now fills every memo, however many root fields ask."""
+    clerk = _fake_clerk(monkeypatch, metadata={"roles": ["Warehouse Manager"], "company": " tubc "})
+
+    class _Scoped:
+        context = {"request": None, "_auth_user_id": "u_1"}
+
+    for _ in range(3):
+        assert tenant_scope(_Scoped) == "TUBC"
+    assert caller_roles(_Scoped.context) == ["Warehouse Manager"]
+    assert caller_demo_mode(_Scoped.context) is False
+    assert clerk.reads == ["/users/u_1"]
+
+
+def test_a_clerk_failure_reading_roles_is_named(monkeypatch):
+    """#1894: the roles read surfaced a raw httpx error, an opaque 500, where every other metadata read
+    answers CLERK_UNAVAILABLE."""
+    _fake_clerk(monkeypatch, error=httpx.ConnectError("down"))
+
+    with pytest.raises(AppError) as e:
+        caller_roles({"request": None, "_auth_user_id": "u_1"})
+    assert e.value.code == "CLERK_UNAVAILABLE"
+    with pytest.raises(AppError) as e:
+        _user_repository.get_user_roles("u_1")
+    assert e.value.code == "CLERK_UNAVAILABLE"
 
 
 # --- updateUserCompany -------------------------------------------------------------------------
@@ -851,6 +916,32 @@ def test_a_null_project_is_not_a_scope_failure(db_session):
     tenancy.require_project_in_scope(db_session, None, "TUBC")
 
 
+def test_many_project_ids_are_checked_in_one_read_and_refused_like_one(db_session, two_companies):
+    """#1893: a multi-project read checks every id in one statement, and names the first id in the
+    order given that is another company's or missing, as the single check would have."""
+    from sqlalchemy import event
+
+    mine, theirs, missing = two_companies["mine"].id, two_companies["theirs"].id, uuid.uuid4()
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        tenancy.require_projects_in_scope(db_session, [mine, mine], "TUBC")
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+    assert len(statements) == 1
+
+    with pytest.raises(NotFoundError, match=f"Project {missing} not found"):
+        tenancy.require_projects_in_scope(db_session, [mine, missing, theirs], "TUBC")
+    with pytest.raises(NotFoundError, match=f"Project {theirs} not found"):
+        tenancy.require_projects_in_scope(db_session, [theirs, missing], "TUBC")
+    tenancy.require_projects_in_scope(db_session, [mine, theirs, missing], None)
+    tenancy.require_projects_in_scope(db_session, [], "TUBC")
+
+
 def test_a_stock_po_takes_the_callers_company(db_session):
     po = po_repository.create_po(
         db_session,
@@ -1111,15 +1202,21 @@ def test_a_request_whose_pull_is_finished_is_not_open(db_session, two_companies)
     assert detail["open_shipping_request_count"] == 0
 
 
-def test_a_soft_deleted_po_is_not_counted(db_session, two_companies):
+def test_a_soft_deleted_po_is_not_counted_unless_it_is_cancelled(db_session, two_companies):
+    """Every path to cancelled soft-deletes the PO, so leaving every deleted row out read Cancelled as 0
+    for good (#1886): a cancelled PO is counted, as the register counts it; a deleted one of any other
+    status is not."""
     project = two_companies["mine"]
     cancelled = _po(db_session, "TUBC", project=project, status=POStatus.CANCELLED)
     cancelled.deleted_at = datetime.utcnow()
+    deleted_draft = _po(db_session, "TUBC", project=project, status=POStatus.DRAFT)
+    deleted_draft.deleted_at = datetime.utcnow()
     db_session.flush()
 
-    detail = project_repository.get_admin_project_detail(db_session, project.id)
+    counts = dict(project_repository.get_admin_project_detail(db_session, project.id)["po_counts_by_status"])
 
-    assert POStatus.CANCELLED not in dict(detail["po_counts_by_status"])
+    assert counts.get(POStatus.CANCELLED) == 1
+    assert POStatus.DRAFT not in counts
 
 
 def test_the_detail_is_none_for_a_project_that_does_not_exist(db_session):

@@ -28,6 +28,7 @@ import {
   GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
+  GET_PROJECT_SHIP_TO,
   SUGGEST_VENDOR_FOR_MANUFACTURER,
   UPDATE_PO,
   UPDATE_PO_NOTES,
@@ -48,13 +49,15 @@ import type { PoolKind } from '../../types/poolKind';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
-import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
+import { userMessage } from '../../graphql/userMessage';
+import { extractGpError, isRelayOpUnsupported, NETWORK_ERROR, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
 import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
 import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './SpreadsheetPastePanel';
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { computeRegisterTotals, formatMoney } from './registerTotals';
+import { parseUnitCost, unitCostProblem } from './unitCost';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -458,8 +461,29 @@ export default function GpPurchaseOrderDialog({
   const relayConnected = relayStatus === true;
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
-  const isJob = !!projectId && !!selectedProject;
-  const jobNumber = selectedProject?.projectId ?? null;
+  // #1877: the GP verdict registering warns and blocks on comes off the draft's own project, archived
+  // included. Off the picker list, an archived job closed in GP showed no warning and offered Register.
+  // The list is the source only for a project picked here, on a draft that had none.
+  const verdictProject =
+    isRegister && registerPo?.project && registerPo.project.id === projectId ? registerPo.project : selectedProject;
+  // #1843: registering reads the draft's project by its id rather than off the picker list. The list
+  // leaves archived projects out - and an archived job's drafts keep working (set_project_archived) -
+  // and while it was loading or had failed, a job draft read as a stock one: registered with no cost
+  // codes and no line booked to the job. The list stays for picking a project on a draft that has none.
+  const {
+    data: jobProjectData,
+    error: jobProjectError,
+    refetch: refetchJobProject,
+  } = useQuery<{ projectShipTo: { id: string; projectId: string } | null }>(GET_PROJECT_SHIP_TO, {
+    variables: { projectId },
+    skip: !open || !isRegister || !projectId,
+  });
+  const jobProject =
+    isRegister && jobProjectData?.projectShipTo?.id === projectId ? jobProjectData.projectShipTo : null;
+  const isJob = !!projectId && (isRegister ? !!jobProject : !!selectedProject);
+  // Registering waits until the draft's project has been read: it decides the job and its cost codes.
+  const projectUnread = isRegister && !!projectId && !jobProject;
+  const jobNumber = (isRegister ? jobProject?.projectId : selectedProject?.projectId) ?? null;
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
   // with a direct pick from this list, snapshotted onto the PO.
@@ -710,8 +734,10 @@ export default function GpPurchaseOrderDialog({
     }
     if (seededRef.current) return;
     seededRef.current = true;
-    // Fresh open = fresh user action, so start a new idempotency key on the next submit.
-    idempotencyKeyRef.current = null;
+    // Fresh open = fresh user action, so start a new idempotency key on the next submit - unless GP already
+    // made a PO for this draft that Nexus never recorded (#1950): its attempt's key is reused, as a
+    // receipt's approvalIdempotencyKey is, so Register finishes that registration instead of pushing again.
+    idempotencyKeyRef.current = registerPo?.registeringKey ?? null;
     // #490: a draft raised with a cost code arrives at register with it already chosen. Falls back
     // to blank for a draft that carries none, and the stale-code check below still applies.
     setCostCode(registerPo?.costCode ?? '');
@@ -738,6 +764,9 @@ export default function GpPurchaseOrderDialog({
       setContact('');
       setContactEdited(false);
       setComment('');
+      // #1949: a project draft's job cost is seeded as stored. The draft that gained its project after
+      // it was raised had its lines put on the job by the save that gave it one (`update_po`), so a
+      // project PO whose lines are all off the job is one the buyer set that way, and stays so.
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -756,6 +785,10 @@ export default function GpPurchaseOrderDialog({
         uofm: li.uofm || DEFAULT_UOFM,
         jobCost: li.jobCost,
         manufacturer: li.manufacturer ?? null,
+        // #1910: a draft's custom-item line keeps its catalog link. Without it the line unlocked and
+        // registering sent no custom item, so GP's line - and the stock received on it - lost the
+        // catalog entry that describes it.
+        catalogItemId: li.customInventoryItemId ?? undefined,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey((rows.length || 1) + 1);
@@ -1021,13 +1054,11 @@ export default function GpPurchaseOrderDialog({
             ? 'Must be >= 1'
             : 'Whole number';
       } else if (parseInt(qtyText, 10) < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
-      // Number() rather than parseFloat for the same reason: "12 ea" is not a price of 12.
-      const costText = li.unitCost.trim();
-      const cost = costText === '' ? NaN : Number(costText);
-      if (isNaN(cost)) errs[`li_${i}_cost`] = costText ? 'Not a number' : 'Must be >= 0';
-      else if (cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
-      // #1394: GP keeps a unit cost to the cent and refuses more places at the line; trailing zeros are fine.
-      else if ((costText.split('.')[1] ?? '').replace(/0+$/, '').length > 2) errs[`li_${i}_cost`] = 'To the cent';
+      // Read whole for the same reason: "12 ea" is not a price of 12. #1912: through the rule every unit
+      // cost box shares, so "1,250.00" is 1250 here and wherever else it is typed. To the cent (#1394) and
+      // within what the line's cost column holds (#1936).
+      const costProblem = unitCostProblem(li.unitCost);
+      if (costProblem) errs[`li_${i}_cost`] = costProblem;
       // A pasted unit that is not one of GP's own would be refused at registration. Only checked on
       // pasted lines, and only once GP's list is known: a line typed here picks from that list.
       if (pastedKeys.has(li.key) && unitsOfMeasure.length > 0 && !unitsOfMeasure.includes(li.uofm))
@@ -1141,7 +1172,8 @@ export default function GpPurchaseOrderDialog({
       hardwareCategory: li.hardwareCategory.trim(),
       productCode: li.productCode.trim(),
       orderedQuantity: parseInt(li.orderedQuantity, 10),
-      unitCost: parseFloat(li.unitCost),
+      // #1912: as validated - parseFloat read "1,250.00" as 1.
+      unitCost: parseUnitCost(li.unitCost),
       // GP's own three per-line fields. A line that does not book to the job carries no cost code.
       costCode: isJob && li.jobCost ? li.costCode.trim() || null : null,
       uofm: li.uofm.trim() || DEFAULT_UOFM,
@@ -1280,8 +1312,10 @@ export default function GpPurchaseOrderDialog({
       setGpError(gpErr ?? { message: isRegister ? 'Failed to push PO to GP' : 'Failed to create the draft PO' });
       // The no-duplicate promise holds when GP rejected the PO (the relay rolls the whole PO back) and
       // when the relay is too old to serve the call (nothing was sent at all). It does not hold for a
-      // timeout or a dropped connection, where GP may be holding the PO, so it is not made for those.
-      const mayHoldInGp = gpErr?.code === 'RELAY_TIMEOUT' || gpErr?.code === 'RELAY_UNAVAILABLE';
+      // timeout or a dropped connection, where GP may be holding the PO, so it is not made for those -
+      // nor when this browser lost its own connection to Nexus mid-write (#1933).
+      const mayHoldInGp =
+        gpErr?.code === 'RELAY_TIMEOUT' || gpErr?.code === 'RELAY_UNAVAILABLE' || gpErr?.code === NETWORK_ERROR;
       const registerFailureText = mayHoldInGp
         ? 'Could not complete the PO in GP - see the error detail below.'
         : "Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate.";
@@ -1465,10 +1499,10 @@ export default function GpPurchaseOrderDialog({
   // #425: only REGISTER is blocked, not draft creation. A draft touches nothing in GP, and forbidding
   // it would stop purchasing preparing the order that becomes registerable the moment accounting
   // fixes the job. Registering is the act that stamps the bad account onto the PO line.
-  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(selectedProject);
+  const gpSetupBlocksRegister = isRegister && isGpSetupBroken(verdictProject);
   // #730: GP refuses a PO REGISTRATION on a job it holds as inactive, closed or missing. The picker
   // already greys such projects out, so this only catches a draft saved against one before it closed.
-  const gpJobBlocksRegister = isRegister && isGpJobNotOpen(selectedProject);
+  const gpJobBlocksRegister = isRegister && isGpJobNotOpen(verdictProject);
 
   // #833: the grid's errors, with every pasted line checked live instead of waiting for a save, and
   // the count of flagged cells the paste summary reports.
@@ -1524,7 +1558,7 @@ export default function GpPurchaseOrderDialog({
       <Button
         variant="contained"
         onClick={handleSubmit}
-        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister || gpJobBlocksRegister}
+        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister || gpJobBlocksRegister || projectUnread}
       >
         {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
@@ -1601,8 +1635,34 @@ export default function GpPurchaseOrderDialog({
           <GpErrorAlert error={gpError} onClose={() => setGpError(null)} />
         </Box>
       )}
-      {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
-      {isRegister && <GpJobNotOpenBanner project={selectedProject} action="registering it in GP" dense />}
+      {projectUnread && (
+        <Alert
+          severity={jobProjectError ? 'error' : jobProjectData ? 'warning' : 'info'}
+          sx={{ mb: 2 }}
+          action={
+            jobProjectData || jobProjectError ? (
+              <Button color="inherit" size="small" onClick={() => void refetchJobProject().catch(() => undefined)}>
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          {jobProjectError
+            ? `Couldn't read this draft's project, so its job can't be checked and it can't register yet. ${userMessage(jobProjectError, { reading: true })}`
+            : jobProjectData
+              ? "This draft's project couldn't be found, so it can't register - it would go to GP with no job or cost codes."
+              : "Reading this draft's project - it registers once its job is known."}
+        </Alert>
+      )}
+      {isRegister && registerPo?.registeringKey && (
+        <Alert severity="warning" sx={{ mb: 2 }} data-testid="unrecorded-registration">
+          GP already made PO {registerPo.registeringGpPoNumber} for this draft, but it was not recorded here.
+          Register finishes recording it - nothing is sent to GP again. Leave the form as it was registered:
+          what GP was sent is saved where Nexus kept it, and otherwise what is entered here is.
+        </Alert>
+      )}
+      {isRegister && <GpSetupQuarantineBanner project={verdictProject} action="registering it in GP" dense />}
+      {isRegister && <GpJobNotOpenBanner project={verdictProject} action="registering it in GP" dense />}
       {/* Issue #216: GP registration happens as YOUR buyer identity. Drafting (issue #256) is open
           to everyone, so this gates register mode only. */}
       {isRegister && !gpBuyerId && (
@@ -1624,7 +1684,15 @@ export default function GpPurchaseOrderDialog({
             badged in the option list, not hidden from it - what it cannot take is a registration. */}
         <ProjectPicker
           value={selectedProject}
-          onChange={(p) => setProjectId(p?.id ?? '')}
+          onChange={(p) => {
+            // #1949: a projectless draft given its project here - its lines were all off the job for
+            // want of one, so picking the job puts them on it, as the backend does when a save gives
+            // a draft its project.
+            if (isRegister && p && !projectId) {
+              setLineItems((prev) => (prev.every((li) => !li.jobCost) ? prev.map((li) => ({ ...li, jobCost: true })) : prev));
+            }
+            setProjectId(p?.id ?? '');
+          }}
           label={isRegister ? 'Project' : 'Project (Optional)'}
           placeholder="Search by project number or name, or leave empty for a stock PO"
           disabled={projectLocked}

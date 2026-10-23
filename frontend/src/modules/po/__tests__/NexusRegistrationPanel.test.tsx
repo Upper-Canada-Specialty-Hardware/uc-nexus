@@ -127,6 +127,19 @@ it('preselects the schedule product whose code is in the GP description', async 
   await waitFor(() => expect((picker as HTMLSelectElement).value).toBe('Hinges :: HG-100'));
 });
 
+// #1848: a failed read left every picker at "Not registered" alone, with nothing saying why.
+it('says the schedule products failed to load, above the grid, with a retry', async () => {
+  const failing: MockedResponse = {
+    request: { query: GET_PROJECT_SCHEDULE_PRODUCTS, variables: { projectIds: ['p1'] } },
+    error: new Error('Network down'),
+    maxUsageCount: Number.POSITIVE_INFINITY,
+  };
+  renderPanel(makePo(), [failing]);
+
+  expect(await screen.findByText(/couldn.t load this job's schedule products/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+});
+
 it('defaults the tie quantity to what is still outstanding', async () => {
   // 5 ordered, 2 already received: 3 outstanding, and the schedule has plenty left.
   const po = makePo({ lineItems: [makeLineItem({ id: 'li-1', receivedQuantity: 2 })] });

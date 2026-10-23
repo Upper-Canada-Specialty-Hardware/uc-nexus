@@ -4,7 +4,7 @@ import secrets
 
 from fastapi import Header, HTTPException
 
-from .config import get_settings
+from .config import get_settings, is_enrolled_secret
 from .errors import error_body
 
 # same opaque message for both the missing-header and wrong-token cases - don't leak which failed
@@ -13,6 +13,11 @@ _UNAUTH = error_body("unauthorized", "missing or invalid bearer token")
 
 def verify_token(authorization: str | None = Header(default=None)) -> None:
     expected = get_settings().auth.shared_secret
+    # An unenrolled relay authorizes nothing (#1930). The placeholder sits in the config of every relay
+    # not enrolled yet and in the public example, so "Bearer REPLACE_ME_RANDOM_TOKEN" opened the local
+    # PO and receipt endpoints to anything that could reach the port.
+    if not is_enrolled_secret(expected):
+        raise HTTPException(status_code=401, detail=_UNAUTH)
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail=_UNAUTH)
     token = authorization.removeprefix("Bearer ").strip()

@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import (
@@ -17,7 +17,7 @@ from app.errors import (
     RelayCallError,
     ValidationError,
 )
-from app.models.enums import GpJobState
+from app.models.enums import GpJobState, POStatus
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 
@@ -49,6 +49,15 @@ def list_projects_with_opening_counts(
     ).all()
     counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
     return [(p, counts.get(p.id, 0)) for p in projects]
+
+
+def count_project_openings(session: Session, project_id: uuid.UUID) -> int:
+    """One project's opening count from a single COUNT, for a resolver that builds the project
+    without its openings (#1874) - `project_to_type(include_openings=False)` reads 0 when no count is
+    passed, and that 0 lands in the client's normalized Project cache over the real figure."""
+    return int(
+        session.scalar(select(func.count()).select_from(OpeningModel).where(OpeningModel.project_id == project_id)) or 0
+    )
 
 
 def get_project(session: Session, project_uuid: uuid.UUID, *, company: str | None = None) -> ProjectModel | None:
@@ -516,8 +525,9 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     """The project plus the three rollups the admin Projects page shows when a row is opened (#637).
 
     One grouped aggregate per stat and no relationship walk (CLAUDE.md perf rules): a project with
-    9,000 openings and 400 POs costs the same four queries as an empty one. Returns None when the
-    project does not exist, which the resolver turns into a null.
+    9,000 openings and 400 POs costs the same five queries as an empty one. The opening count is one
+    of them (#1874): the page's Openings tile reads it, and the project is built without its openings.
+    Returns None when the project does not exist, which the resolver turns into a null.
     """
     from app.models.inventory import InventoryLocation
     from app.models.pull_request import PullRequest
@@ -528,9 +538,15 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     if project is None:
         return None
 
+    # #1886: every way a PO becomes CANCELLED also soft-deletes it (cancel_po, the GP sync), so the
+    # soft-deleted CANCELLED rows are let through - the Cancelled count always read 0 - as the register's
+    # strip and page let them through. A soft-deleted row of any other status stays out.
     po_counts = session.execute(
         select(PurchaseOrder.status, func.count())
-        .where(PurchaseOrder.project_id == project_id, PurchaseOrder.deleted_at.is_(None))
+        .where(
+            PurchaseOrder.project_id == project_id,
+            or_(PurchaseOrder.deleted_at.is_(None), PurchaseOrder.status == POStatus.CANCELLED),
+        )
         .group_by(PurchaseOrder.status)
     ).all()
 
@@ -552,6 +568,7 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
 
     return {
         "project": project,
+        "opening_count": count_project_openings(session, project_id),
         "po_counts_by_status": [(status, count) for status, count in po_counts],
         "inventory_on_hand": int(on_hand or 0),
         "open_shipping_request_count": int(open_requests or 0),

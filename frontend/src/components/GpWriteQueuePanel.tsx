@@ -42,6 +42,51 @@ const AMBIGUOUS_RETRY_WARNING =
   'This write may already have posted in GP. Retrying could create a duplicate. Check GP first.';
 const NORMAL_RETRY_WARNING =
   'This puts the write back on the queue with a fresh attempt budget. It will be sent as soon as the GP relay is connected.';
+const NORMAL_CANCEL_WARNING =
+  'This abandons the write. It will never reach GP, and whoever submitted it will have to redo it.';
+// #1948: a registration that may have reached GP with no answer back may already be a PO in GP. Cancelled,
+// that PO has no row here and the draft is free to be registered again - a second PO in GP.
+const MAYBE_IN_GP_CANCEL_WARNING =
+  'GP may already hold this PO - an attempt reached GP and no answer came back. Check GP first: if the PO is ' +
+  'there, cancelling leaves a PO in GP with nothing here for it, and registering the draft again makes a second one.';
+// #1945: a receipt that may be in GP never hands its draft back on its own - released, it could be approved
+// and posted again. Cancelled, the draft stays approved, holding its units, until a manager releases it.
+// #1965: only while the draft still waits on it; one whose draft moved on reads the warning below.
+const MAYBE_IN_GP_RECEIPT_CANCEL_WARNING =
+  'GP may already hold this receipt - an attempt reached GP and no answer came back. Cancelling does not send ' +
+  'its count back for review: the draft stays approved until a Warehouse Manager checks GP and, if no receipt ' +
+  'was posted, releases it from Receive Approvals under Held on GP.';
+// #1961, #1965: a receipt GP answered whose draft has moved on - its approval released while the attempt ran,
+// or the draft deleted since. GP holds it and nothing was booked here for it; once it is let go the PO's
+// received count follows GP's, so it is reconciled in GP before it is cancelled.
+const RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING =
+  'GP holds this receipt, and Nexus booked nothing for it: its draft has moved on - sent back for review, ' +
+  "approved again or deleted - so nothing here ever will. Once it is cancelled, the PO's received count here " +
+  'follows GP\'s, with nothing put into inventory for it. Reconcile it in GP first: reverse it there if those ' +
+  'units were not received this way.';
+// #1965: the same, for a receipt GP may hold - an attempt reached GP with no answer back. Its draft is not
+// held approved behind it, so the warning above about a draft that stays approved would be false.
+const MAYBE_IN_GP_RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING =
+  'GP may already hold this receipt - an attempt reached GP and no answer came back - and its draft has moved ' +
+  "on, so nothing here will book it. Once it is cancelled, the PO's received count here follows GP's. Check GP " +
+  'first: if the receipt is there, reverse it unless those units were received this way.';
+
+/** #1945, #1961, #1965: what cancelling a held receipt does, by what GP holds and whether its draft waits. */
+function receiptCancelWarning(entry: OutboxEntry): string | null {
+  if (entry.relayOp !== 'create_receipt') return null;
+  if (entry.receiptDraftMovedOn) {
+    if (entry.gpAnswered) return RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING;
+    if (entry.maybeInGp) return MAYBE_IN_GP_RECEIPT_DRAFT_MOVED_ON_CANCEL_WARNING;
+    return null;
+  }
+  return entry.maybeInGp ? MAYBE_IN_GP_RECEIPT_CANCEL_WARNING : null;
+}
+
+// #1948: a registration GP took whose PO the mirror already copied: its save can never land, and cancelling
+// it abandons nothing in GP. The draft is cancelled with it, so it is never registered a second time.
+const alreadyInNexusCancelWarning = (poNumber: string) =>
+  `GP's PO ${poNumber} is already in Nexus as a GP PO, so this registration can't be saved. Cancelling lets it ` +
+  `go and cancels its draft - nothing in GP is abandoned. Work from PO ${poNumber} from here.`;
 
 // #1216: who may retry or cancel a held write, by the GP-side op it is waiting to make - the same map
 // as `_ROLES_BY_RELAY_OP` in backend/app/schemas/gp_outbox.py, which refuses everyone else. Anything
@@ -194,16 +239,25 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         message={retryTarget?.failureKind === 'ambiguous' ? AMBIGUOUS_RETRY_WARNING : NORMAL_RETRY_WARNING}
         confirmLabel={retrying ? 'Queueing…' : 'Retry'}
         onConfirm={handleRetry}
+        // #1846: held while the retry is in flight, so a second click can't queue it twice.
+        busy={retrying}
         onCancel={() => setRetryTarget(null)}
       />
 
       <ConfirmDialog
         open={cancelTarget !== null}
         title={`Cancel "${cancelTarget?.label ?? ''}"?`}
-        message="This abandons the write. It will never reach GP, and whoever submitted it will have to redo it."
+        message={
+          cancelTarget?.alreadyInNexusAs
+            ? alreadyInNexusCancelWarning(cancelTarget.alreadyInNexusAs)
+            : cancelTarget?.relayOp === 'create_po' && cancelTarget.maybeInGp
+              ? MAYBE_IN_GP_CANCEL_WARNING
+              : (cancelTarget && receiptCancelWarning(cancelTarget)) || NORMAL_CANCEL_WARNING
+        }
         confirmLabel={cancelling ? 'Cancelling…' : 'Cancel the write'}
         confirmColor="error"
         onConfirm={handleCancel}
+        busy={cancelling}
         onCancel={() => setCancelTarget(null)}
       />
     </Box>

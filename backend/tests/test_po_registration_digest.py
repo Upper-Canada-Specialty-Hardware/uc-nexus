@@ -20,7 +20,7 @@ from app.services import gp_outbox_worker
 CHANGED = "changed after its registration was queued"
 
 
-def _queued(*, row_status="IN_FLIGHT", with_digest=True):
+def _queued(*, row_status="IN_FLIGHT", with_digest=True, maybe_in_gp=False):
     """A committed draft with one line on a project, and its registration queued with the draft's digest."""
     from app.database import SessionLocal
 
@@ -62,6 +62,7 @@ def _queued(*, row_status="IN_FLIGHT", with_digest=True):
             entity_key=f"po:{po.id}",
             label="Register PO in GP",
             project_id=project.id,
+            maybe_in_gp=maybe_in_gp,
         )
         row.status = row_status
         session.commit()
@@ -153,6 +154,26 @@ def test_a_registration_whose_draft_changed_is_not_pushed(_migrate_database, mon
         assert status == "FAILED" and kind == "po_changed"
         assert CHANGED in error and "register it again" in error
         assert _failure_notices(po_id) == 1
+    finally:
+        _cleanup(po_id, row_id)
+
+
+def test_a_changed_draft_whose_registration_may_be_in_gp_is_not_pushed_and_says_so(_migrate_database, monkeypatch):
+    """#1849: an earlier attempt timed out, so GP may hold a PO for this draft. The stale payload is still
+    never sent, and the reason no longer says nothing was sent or to register it again."""
+    po_id, line_id, row_id = _queued(maybe_in_gp=True)
+    calls: list = []
+    _relay(monkeypatch, calls)
+    try:
+        _set_line_cost(line_id, "10.50")
+
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert calls == []
+        status, error, kind = _row(row_id)
+        assert status == "FAILED" and kind == "po_changed"
+        assert error == gp_outbox_worker.REGISTRATION_CHANGED_MAYBE_IN_GP_REASON
+        assert "nothing was sent" not in error and "register it again" not in error
     finally:
         _cleanup(po_id, row_id)
 

@@ -14,6 +14,7 @@ export default function ValidationSummaryDisplay({ summary }: ValidationSummaryD
   const hasSkipped = skippedRows.length > 0;
   const hasWarnings = warnings.length > 0;
   const skippedOverflow = skippedRows.length > 10;
+  const isEmpty = totalOpenings === 0 || totalHardwareItems === 0;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
@@ -38,7 +39,15 @@ export default function ValidationSummaryDisplay({ summary }: ValidationSummaryD
         </Typography>
       </Box>
 
-      {!hasSkipped && !hasWarnings && (
+      {/* #1917: a file with nothing in it is not a success - it is the wrong export or a cut-off one. */}
+      {isEmpty && (
+        <Alert severity="error">
+          {totalOpenings === 0 ? 'No openings' : 'No hardware items'} found in this file. Check it is the
+          right export from TITAN.
+        </Alert>
+      )}
+
+      {!isEmpty && !hasSkipped && !hasWarnings && (
         <Alert severity="success">All rows parsed successfully</Alert>
       )}
 

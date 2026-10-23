@@ -98,7 +98,8 @@ function computeAvailableQty(purpose: ImportPurpose, breakdown: Map<string, numb
 // The chips, from the project-wide dashboard row. receivedQuantity is deliberately absent - it is the
 // cumulative PO-receipt count and would double-count against onHand + sentToShop + staged + shipped,
 // which is where those received units actually are now. A pull that has not been picked yet is still
-// on the shelf, so it sits in onHand until it completes - the same rule the dashboard uses.
+// on the shelf, so it sits in onHand; once picked it is off the shelf but not handed over, and those
+// units (inPick, #1939) sit with onHand until the pull completes - the same rule the dashboard uses.
 function buildLifecycleBreakdown(ds: HardwareStatusRow): Map<string, number> {
   const m = new Map<string, number>();
   const put = (key: string, qty: number) => {
@@ -107,7 +108,7 @@ function buildLifecycleBreakdown(ds: HardwareStatusRow): Map<string, number> {
   put('NOT_PURCHASED', ds.notPurchased);
   put('PO_DRAFTED', ds.poDrafted);
   put('ON_ORDER', ds.onOrder);
-  put('IN_INVENTORY', ds.onHand);
+  put('IN_INVENTORY', ds.onHand + ds.inPick);
   put('SENT_TO_SHOP', ds.sentToShop);
   put('STAGED', ds.stagedForShipping);
   put('SHIPPED_OUT', ds.shippedOut);
@@ -244,10 +245,11 @@ export function buildProductReconRows(args: {
       // reads as a phantom over-commit. For pure-PO stock the two sides are equal, so max() leaves
       // it unchanged; for migrated stock the max is the real figure, which is what stops the buyer
       // re-buying units that already exist. projectTotalReceived above stays PO receipts - that
-      // column is about receipts.
+      // column is about receipts. inPick is the units a pick took off the shelf for a pull still in
+      // progress (#1939): in no other figure until the pull is handed over.
       const existingReceived = Math.max(
         ds.receivedQuantity,
-        ds.onHand + ds.sentToShop + ds.stagedForShipping + ds.shippedOut - ds.returnedToProject,
+        ds.onHand + ds.inPick + ds.sentToShop + ds.stagedForShipping + ds.shippedOut - ds.returnedToProject,
       );
       row.existingCommitted = ds.poDrafted + ds.onOrder + existingReceived;
     } else {

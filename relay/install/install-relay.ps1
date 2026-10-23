@@ -66,16 +66,18 @@ New-Item -ItemType Junction -Path $cur -Target $appDir | Out-Null
 $curExe = Join-Path $cur "ucnexus-relay.exe"
 Write-Host "installed onedir bundle -> $appDir  (current -> $appDir)"
 
-# seed config.toml from the example if the workstation doesn't have one yet (never overwrite a real one -
-# it may hold the enrolled DPAPI secret)
+# seed config.toml if the workstation doesn't have one yet (never overwrite a real one -
+# it may hold the enrolled DPAPI secret). The seed is the minimal config the setup wizard writes (#1929):
+# everything else is baked into the build, and config.example.toml is a developer's sample whose
+# placeholder backend host and TUBC buyer have no business on a workstation.
 $destCfg = Join-Path $InstallDir "config.toml"
 if (-not (Test-Path $destCfg)) {
-    $exampleCfg = Join-Path $PSScriptRoot "..\config.example.toml"
-    if (Test-Path $exampleCfg) {
-        Copy-Item -Path $exampleCfg -Destination $destCfg -Force
-        Write-Host "seeded config.toml from config.example.toml -> $destCfg (EDIT it: [sql], [gp], [cors], then enroll)"
+    $seedCfg = Join-Path $PSScriptRoot "config.seed.toml"
+    if (Test-Path $seedCfg) {
+        Copy-Item -Path $seedCfg -Destination $destCfg -Force
+        Write-Host "seeded config.toml -> $destCfg (run enroll to set its secret)"
     } else {
-        Write-Warning "no config.example.toml beside the script; create $destCfg by hand before starting the relay."
+        Write-Warning "no config.seed.toml beside the script; enroll, which writes $destCfg."
     }
 } else {
     Write-Host "kept existing config.toml at $destCfg"

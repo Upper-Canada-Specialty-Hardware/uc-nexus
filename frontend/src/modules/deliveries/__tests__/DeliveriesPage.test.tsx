@@ -7,6 +7,8 @@ import DeliveriesPage from '../DeliveriesPage';
 import { GET_MY_DELIVERIES, MARK_SHIPMENT_PICKED_UP } from '../../../graphql/shipping';
 import { SITE_FORM_FIELDS } from '../../../types/shipmentSiteFormFields';
 
+vi.mock('../../../hooks/useIdentity', () => ({ useIdentity: () => ({ userId: 'u_dan', roles: ['Driver'] }) }));
+
 /**
  * A driver's own deliveries (#1727). Pinned: what the driver needs at the site is on the card, and the
  * one button is the next leg - picked up while scheduled, delivered once picked up.
@@ -40,6 +42,7 @@ function slip(overrides: Record<string, unknown> = {}) {
     driverUserId: 'u_dan',
     driverName: 'Dan Driver',
     photos: [],
+    items: [],
     containers: [{ __typename: 'ShipmentContainer', id: 'c-1', containerType: 'SKID', name: 'Skid 1', items: [] }],
     load: {
       __typename: 'ShipmentLoadRef',
@@ -98,4 +101,45 @@ it('marks a shipment picked up behind a confirmation and reads the list again', 
 it('says so when nothing is assigned', async () => {
   renderPage([listMock([])]);
   expect(await screen.findByText(/Nothing assigned to you right now/)).toBeInTheDocument();
+});
+
+// #1943: a return before pickup takes hardware off the truck. A container whose every line came back is
+// not going, so the driver is not told to look for it; once picked up, the truck carried what it carried.
+it('leaves a container that all came back off the truck while the shipment is scheduled', async () => {
+  const line = (id: string, code: string, quantity: number, returnedQuantity: number) => ({
+    __typename: 'PackingSlipItem',
+    id,
+    openingNumber: '101',
+    productCode: code,
+    hardwareCategory: 'HINGE',
+    quantity,
+    isManual: false,
+    returnedQuantity,
+  });
+  const placed = (id: string, code: string, quantity: number) => ({
+    __typename: 'ShipmentContainerItem',
+    id,
+    openingNumber: '101',
+    hardwareCategory: 'HINGE',
+    productCode: code,
+    quantity,
+    isManual: false,
+    position: 0,
+  });
+  const containers = [
+    { __typename: 'ShipmentContainer', id: 'c-1', containerType: 'SKID', name: 'Skid 1', items: [placed('ci-1', 'HG-1', 2)] },
+    { __typename: 'ShipmentContainer', id: 'c-2', containerType: 'BOX', name: 'Box 2', items: [placed('ci-2', 'HG-2', 3)] },
+  ];
+  const items = [line('psi-1', 'HG-1', 2, 0), line('psi-2', 'HG-2', 3, 3)];
+  renderPage([
+    listMock([
+      slip({ items, containers }),
+      slip({ id: 'ps-2', packingSlipNumber: 'PS-00413', status: 'PICKED_UP', items, containers }),
+    ]),
+  ]);
+
+  const scheduled = (await screen.findByText('PS-00412')).closest('div')!.parentElement!;
+  expect(within(scheduled).getByText(/On the truck:/).textContent).toBe('On the truck: Skid 1 (Skid)');
+  const pickedUp = screen.getByText('PS-00413').closest('div')!.parentElement!;
+  expect(within(pickedUp).getByText(/On the truck:/)).toHaveTextContent(/Skid 1 .*Box 2/);
 });

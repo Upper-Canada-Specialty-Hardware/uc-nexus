@@ -67,5 +67,24 @@ def test_a_vendor_with_no_internet_row_has_no_email():
     assert contact["email"] is None
 
 
+def test_the_purchase_address_row_is_read_first_then_the_primary():
+    """#1864: SY01200 holds one row per vendor address, and an unordered TOP 1 took any of them. The
+    ranking is pinned here, since only GP can run it: a row with an email, then the purchase address,
+    then the primary, then the rest by code - a total order, so the same vendor reads the same email."""
+    conn = _FakeConn(_Row("orders@acme.example.com", "", "Pat", "Acme"))
+    get_vendor_contact(conn, "ACME")
+    sql = " ".join(conn.cursor_obj.sql.split())
+    assert sql.startswith("SELECT TOP 1 ")
+    order_by = sql.split("ORDER BY", 1)[1]
+    has_email = order_by.index("<> ''")
+    purchase = order_by.index("i.ADRSCODE = v.VADCDPAD THEN 0")
+    primary = order_by.index("i.ADRSCODE = v.VADDCDPR THEN 1")
+    assert has_email < purchase < primary
+    assert order_by.rstrip().endswith("i.ADRSCODE")
+    # the blank test casts the text column too, never trims it raw (#1685)
+    assert "ISNULL(CAST(i.EmailToAddress AS varchar(max)), '') <> ''" in order_by
+    assert not re.search(r"RTRIM\(\s*(ISNULL\(\s*)?i\.EmailToAddress", sql)
+
+
 def test_an_unknown_vendor_reads_as_none():
     assert get_vendor_contact(_FakeConn(None), "NOBODY") is None

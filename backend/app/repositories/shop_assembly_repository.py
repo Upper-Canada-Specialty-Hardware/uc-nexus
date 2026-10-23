@@ -229,24 +229,30 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
 
 
 def _schedule_facts(
-    session: Session, project_id: uuid.UUID, opening_numbers: set[str]
+    session: Session, project_id: uuid.UUID, opening_numbers: set[str], *, still_scheduled: bool = False
 ) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], dict[str | None, int]], set[tuple[str, str]]]:
     """For the named openings: units scheduled per (opening, category, code), the same units split by
     classification value (None for unclassified), and the project's By Others products. One grouped
-    read plus the exclusion list."""
+    read plus the exclusion list.
+
+    `still_scheduled` leaves out of the first the units a revision left beyond the schedule (#1954): an
+    ordered row keeps its whole quantity when the schedule drops or lowers its product, the surplus marked
+    on it (#1527, #1825), so the gross sum still read as the schedule asking for them. The split by
+    classification stays gross - it is evidence of what the rows are, not of how many are asked for."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
     from app.repositories.request_composer import by_others_products
 
     scheduled: dict[tuple[str, str, str], int] = {}
     by_classification: dict[tuple[str, str, str], dict[str | None, int]] = {}
-    for opening_number, category, code, classification, total in session.execute(
+    for opening_number, category, code, classification, total, beyond in session.execute(
         select(
             Opening.opening_number,
             HardwareItem.hardware_category,
             HardwareItem.product_code,
             HardwareItem.classification,
             func.sum(HardwareItem.item_quantity),
+            func.sum(HardwareItem.beyond_schedule_quantity),
         )
         .join(Opening, HardwareItem.opening_id == Opening.id)
         .where(HardwareItem.project_id == project_id, Opening.opening_number.in_(opening_numbers))
@@ -259,7 +265,7 @@ def _schedule_facts(
     ).all():
         key = (opening_number, category, code)
         units = int(total or 0)
-        scheduled[key] = scheduled.get(key, 0) + units
+        scheduled[key] = scheduled.get(key, 0) + (units - int(beyond or 0) if still_scheduled else units)
         counts = by_classification.setdefault(key, {})
         value = classification.value if classification is not None else None
         counts[value] = counts.get(value, 0) + units
@@ -290,8 +296,18 @@ def _has_shop_work_evidence(
     by_others: set[tuple[str, str]],
 ) -> bool:
     """#1442: a line is judged only on evidence - schedule rows for it on that opening, or a By Others
-    product. One whose opening holds no rows for it any more is the schedule replacement's business (#342)."""
+    product. One whose opening holds no rows for it any more is off the schedule instead (#1954)."""
     return key in by_classification or (key[1], key[2]) in by_others
+
+
+# #1954: a re-upload trims a pending request only of the openings it removed (#342), so a kept opening's
+# line still says what it was owed when the request was raised - and the schedule may since have dropped
+# the product from that opening, or lowered it. The review and the batch both hold a line to the opening's
+# schedule now: no rows for it, or none it still asks for, is this reason, and the ceiling is what the
+# schedule still asks for - net of what a revision left beyond it on ordered rows. The composer and a new
+# request (`_check_lines_against_schedule`) still read the gross figure; whether they should is for the
+# product owner to rule.
+OFF_SCHEDULE_REASON = "this product is no longer on this opening's schedule, so there is nothing to assemble."
 
 
 def _refuse_if_not_shop_work(
@@ -334,25 +350,48 @@ def get_shop_assembly_requests(
     reopenable_only: bool = False,
     *,
     company: str | None = None,
+    include_lines: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_first: bool = False,
 ) -> list[ShopAssemblyRequest]:
     """List shop-assembly requests for the requests page. Defaults to PENDING.
 
     reopenable_only: keep only requests carrying at least one ACTIVE batch whose pull is still
     PENDING - the ones a discard can still act on. It is the Accepted view's filter, unchanged in
     meaning from #325 and only moved to batch granularity.
+
+    include_lines=False loads the batches alone - all a stage needs (`_stage_for`) - and leaves the
+    items, openings and batch items unloaded (#1856). Only for a caller that reads none of them.
+
+    The Worked and Rejected tabs page here (#1888), as pull history does (#1268): those requests only
+    accumulate, so they read newest first (approved or rejected at, id as the tiebreak) a page at a time
+    instead of every one and its children on each visit. `limit` None keeps the unpaged, oldest-first
+    read the Pending board relies on.
     """
     effective_status = status if status is not None else ShopAssemblyRequestStatus.PENDING
-    stmt = (
-        select(ShopAssemblyRequest)
-        .options(
+    options = (
+        [
             selectinload(ShopAssemblyRequest.items),
             selectinload(ShopAssemblyRequest.openings),
             selectinload(ShopAssemblyRequest.batches).selectinload(ShopAssemblyBatch.items),
-        )
+        ]
+        if include_lines
+        else [selectinload(ShopAssemblyRequest.batches)]
+    )
+    stmt = (
+        select(ShopAssemblyRequest)
+        .options(*options)
         .where(ShopAssemblyRequest.status == effective_status)
-        .order_by(ShopAssemblyRequest.created_at.asc())
         .execution_options(populate_existing=True)
     )
+    if newest_first:
+        decided_at = func.coalesce(
+            ShopAssemblyRequest.rejected_at, ShopAssemblyRequest.approved_at, ShopAssemblyRequest.created_at
+        )
+        stmt = stmt.order_by(decided_at.desc(), ShopAssemblyRequest.id.desc())
+    else:
+        stmt = stmt.order_by(ShopAssemblyRequest.created_at.asc())
     if project_id is not None:
         stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
     if company is not None:
@@ -370,6 +409,8 @@ def get_shop_assembly_requests(
             )
         )
         stmt = stmt.where(discardable.exists())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -429,16 +470,24 @@ def get_pull_statuses(session: Session, requests: list[ShopAssemblyRequest]) -> 
     }
 
 
-def get_request_stages(session: Session, requests: list[ShopAssemblyRequest]) -> dict[uuid.UUID, str]:
+def get_request_stages(
+    session: Session,
+    requests: list[ShopAssemblyRequest],
+    pull_status_by_id: dict[uuid.UUID, PullRequestStatus] | None = None,
+) -> dict[uuid.UUID, str]:
     """Where each request sits on the ladder, in ONE query for the whole list.
 
     A PENDING request reads REQUESTED however many batches it already has out. That is the honest
     reading of the amber "somebody has to act on this" rung: openings on it are still waiting for
     the manager, and what the warehouse is doing with an earlier batch does not change that.
+
+    A caller that already read the pull statuses (`get_pull_statuses`) passes them, and no query is
+    made (#1856): the list read used to read them twice.
     """
     if not requests:
         return {}
-    pull_status_by_id = get_pull_statuses(session, requests)
+    if pull_status_by_id is None:
+        pull_status_by_id = get_pull_statuses(session, requests)
     return {request.id: _stage_for(request, pull_status_by_id) for request in requests}
 
 
@@ -472,16 +521,29 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
     `pull_request_id`; a shop-assembly request has none, so the same question is answered off its
     CANCELLED batches instead. Purely derived, so a fresh batch over the same openings clears it for
     free. Only PENDING requests carry it - the note explains a reappearance on the manager's board.
+
+    #1854: a cancelled batch explains the board only while one of ITS openings (its items say which)
+    is still pending on the request. Once they are all batched again, or dismissed, the note goes -
+    it used to stay for as long as the request did, naming a cancellation nothing on the board came
+    back from. Read off the items and openings the callers already load, so no query is added.
     """
     notes: dict[uuid.UUID, str | None] = {r.id: None for r in requests}
-    pending = [r for r in requests if r.status == ShopAssemblyRequestStatus.PENDING]
-    cancelled_pull_ids = [
-        b.pull_request_id
-        for r in pending
-        for b in r.batches
-        if b.status == ShopAssemblyBatchStatus.CANCELLED and b.pull_request_id is not None
-    ]
-    if not cancelled_pull_ids:
+    returned: dict[uuid.UUID, ShopAssemblyBatch] = {}
+    for request in requests:
+        if request.status != ShopAssemblyRequestStatus.PENDING:
+            continue
+        waiting = {o.opening_number for o in request.openings if o.status == ShopAssemblyOpeningStatus.PENDING}
+        cancelled = [
+            b
+            for b in request.batches
+            if b.status == ShopAssemblyBatchStatus.CANCELLED
+            and b.pull_request_id is not None
+            and any(i.opening_number in waiting for i in b.items)
+        ]
+        if cancelled:
+            # The most recent cancellation is the one that explains why the request is on the board now.
+            returned[request.id] = max(cancelled, key=lambda b: b.sequence)
+    if not returned:
         return notes
 
     pulls = {
@@ -493,19 +555,13 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
                 PullRequestModel.cancelled_by,
                 PullRequestModel.cancelled_at,
                 PullRequestModel.cancellation_reason,
-            ).where(PullRequestModel.id.in_(cancelled_pull_ids))
+            ).where(PullRequestModel.id.in_([b.pull_request_id for b in returned.values()]))
         ).all()
     }
 
-    for request in pending:
-        cancelled = [
-            b for b in request.batches if b.status == ShopAssemblyBatchStatus.CANCELLED and b.pull_request_id in pulls
-        ]
-        if not cancelled:
-            continue
-        # The most recent cancellation is the one that explains why the request is on the board now.
-        latest = max(cancelled, key=lambda b: b.sequence)
-        notes[request.id] = _format_return_note(*pulls[latest.pull_request_id])
+    for request_id, batch in returned.items():
+        if batch.pull_request_id in pulls:
+            notes[request_id] = _format_return_note(*pulls[batch.pull_request_id])
     return notes
 
 
@@ -547,14 +603,27 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
     available = warehouse_repository.get_available_quantities(session, request.project_id, combos)
     # #1540: the batch refuses a line that is no longer shop work (#1442); the review flags it first, from
     # the same facts read the same way - one grouped read for every pending opening - so its Send box is
-    # off with the reason instead of being refused after the manager has composed the batch.
-    _scheduled, by_classification, by_others = _schedule_facts(session, request.project_id, pending_numbers)
+    # off with the reason instead of being refused after the manager has composed the batch. #1954: the
+    # same for a line its opening's schedule no longer lists, and a line is offered no more than it lists.
+    scheduled, by_classification, by_others = _schedule_facts(
+        session, request.project_id, pending_numbers, still_scheduled=True
+    )
+
+    def _key(item: ShopAssemblyRequestItem) -> tuple[str, str, str]:
+        return (item.opening_number, item.hardware_category, item.product_code)
 
     def _reason(item: ShopAssemblyRequestItem) -> str | None:
-        key = (item.opening_number, item.hardware_category, item.product_code)
-        if not _has_shop_work_evidence(key, by_classification, by_others):
-            return None
-        return not_shop_work_reason(key, by_classification, by_others)
+        key = _key(item)
+        if _has_shop_work_evidence(key, by_classification, by_others):
+            reason = not_shop_work_reason(key, by_classification, by_others)
+            if reason is not None:
+                return reason
+        return OFF_SCHEDULE_REASON if scheduled.get(key, 0) <= 0 else None
+
+    def _owed(item: ShopAssemblyRequestItem) -> int:
+        on_schedule = scheduled.get(_key(item), 0)
+        # An off-schedule line keeps what it was owed on show beside its reason; it takes nothing.
+        return min(item.requested_quantity, on_schedule) if on_schedule > 0 else item.requested_quantity
 
     return {
         "request": request,
@@ -566,7 +635,7 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
                         "opening_number": item.opening_number,
                         "hardware_category": item.hardware_category,
                         "product_code": item.product_code,
-                        "requested_quantity": item.requested_quantity,
+                        "requested_quantity": _owed(item),
                         "available_quantity": available.get((item.hardware_category, item.product_code), 0),
                         "not_shop_work_reason": _reason(item),
                     }
@@ -639,9 +708,9 @@ def create_shop_assembly_batch(
     # waiting openings, but not every path that changes it does - and batching it would pull site
     # hardware to the shop. Read after the request lock, so a change committed first is seen. Refused
     # only on evidence - schedule rows that are not shop work, or a By Others product: a line whose
-    # opening holds no rows for it any more is the schedule replacement's business (#342), not this.
-    _scheduled, by_classification, by_others = _schedule_facts(
-        session, request.project_id, {key[0] for key in allocations}
+    # opening holds no rows for it any more is off the schedule, refused below.
+    scheduled, by_classification, by_others = _schedule_facts(
+        session, request.project_id, {key[0] for key in allocations}, still_scheduled=True
     )
     for key in sorted(allocations):
         if not _has_shop_work_evidence(key, by_classification, by_others):
@@ -653,6 +722,21 @@ def create_shop_assembly_batch(
             then="Take the line off the batch.",
             field="lines",
         )
+    # #1954: and held to the opening's schedule now, not the request's snapshot of it - the review offers
+    # the same ceiling and flags the same lines, so only a screen older than the re-upload meets these.
+    for key in sorted(allocations):
+        on_schedule = scheduled.get(key, 0)
+        if on_schedule <= 0:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: {OFF_SCHEDULE_REASON} Take the line off the batch.",
+                field="lines",
+            )
+        if allocations[key] > on_schedule:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: cannot allocate {allocations[key]} - the opening's schedule now "
+                f"gives it {on_schedule}. {REFRESH_HINT}",
+                field="allocated_quantity",
+            )
 
     batch_openings = sorted({key[0] for key in allocations})
 
@@ -742,6 +826,11 @@ def create_shop_assembly_batch(
         opening.status = ShopAssemblyOpeningStatus.BATCHED
         opening.batch_id = batch.id
 
+    # #1855: the schedule-changed note asks for a review before batching, and the batch is the manager
+    # acting on that review, against today's schedule (the #1442 and #1954 checks above) and stock. Nothing else
+    # cleared it, so it stayed on the request for good.
+    request.integrity_note = None
+
     _close_if_nothing_pending(session, request, closed_by=created_by)
     session.flush()
     return batch
@@ -820,8 +909,16 @@ def dismiss_shop_assembly_openings(
         wanted = list(dict.fromkeys(opening_numbers))
         missing = [n for n in wanted if n not in pending]
         if missing:
+            # #1853: what a stale screen meets - Dismiss remaining sends the openings it showed, and one
+            # was batched or dismissed since. Nothing is dismissed, and the manager is told why.
+            names = ", ".join(sorted(missing))
             raise ValidationError(
-                f"Opening(s) {', '.join(sorted(missing))} are not waiting on this request.",
+                (
+                    f"Opening {names} is no longer waiting on this request"
+                    if len(missing) == 1
+                    else f"Openings {names} are no longer waiting on this request"
+                )
+                + f", so nothing was dismissed. {REFRESH_HINT}",
                 field="opening_numbers",
             )
         targets = [pending[n] for n in wanted]
@@ -861,9 +958,24 @@ def reject_shop_assembly_request(
             f"{status_label(request.status)}. {REFRESH_HINT}"
         )
     if request.batches:
+        # #1956: a pull that hasn't started can't be cancelled - its batch is discarded instead, so an
+        # unstarted batch is pointed there, by number.
+        statuses = get_pull_statuses(session, [request])
+        live = [b for b in request.batches if b.status == ShopAssemblyBatchStatus.ACTIVE]
+        unstarted = sorted(b.batch_number for b in live if statuses.get(b.pull_request_id) == PullRequestStatus.PENDING)
+        if unstarted:
+            noun = "batch" if len(unstarted) == 1 else "batches"
+            discard = f"Discard {noun} {', '.join(unstarted)} on the Shop Assembly page"
+            undo = (
+                f"{discard} to undo it"
+                if len(unstarted) == len(live)
+                else f"{discard}, cancel the pull of any batch already being pulled"
+            )
+        else:
+            undo = "Cancel the batch's pull to undo it"
         raise InvalidStateTransitionError(
-            "This request has already been batched, so it cannot be rejected whole. Cancel the "
-            "batch's pull to undo it, and dismiss whatever is left."
+            f"This request has already been batched, so it cannot be rejected whole. {undo}, and dismiss "
+            "whatever is left."
         )
 
     # #1242: a reason is required and the shop is told, as a shipping rejection does (#972).

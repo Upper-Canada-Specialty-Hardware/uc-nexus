@@ -19,7 +19,7 @@ from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
 from app.auth_policy import enforce_root_field
-from app.config import cors_allow_origins
+from app.config import cors_allow_origins, is_production_environment
 from app.database import SessionLocal
 from app.errors import AppError
 from app.models.enums import RelayEventKind
@@ -205,7 +205,88 @@ schema = strawberry.Schema(
     ],
 )
 
-graphql_app = GraphQLRouter(schema, context_getter=get_context)
+
+def _graphql_ide() -> str | None:
+    """GraphiQL off production (#1924): an in-browser console with the full schema in it is a tool for
+    developing against a test environment, not something production should hand to anyone who finds the
+    URL. Introspection itself stays open on purpose (see ResolverGuardExtension._is_root_field)."""
+    return None if is_production_environment() else "graphiql"
+
+
+def _api_docs_urls() -> dict[str, None]:
+    """FastAPI's /docs, /redoc and /openapi.json off production (#1924), for the same reason as the IDE:
+    they map every plain route to anyone who asks. Off production FastAPI keeps its defaults."""
+    if is_production_environment():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
+graphql_app = GraphQLRouter(schema, context_getter=get_context, graphql_ide=_graphql_ide())
+
+# #1921: the most a /graphql request body may carry. Strawberry reads the whole body before anything
+# looks at it, so without a cap one request could hold as much memory as it cared to send. The largest
+# legitimate requests are a single file upload - a PO document at its 20 MB cap
+# (po_repository.MAX_PO_DOCUMENT_BYTES) is ~27 MB as base64 - and an import finalize, which sends the whole
+# parsed schedule (a 25,000-item schedule is ~10 MB as JSON, and larger ones exist). Every upload mutation
+# takes one file and the frontend sends each as its own request; the cap leaves room for a schedule a few
+# times the largest seen.
+MAX_GRAPHQL_BODY_BYTES = 64 * 1024 * 1024
+
+
+class GraphQLBodyCapMiddleware:
+    """Refuse a /graphql request whose body is past MAX_GRAPHQL_BODY_BYTES with a 413 (#1921).
+
+    A declared Content-Length past the cap is refused before a byte is read. Otherwise the body is read
+    here, counting as it streams, and refused the moment it passes the cap, so a missing or lying
+    Content-Length cannot make it buffer more - the same rule /webhooks/clerk/email keeps. A body within
+    the cap is handed on whole, which costs nothing: Strawberry buffers it anyway.
+
+    Pure ASGI rather than a BaseHTTPMiddleware, which would leave the body to the route; the WebSocket
+    side of /graphql is not a request body and is passed through."""
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _is_graphql(path: str) -> bool:
+        return path == "/graphql" or path.startswith("/graphql/")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not self._is_graphql(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        # Read at call time so a test can lower it.
+        cap = MAX_GRAPHQL_BODY_BYTES
+        too_large = JSONResponse(
+            status_code=413,
+            content={"error": f"The request is larger than {cap // (1024 * 1024)} MB", "code": "PAYLOAD_TOO_LARGE"},
+        )
+        declared = dict(scope.get("headers") or []).get(b"content-length", b"").strip()
+        if declared.isdigit() and int(declared) > cap:
+            await too_large(scope, receive, send)
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the client went away before the body was done; there is nobody to answer
+            body.extend(message.get("body", b""))
+            if len(body) > cap:
+                await too_large(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
 
 
 async def drain_before_shutdown() -> None:
@@ -263,8 +344,11 @@ async def lifespan(_app: FastAPI):
                 await task
 
 
-app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan)
+app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan, **_api_docs_urls())
 
+# Added before CORS so CORS wraps it: a refused upload must still reach the browser as a 413 it can
+# read, not as a CORS failure.
+app.add_middleware(GraphQLBodyCapMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allow_origins(),
@@ -487,31 +571,31 @@ async def _record_connected(websocket: WebSocket, install_id, connected_at: date
     )
 
 
-@app.websocket("/relay-link")
-async def relay_link(websocket: WebSocket):
-    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
-    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
-    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
-    that requested it. Every other slice reaches the relay through relay_call(), never this route
-    directly."""
-    auth_header = websocket.headers.get("authorization") or ""
-    scheme, _, secret = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not secret.strip():
-        await websocket.close(code=4401)
-        return
+def _authenticate_relay_secret(secret: str):
+    """Match the presented secret to an enrolled install, or adopt it through an armed window. Returns
+    (install_id or None, adopted, armed_by).
 
+    Blocking - the lookup, the legacy rows' decrypt scan and the commit - so /relay-link runs it off the
+    event loop (#1923): on the loop, every handshake stalled every other request, and the connected
+    relay's own replies, for as long as the database took. The session opens and closes in here, in the
+    one thread that uses it."""
     adopted = False
     adopted_by: str | None = None
     with SessionLocal() as session:
-        install = relay_repository.authenticate_secret(session, secret.strip())
+        install = relay_repository.authenticate_secret(session, secret)
         if install is None:
             # No install matched. If an admin has armed an adopt window, bind the presented secret to
             # that install instead of refusing (#353 PR B): this is the only recovery path for a relay
             # whose stored secret has drifted from the one it is dialling with, when nobody can reach
             # the workstation to restart it. Adoption is consumed here, single-use.
+            #
+            # Never while another relay holds the slot (#1868): relay_link's try_register would refuse
+            # this socket anyway, after the window was spent and the presented secret bound over the
+            # install's own - the live relay's own, when the window was armed on it. Left armed, the
+            # window still adopts once the slot is free.
             window = relay_adopt.peek()
-            if window is not None:
-                install = relay_repository.adopt_secret(session, window.install_id, secret.strip(), window.armed_by)
+            if window is not None and not relay_gateway.connected:
+                install = relay_repository.adopt_secret(session, window.install_id, secret, window.armed_by)
                 if install is not None and relay_adopt.consume(window.install_id):
                     adopted = True
                     adopted_by = window.armed_by
@@ -536,6 +620,23 @@ async def relay_link(websocket: WebSocket):
         # could ever register (relayStatus stayed false).
         install_id = install.id if install is not None else None
         session.commit()
+    return install_id, adopted, adopted_by
+
+
+@app.websocket("/relay-link")
+async def relay_link(websocket: WebSocket):
+    """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
+    on the connect handshake; once verified, this holds the socket open and feeds every {id, ok,
+    result|error} reply it sends back to relay_gateway so relay_call() can correlate it to the job
+    that requested it. Every other slice reaches the relay through relay_call(), never this route
+    directly."""
+    auth_header = websocket.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        await websocket.close(code=4401)
+        return
+
+    install_id, adopted, adopted_by = await asyncio.to_thread(_authenticate_relay_secret, secret.strip())
     if install_id is None:
         # Nothing matched the presented secret. Recorded because a drifted credential is otherwise
         # invisible from this side: the relay retries forever and nothing but a log line ever says so
@@ -636,6 +737,38 @@ def _release_reset_lock(conn) -> None:
         conn.close()
 
 
+def _stored_file_keys(conn) -> list[str]:
+    """The storage key of every file a row about to be dropped names (#1925): PO documents (packing
+    slips among them) and shipment photos, the only tables whose rows stand for an object in storage.
+
+    A table the database does not have yet is skipped, the same tolerance reset_preservation gives, so a
+    half-migrated database can still be reset."""
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select
+
+    from app.models.purchase_order import PODocument
+    from app.models.shipment_photo import ShipmentPhoto
+
+    present = set(sa_inspect(conn).get_table_names())
+    keys: list[str] = []
+    for model in (PODocument, ShipmentPhoto):
+        if model.__tablename__ in present:
+            keys += list(conn.execute(select(model.s3_key)).scalars())
+    return keys
+
+
+def _delete_stored_files(keys: list[str]) -> None:
+    """Best effort, after the rebuild has committed, as demo_reset._wipe_committed does: a file left
+    behind is a few bytes nobody can reach, while a storage hiccup must not cost the reset."""
+    from app.services import storage
+
+    for key in keys:
+        try:
+            storage.delete_file(key)
+        except Exception:  # noqa: BLE001
+            logger.warning("reset-data: could not delete stored file %s", key)
+
+
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
@@ -652,7 +785,8 @@ def reset_data(request: Request):
     re-enrols on the workstation. A dev-convenience reset must not take GP down as a side effect.
 
     Projects are deliberately NOT preserved - they are re-adopted straight from GP by a forced sync
-    pass right after the rebuild, since GP owns them."""
+    pass right after the rebuild, since GP owns them. The files of the PO documents and shipment photos
+    it drops are deleted from storage with them (#1925)."""
     from alembic.config import Config
     from sqlalchemy import text
 
@@ -696,6 +830,9 @@ def reset_data(request: Request):
     try:
         with engine.connect() as conn:
             snap = reset_preservation.snapshot(conn)
+            # #1925: the drop takes the rows and leaves their files in the bucket, where nothing can
+            # reach them again. Read the keys while the rows are still there.
+            stored_keys = _stored_file_keys(conn)
 
         with engine.connect() as conn:
             conn.execute(text("DROP SCHEMA public CASCADE"))
@@ -711,6 +848,8 @@ def reset_data(request: Request):
             conn.commit()
     finally:
         _release_reset_lock(lock_conn)
+
+    _delete_stored_files(stored_keys)
 
     # Re-adopt every GP job straight after the rebuild, since GP owns them. Skipped silently when no
     # relay is connected - see run_once_blocking - and the background poll re-adopts them later.
@@ -737,67 +876,6 @@ def reset_data(request: Request):
         # different answers.
         "jobs_adopted": sync_result[1] if sync_result else None,
     }
-
-
-@app.get("/testing/clerk-sign-in")
-def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
-    """Create a Clerk sign-in token for E2E testing.
-
-    Gated twice, like /admin/reset-data (#422). TESTING_ENABLED keeps it off any deployment that is
-    not a test target, checked first so a production deployment refuses outright rather than leaking
-    whether the caller's credential would have been good enough. Then the caller must prove they are
-    already a UC Nexus Admin, or present the shared testing secret in X-Testing-Secret - the
-    bootstrap path for a deployment where no session exists yet. Auth is not optional here: every
-    environment shares the production Clerk instance, so what this mints is a real session for a real
-    staff account, a UC Nexus Admin included, and with only the environment switch this route was a
-    full impersonation primitive on any deployment where the switch was left on."""
-    import hashlib
-    import hmac
-
-    import httpx
-
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, testing_sign_in_secret_hash
-
-    if not TESTING_ENABLED:
-        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
-
-    expected_hash = testing_sign_in_secret_hash()
-    presented = (request.headers.get("x-testing-secret") or "").strip()
-    secret_ok = bool(expected_hash) and bool(presented)
-    if secret_ok:
-        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        secret_ok = hmac.compare_digest(digest, expected_hash.lower())
-    if not secret_ok:
-        try:
-            require_admin_request(request)
-        except AppError as e:
-            status = 403 if e.code == "FORBIDDEN" else 401
-            return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
-
-    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
-
-    # Find user by email
-    users_resp = httpx.get(
-        "https://api.clerk.com/v1/users",
-        headers=headers,
-        params={"email_address": email},
-    )
-    users_resp.raise_for_status()
-    users = users_resp.json()
-    if not users:
-        return JSONResponse(status_code=404, content={"error": f"No user found with email {email}"})
-
-    user_id = users[0]["id"]
-
-    # Create sign-in token
-    token_resp = httpx.post(
-        "https://api.clerk.com/v1/sign_in_tokens",
-        headers=headers,
-        json={"user_id": user_id},
-    )
-    token_resp.raise_for_status()
-    data = token_resp.json()
-    return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
 
 
 @app.post("/webhooks/clerk/email")

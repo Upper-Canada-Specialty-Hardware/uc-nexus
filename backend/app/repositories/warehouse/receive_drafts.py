@@ -27,6 +27,7 @@ from app.models.receive_draft import ReceiveDraftLineItem as ReceiveDraftLineIte
 from app.models.warehouse import Warehouse
 from app.services import notification_service
 from app.services.locking import lock_rows
+from app.services.relay_gateway import DEFAULT_TIMEOUT_SECONDS as RELAY_CALL_TIMEOUT_SECONDS
 from app.status_labels import REFRESH_HINT, status_label
 
 from .receiving import validate_receive_eligibility
@@ -37,6 +38,11 @@ from .receiving import validate_receive_eligibility
 _IN_FLIGHT_STATUSES = (ReceiveDraftStatus.APPROVING, ReceiveDraftStatus.APPROVED)
 
 MAX_REJECTION_REASON = 1000
+
+# #1945: how long an approval attempt may still be running after it took or resumed its claim: the receipt
+# relay call gives up at its timeout, and the margin covers the re-check before it and the persist after.
+# A held approval is not released inside it - the attempt may be about to book, or to post, the receipt.
+APPROVAL_ATTEMPT_SECONDS = RELAY_CALL_TIMEOUT_SECONDS + 60
 MAX_RECEIVE_NOTES = 2000
 
 
@@ -59,14 +65,17 @@ class ApprovalContext:
     re-opening a session in the middle of an async resolver just to read attributes.
     """
 
-    __slots__ = ("draft_id", "po_id", "warehouse_id", "author_name", "line_items_data")
+    __slots__ = ("draft_id", "po_id", "warehouse_id", "author_name", "line_items_data", "resumed")
 
-    def __init__(self, draft_id, po_id, warehouse_id, author_name, line_items_data):
+    def __init__(self, draft_id, po_id, warehouse_id, author_name, line_items_data, resumed=False):
         self.draft_id = draft_id
         self.po_id = po_id
         self.warehouse_id = warehouse_id
         self.author_name = author_name
         self.line_items_data = line_items_data
+        # #1945: the draft was already APPROVING under this key, so an earlier attempt may have sent its
+        # receipt to GP. The resolver must not let go of the claim on a refusal it raises itself.
+        self.resumed = resumed
 
 
 def _line_items_data(draft: ReceiveDraftModel) -> list[dict]:
@@ -158,6 +167,8 @@ def _notify_submitted(session: Session, draft: ReceiveDraftModel, po: POModel) -
             f"{draft.created_by_name} submitted a receive of {total} "
             f"{'unit' if total == 1 else 'units'} against PO {po.po_number} for approval."
         ),
+        # So deleting the draft withdraws this notice (#1898).
+        receive_draft_id=draft.id,
     )
 
 
@@ -201,6 +212,15 @@ def _draft_for_create_key(session: Session, idempotency_key: str | None) -> Rece
         .where(ReceiveDraftModel.create_idempotency_key == idempotency_key)
         .execution_options(populate_existing=True)
     ).first()
+
+
+def _replayed_on_this_po(existing: ReceiveDraftModel, po_id: uuid.UUID) -> ReceiveDraftModel:
+    """A create key's draft, handed back only to a retry on the PO it was written for (#1871). The key is
+    global, so one reused on another PO used to answer with that PO's draft - another purchase order's
+    count, possibly another company's."""
+    if existing.po_id != po_id:
+        raise ValidationError("This draft key was already used on another purchase order.", field="idempotency_key")
+    return existing
 
 
 def _assert_no_pending_draft(
@@ -277,7 +297,7 @@ def create_receive_draft(
 
     existing = _draft_for_create_key(session, idempotency_key)
     if existing is not None:
-        return existing
+        return _replayed_on_this_po(existing, po_id)
 
     if idempotency_key:
         # #1402: a retry that overlaps the first submit passes the unlocked check above, then waits on
@@ -286,7 +306,7 @@ def create_receive_draft(
         lock_rows(session, POModel, [po_id])
         existing = _draft_for_create_key(session, idempotency_key)
         if existing is not None:
-            return existing
+            return _replayed_on_this_po(existing, po_id)
 
     # After the idempotency short-circuit, never before it: a retry of the submission that wrote the
     # pending draft must get that draft back, not a conflict with itself.
@@ -343,12 +363,18 @@ def get_receive_drafts(
     created_by_user_id: str | None = None,
     *,
     company: str | None = None,
+    statuses: list[ReceiveDraftStatus] | None = None,
+    held_on_gp: bool = False,
 ) -> list[tuple]:
     """Drafts with the PO they are against, newest first.
 
     Returns pairs rather than drafts alone because every consumer renders the PO number and project
     beside the draft, and letting the converter walk a lazy `draft.purchase_order` would be one
     SELECT per row - the N+1 this codebase keeps paying for elsewhere.
+
+    `statuses` filters to any of a set (#1889): my drafts shows only the rejected and the waiting, and
+    an author's approved drafts only accumulate, so they are never read for it. Additive with `status`.
+    `held_on_gp` keeps the approvals a manager may have to release after checking GP (#1945).
     """
     stmt = (
         select(ReceiveDraftModel, POModel)
@@ -358,6 +384,14 @@ def get_receive_drafts(
     )
     if status is not None:
         stmt = stmt.where(ReceiveDraftModel.status == status)
+    if statuses:
+        stmt = stmt.where(ReceiveDraftModel.status.in_(statuses))
+    if held_on_gp:
+        # #1945: the approvals held on GP - claimed, or approved with nothing booked behind a queued receipt
+        # that stopped. Narrowed here, settled by `drafts_with_stopped_receipts` below.
+        stmt = stmt.where(
+            ReceiveDraftModel.status.in_(_IN_FLIGHT_STATUSES), ReceiveDraftModel.receive_record_id.is_(None)
+        )
     if po_id is not None:
         stmt = stmt.where(ReceiveDraftModel.po_id == po_id)
     if created_by_user_id is not None:
@@ -366,7 +400,11 @@ def get_receive_drafts(
         # Through the PO, which is already joined: a draft has a nullable warehouse but always a PO,
         # and the PO is what the receive is for.
         stmt = stmt.where(POModel.company == company)
-    return [(draft, po) for draft, po in session.execute(stmt).unique().all()]
+    rows = [(draft, po) for draft, po in session.execute(stmt).unique().all()]
+    if held_on_gp:
+        stopped = drafts_with_stopped_receipts(session, [draft for draft, _ in rows])
+        rows = [(d, po) for d, po in rows if d.status == ReceiveDraftStatus.APPROVING or d.id in stopped]
+    return rows
 
 
 def get_receive_draft(session: Session, draft_id: uuid.UUID):
@@ -559,6 +597,9 @@ def delete_receive_draft(
     if draft.created_by_user_id != actor_user_id and not actor_is_manager:
         raise ConflictError("Only the person who submitted this draft, or a Warehouse Manager, can delete it")
     slip_id = draft.packing_slip_document_id
+    # #1898: its waiting-for-approval notice goes with it, or every manager's bell keeps a draft the
+    # queue no longer holds.
+    notification_service.withdraw_receive_draft_submitted(session, draft.id)
     session.delete(draft)
     session.flush()
     if slip_id is None:
@@ -681,6 +722,30 @@ def _assert_unchanged_since(draft: ReceiveDraftModel, expected_updated_at: datet
         raise ConflictError(COUNT_CHANGED_MESSAGE, field=COUNT_CHANGED_FIELD)
 
 
+# #1963: what a fresh approval sent under a spent key is refused with. The approval that key belonged to has
+# ended - its queued receipt cancelled or failed, or GP's answer held after its claim was released - and the
+# draft came back for review since. Nothing was sent this time; the client mints a new key for the next press.
+APPROVAL_KEY_SPENT = (
+    "This approval was sent under the key of an earlier approval of this draft, which has since ended. "
+    "Nothing was sent to GP this time; approve it again to send it as a new approval."
+)
+
+
+def approval_key_spent(session: Session, key: str) -> bool:
+    """Whether a receipt approval was already written under `key` (#1963): queued on the GP write queue, or
+    answered by GP into the ledger. Only a resume - the draft still APPROVING under the key - may carry such
+    a key. A fresh claim with one would relink the dead queued row (its Retry then posting the count as it
+    was before the review) or book the ledger's answer, a receipt GP held when the approval was let go and
+    that may since have been reversed there. A key that only ever met a refusal (the claim released before
+    anything was recorded) is not spent, so the same press retried after a dropped connection still works."""
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.models.gp_write import GpWriteIdempotency
+
+    if session.get(GpWriteIdempotency, key) is not None:
+        return True
+    return session.scalar(select(GpWriteOutbox.id).where(GpWriteOutbox.idempotency_key == key).limit(1)) is not None
+
+
 def claim_for_approval(
     session: Session,
     draft_id: uuid.UUID,
@@ -697,7 +762,9 @@ def claim_for_approval(
 
     A retry carrying the same key resumes rather than conflicting: the GP idempotency ledger will
     return the already-posted receipt, so re-entering this path is exactly what should happen after a
-    dropped connection.
+    dropped connection. That resume - the draft APPROVING under the key - is the only way back into an
+    approval (`ApprovalContext.resumed`). A draft awaiting approval is a fresh one, and its key must be
+    unspent (#1963, `approval_key_spent`).
 
     `expected_updated_at` (#1497) is the draft's updated_at as the reviewer saw it. It is part of the
     claim's own WHERE, so an edit can't land between a check and the claim: a count changed since the
@@ -728,10 +795,18 @@ def claim_for_approval(
     ).rowcount
 
     draft = _get_draft(session, draft_id)
+    resumed = False
     if rowcount == 0:
         if draft.status == ReceiveDraftStatus.APPROVING and draft.approval_idempotency_key == idempotency_key:
-            # Our own interrupted approval, resuming. Fall through and hand back the context.
-            pass
+            # Our own interrupted approval, resuming. Fall through and hand back the context. #1945: the
+            # claim is stamped again, so a release waits out this attempt as it would a fresh one.
+            resumed = True
+            session.execute(
+                update(ReceiveDraftModel)
+                .where(ReceiveDraftModel.id == draft_id)
+                # Held, as the claim holds it (#1497): the resume changes no count.
+                .values(reviewed_at=datetime.utcnow(), updated_at=ReceiveDraftModel.updated_at)
+            )
         elif draft.status == ReceiveDraftStatus.APPROVING:
             raise ConflictError(f"{draft.reviewed_by_name or 'Another reviewer'} is approving this draft right now")
         elif draft.status == ReceiveDraftStatus.APPROVED:
@@ -745,6 +820,10 @@ def claim_for_approval(
                 f"{status_label(draft.status)}. {REFRESH_HINT}"
             )
     else:
+        # #1963: a fresh claim is a new approval, and only a key nothing has been written under may start
+        # one. Refused, the claim this transaction just took is rolled back with it: the draft stays pending.
+        if approval_key_spent(session, idempotency_key):
+            raise ConflictError(APPROVAL_KEY_SPENT, field="idempotency_key")
         _assert_no_conflicting_claim(session, draft)
         # #1401: the warehouse was checked when the draft was saved, but it can be retired or moved to
         # another company since. Re-checked on a fresh claim, before the caller commits it and before
@@ -758,6 +837,7 @@ def claim_for_approval(
         warehouse_id=draft.warehouse_id,
         author_name=draft.created_by_name,
         line_items_data=_line_items_data(draft),
+        resumed=resumed,
     )
 
 
@@ -781,6 +861,134 @@ def release_approval_claim(session: Session, draft_id: uuid.UUID, idempotency_ke
             updated_at=ReceiveDraftModel.updated_at,
         )
     )
+
+
+def release_held_approval(session: Session, draft_id: uuid.UUID, manager_name: str) -> ReceiveDraftModel:
+    """Let go of an approval claim GP may have taken, once a manager has checked GP holds no receipt (#1945).
+
+    A resumed approval refused on its re-check keeps its claim, because the attempt before it may have
+    posted the receipt, and nothing else released an APPROVING draft: it sat claimed for good. Only a
+    person can answer the question the claim is guarding, by looking in GP, so only a manager's word lets
+    it go. Refused while the ledger holds GP's answer for the claim's key: GP took that receipt, and the
+    same-key retry is what books it.
+
+    So is an APPROVED draft with nothing booked whose queued receipt ended - cancelled, or failed - without
+    an answer from GP. One that may be in GP never hands its draft back on its own (#1849), so the draft
+    stayed approved for good and its units blocked every re-count (`_assert_no_conflicting_claim`)."""
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.models.gp_write import GpWriteIdempotency
+
+    # The queued row's lock before the draft's, the order the outbox's own release takes them in.
+    seen = session.get(ReceiveDraftModel, draft_id)
+    entry = None
+    if seen is not None and seen.approved_outbox_entry_id is not None:
+        entry = session.get(GpWriteOutbox, seen.approved_outbox_entry_id, with_for_update=True, populate_existing=True)
+    draft = _lock_draft(session, draft_id)
+    if draft.receive_record_id is not None or draft.status not in _IN_FLIGHT_STATUSES:
+        raise InvalidStateTransitionError(
+            f"Only an approval still held on GP can be released; this draft is {status_label(draft.status)}. "
+            f"{REFRESH_HINT}"
+        )
+    key = draft.approval_idempotency_key
+    if draft.status == ReceiveDraftStatus.APPROVING and approval_attempt_may_be_running(draft, datetime.utcnow()):
+        # #1945: a second manager released a claim while the first's relay call was still out, and the
+        # receipt that call posted then had no claim to book against.
+        raise ConflictError(
+            "An approval attempt on this draft may still be posting the receipt to GP. Wait a couple of "
+            "minutes, check GP again, then release it."
+        )
+    if draft.status == ReceiveDraftStatus.APPROVED:
+        if entry is None or entry.id != draft.approved_outbox_entry_id:
+            raise InvalidStateTransitionError(
+                f"Only an approval still held on GP can be released; this draft is approved. {REFRESH_HINT}"
+            )
+        if entry.status not in ("CANCELLED", "FAILED"):
+            raise ConflictError(
+                "This draft's GP receipt is still queued, so the approval can't be released. It books itself "
+                "when the receipt posts."
+            )
+        key = entry.idempotency_key
+    ledger = session.get(GpWriteIdempotency, key) if key else None
+    if ledger is not None and ledger.relay_result is not None:
+        raise ConflictError(
+            "GP already took this receipt, so the approval can't be released. Retry posting to book it here."
+        )
+    draft.status = ReceiveDraftStatus.PENDING_APPROVAL
+    draft.approval_idempotency_key = None
+    # A queued row released from is left as it ended; its Retry is refused, as the draft is no longer its.
+    draft.approved_outbox_entry_id = None
+    draft.reviewed_by_user_id = None
+    draft.reviewed_by_name = None
+    draft.reviewed_at = None
+    draft.rejection_reason = (
+        f"Back for review: {manager_name} checked GP and released the held approval, as no receipt was posted"
+    )
+    session.flush()
+    return draft
+
+
+def approval_attempt_may_be_running(draft: ReceiveDraftModel, now: datetime) -> bool:
+    """Whether the attempt holding an APPROVING draft's claim may still be running (#1945)."""
+    return draft.reviewed_at is not None and draft.reviewed_at > now - timedelta(seconds=APPROVAL_ATTEMPT_SECONDS)
+
+
+def approval_releasable_at(draft: ReceiveDraftModel) -> datetime | None:
+    """When an APPROVING draft's claim has outlived any attempt that took it, so it may be released."""
+    if draft.status != ReceiveDraftStatus.APPROVING or draft.reviewed_at is None:
+        return None
+    return draft.reviewed_at + timedelta(seconds=APPROVAL_ATTEMPT_SECONDS)
+
+
+# #1945: what the persist and the queueing refuse an attempt whose claim was released, and maybe re-claimed,
+# while it was out at GP. The code is the one the review modal reads as "GP may hold this receipt".
+APPROVAL_RELEASED_MEANWHILE = (
+    "This approval was released while the attempt was still out at GP, so its receipt was not booked here"
+)
+
+
+def approval_still_held(session: Session, draft_id: uuid.UUID, key: str) -> bool:
+    """Whether the draft is still this attempt's, under its row lock: claimed under `key` (APPROVING), or
+    approved under it with its receipt queued (APPROVED), and nothing booked (#1945). A manager may release
+    a claim while its attempt is out at GP, and someone may claim the draft again; the late attempt must
+    not book over that, or link its queued receipt to it."""
+    lock_rows(session, ReceiveDraftModel, [draft_id])
+    draft = session.get(ReceiveDraftModel, draft_id, populate_existing=True)
+    return (
+        draft is not None
+        and draft.status in _IN_FLIGHT_STATUSES
+        and draft.approval_idempotency_key == key
+        and draft.receive_record_id is None
+    )
+
+
+def drafts_with_stopped_receipts(session: Session, drafts) -> set[uuid.UUID]:
+    """The approved drafts, of `drafts`, whose queued receipt ended - cancelled, or failed - with no answer
+    from GP and nothing booked (#1945): the ones a manager who checked GP can release. One read for the lot."""
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.repositories import gp_outbox_repository
+
+    queued = {
+        d.approved_outbox_entry_id: d.id
+        for d in drafts
+        if d.status == ReceiveDraftStatus.APPROVED
+        and d.receive_record_id is None
+        and d.approved_outbox_entry_id is not None
+    }
+    if not queued:
+        return set()
+    entries = list(
+        session.scalars(
+            select(GpWriteOutbox).where(
+                GpWriteOutbox.id.in_(list(queued)), GpWriteOutbox.status.in_(("CANCELLED", "FAILED"))
+            )
+        ).all()
+    )
+    ledgers = gp_outbox_repository.ledgers_for(session, entries)
+    return {
+        queued[e.id]
+        for e in entries
+        if (ledger := ledgers.get(e.idempotency_key)) is None or ledger.relay_result is None
+    }
 
 
 def mark_approved(
@@ -815,13 +1023,30 @@ def mark_approved(
 _NEVER_REACHED_GP_KINDS = ("gp_rejected", "exhausted")
 
 
+def _refused_after_its_key_was_looked_up(entry) -> bool:
+    from app.repositories import gp_outbox_repository
+
+    return (
+        entry.status == "FAILED"
+        and entry.failure_kind == "gp_rejected"
+        and gp_outbox_repository.retry_is_safe(entry.relay_op, entry.payload)
+    )
+
+
 def outbox_entry_never_reached_gp(session: Session, entry) -> bool:
     """True when a queued receipt's outbox row is finished and GP never committed it (#1298).
 
-    A cancelled row qualifies unless it had already failed ambiguously or after GP committed; a failed
-    row only for the kinds above. Either way the GP idempotency ledger has the last word: a recorded
-    relay result means GP answered with a receipt, whatever the row says now."""
+    A row that may be in GP (#1849) never qualifies. A cancelled row qualifies unless it had already
+    failed ambiguously or after GP committed; a failed row only for the kinds above. Either way the GP
+    idempotency ledger has the last word: a recorded relay result means GP answered with a receipt,
+    whatever the row says now."""
     if entry is None or entry.op != "create_receive":
+        return False
+    # #1849: an earlier attempt may have left the receipt in GP under this row's key, whatever the row's
+    # last outcome says. Released, the draft would be approved under a new key and posted a second time.
+    # Except a keyed receipt GP then refused: the relay looks the key up before anything else, so a
+    # refusal after that lookup says GP holds no receipt under it.
+    if entry.maybe_in_gp and not _refused_after_its_key_was_looked_up(entry):
         return False
     if entry.status == "CANCELLED":
         if entry.failure_kind not in (None, *_NEVER_REACHED_GP_KINDS):
@@ -884,19 +1109,77 @@ def release_draft_for_outbox_entry(session: Session, entry) -> ReceiveDraftModel
     return draft
 
 
-def assert_outbox_entry_retryable(session: Session, entry) -> None:
-    """Refuse to replay a queued receipt whose draft was sent back for review (#1298).
-
-    Once the draft is pending again, a manager can approve it afresh under a new key; replaying the old
-    row as well would post the same receipt to GP twice."""
-    if entry is None or entry.op != "create_receive":
-        return
+def _receive_draft_id_of(entry) -> uuid.UUID | None:
     draft_id = (entry.persist_context or {}).get("receive_draft_id")
-    if not draft_id:
-        return
-    draft = session.get(ReceiveDraftModel, uuid.UUID(str(draft_id)))
-    if draft is not None and draft.approved_outbox_entry_id != entry.id:
-        raise ConflictError(
-            "This receipt's draft went back for review when the GP write stopped. Approve the draft "
-            "again from Receive Approvals instead of retrying this entry."
-        )
+    try:
+        return uuid.UUID(str(draft_id)) if draft_id else None
+    except ValueError:
+        return None
+
+
+def _draft_moved_on(entry, draft) -> bool:
+    """THE answer to "has this queued receipt's draft moved on from it?" - for Retry, for Cancel letting it go
+    and for the queue's flag alike (#1961, #1964, #1965). `draft` is the row's draft (anything with its
+    status, key and link), or None when it was deleted: nothing waits on the row then, so it has moved on.
+
+    It has not while it waits on the row: linked to it (approved with the row as its queued receipt), or
+    claimed or approved under the row's own key with no link. That second one is the approval the row was
+    written for and nothing else - the key is the approval's identity, and the relay answers a repeat of it
+    with the receipt it holds: a held row whose draft was claimed again under its key, or a resume refused
+    with its claim kept. The row's Retry, or the claim's own retry, books it; let go, its key's ledger is
+    settled as reconciled (`cancel_entry`) and the draft stuck APPROVING for good - approve finds the key
+    finished as another receive's, release finds GP's answer, delete finds a claim. Anything else - pending
+    again, rejected, approved under another key, or deleted - is someone else's approval now, or none: the
+    row never posts, as the persist books only for the attempt still holding the draft (`approval_still_held`)."""
+    if draft is None:
+        return True
+    if draft.approved_outbox_entry_id == entry.id:
+        return False
+    return not (draft.status in _IN_FLIGHT_STATUSES and draft.approval_idempotency_key == entry.idempotency_key)
+
+
+# What Retry is refused with on a receipt whose draft has moved on (#1298, #1965): it can only fail, as
+# `ApprovalReleasedMeanwhile` on every drain.
+DRAFT_MOVED_ON_RETRY_REFUSAL = (
+    "This receipt's draft went back for review, so it no longer waits on this entry and a retry can only fail. "
+    "Approve the draft again from Receive Approvals instead of retrying this entry."
+)
+DRAFT_DELETED_RETRY_REFUSAL = (
+    "This receipt's draft was deleted, so nothing here waits to book it and a retry can only fail. Check GP for "
+    "what it may have posted there, then cancel this entry."
+)
+
+
+def receipts_whose_draft_moved_on(session: Session, entries) -> dict[uuid.UUID, bool]:
+    """The queued receipts, of `entries`, whose draft has moved on from them (`_draft_moved_on`), by row id,
+    each to whether its draft was deleted, in one read. A row that names no draft (queued before receives
+    had drafts) is left out: nothing says what it waits on.
+
+    Such a row never posts - its Retry is refused (`retry_refusals`) - whatever GP made of it: sent back for
+    review, held linked to no draft because the approval was released while it was out at GP (#1945), or its
+    draft deleted since (#1965). The draft is someone else's to approve now, or nobody's, so a receipt GP took
+    under the row is a manager's to reconcile in GP by hand, and the row can be let go (#1961, `cancel_entry`)."""
+    by_draft: dict[uuid.UUID, list] = {}
+    for entry in entries:
+        draft_id = _receive_draft_id_of(entry) if entry.op == "create_receive" else None
+        if draft_id is not None:
+            by_draft.setdefault(draft_id, []).append(entry)
+    if not by_draft:
+        return {}
+    drafts = {
+        row.id: row
+        for row in session.execute(
+            select(
+                ReceiveDraftModel.id,
+                ReceiveDraftModel.status,
+                ReceiveDraftModel.approval_idempotency_key,
+                ReceiveDraftModel.approved_outbox_entry_id,
+            ).where(ReceiveDraftModel.id.in_(list(by_draft)))
+        ).all()
+    }
+    return {
+        entry.id: draft_id not in drafts
+        for draft_id, linked in by_draft.items()
+        for entry in linked
+        if _draft_moved_on(entry, drafts.get(draft_id))
+    }

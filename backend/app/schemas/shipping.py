@@ -1,6 +1,7 @@
 """Shipping queries + mutations: ship-ready items, packing slips, returns."""
 
 import uuid
+from datetime import date
 
 import strawberry
 from sqlalchemy import func, select
@@ -59,6 +60,7 @@ from .inputs import (
     ShippingOutPRDraftItemInput,
     UpdateShipmentDetailsInput,
 )
+from .limits import cap_limit, cap_offset
 from .types import (
     PackingSlip,
     ProductRackLocations,
@@ -316,18 +318,31 @@ class ShippingQueries:
         status: ShippingOutRequestStatus | None = None,
         reopenable_only: bool = False,
         open_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[ShippingOutRequest]:
         """Accept UI (#293): shipping-out requests for a project, PENDING by default. reopenableOnly
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on. openOnly (#1551) lists every
         open request - pending, or accepted with its pull in flight - whatever `status` says: what the
-        project page's open requests tile counts."""
+        project page's open requests tile counts. The Accepted and Rejected tabs page with
+        `limit`/`offset` and `newestFirst` (#1888); without a limit the read is unpaged, as the Pending
+        and Open views want."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             reqs = shipping_repository.get_shipping_out_requests(
-                session, pid, status, reopenable_only, company=scope, open_only=open_only
+                session,
+                pid,
+                status,
+                reopenable_only,
+                company=scope,
+                open_only=open_only,
+                limit=cap_limit(limit) if limit is not None else None,
+                offset=cap_offset(offset),
+                newest_first=newest_first,
             )
             return _requests_to_types(session, reqs)
 
@@ -650,12 +665,19 @@ class ShippingMutations:
         against the Clerk-authenticated caller (#427)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
+        container_ids = [uuid.UUID(str(cid)) for cid in input.container_ids]
         with SessionLocal() as session:
-            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
+            scope = tenant_scope(info)
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), scope)
+            # #1872: every container too, before the repository runs - it locks each one and names it in
+            # its refusals before it compares the container's project with this one.
+            for cid in container_ids:
+                tenancy.require_container_in_scope(session, cid, scope)
+            _refuse_driver_only(info)
             slip = shipment_containers.confirm_shipment_from_containers(
                 session,
                 uuid.UUID(str(input.project_id)),
-                [uuid.UUID(str(cid)) for cid in input.container_ids],
+                container_ids,
                 shipped_by=actor,
                 details=_site_form_details(input),
                 expected_contents=(
@@ -873,19 +895,27 @@ class ShippingMutations:
 
     @strawberry.mutation
     def move_shipment_to_load(
-        self, info: strawberry.Info, id: strawberry.ID, load_id: strawberry.ID | None = None
+        self,
+        info: strawberry.Info,
+        id: strawberry.ID,
+        load_id: strawberry.ID | None = None,
+        pickup_date: date | None = None,
     ) -> PackingSlip:
         """Move a scheduled shipment onto another load, or onto a new one when `loadId` is null (#1723).
 
         For the truck that changed after the paper was written: two projects that turned out to share
-        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up."""
+        one, or one taken off a truck it no longer fits. Refused once the shipment has been picked up.
+        `pickupDate` is the date being saved with the move, which names a new load (#1940); left out,
+        the stored one does."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             _refuse_driver_only(info)
             ps = shipping_repository.lock_packing_slip(session, uuid.UUID(str(id)))
-            shipment_loads.move_slip_to_load(session, ps, uuid.UUID(str(load_id)) if load_id else None, actor)
+            shipment_loads.move_slip_to_load(
+                session, ps, uuid.UUID(str(load_id)) if load_id else None, actor, pickup_date=pickup_date
+            )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)
@@ -958,6 +988,8 @@ class ShippingMutations:
             scope = tenant_scope(info)
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.packing_slip_id)), scope)
             tenancy.require_warehouse_in_scope(session, uuid.UUID(str(input.warehouse_id)), scope)
+            # A return can call the shipment off (everything returnable back), which is shipping's (#1814).
+            _refuse_driver_only(info)
             sr = shipping_repository.create_shipment_return(
                 session,
                 packing_slip_id=uuid.UUID(str(input.packing_slip_id)),

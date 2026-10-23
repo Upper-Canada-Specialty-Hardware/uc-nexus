@@ -33,7 +33,7 @@ from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, ValidationError
 from app.models.enums import (
@@ -325,13 +325,17 @@ def _waiting_shop_lines(session: Session, project_id: uuid.UUID) -> dict[Product
     return waiting
 
 
-def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
+def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Product, dict[str, PullRequestStatus]]:
     """Products on an active shop assembly batch whose pull has not finished: hardware is reserved and
-    on the floor for the shop, so a change that takes the product out of the shop waits for it."""
-    holds: dict[Product, set[str]] = defaultdict(set)
-    for category, code, number in session.execute(
+    on the floor for the shop, so a change that takes the product out of the shop waits for it. Each
+    batch number with its pull's status: one not started yet is undone by a discard, not a cancel (#1956)."""
+    holds: dict[Product, dict[str, PullRequestStatus]] = defaultdict(dict)
+    for category, code, number, status in session.execute(
         select(
-            ShopAssemblyBatchItem.hardware_category, ShopAssemblyBatchItem.product_code, ShopAssemblyBatch.batch_number
+            ShopAssemblyBatchItem.hardware_category,
+            ShopAssemblyBatchItem.product_code,
+            ShopAssemblyBatch.batch_number,
+            PullRequest.status,
         )
         .join(ShopAssemblyBatch, ShopAssemblyBatchItem.shop_assembly_batch_id == ShopAssemblyBatch.id)
         .join(ShopAssemblyRequest, ShopAssemblyBatch.shop_assembly_request_id == ShopAssemblyRequest.id)
@@ -342,7 +346,7 @@ def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Produ
             PullRequest.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
         )
     ):
-        holds[(category, code)].add(number)
+        holds[(category, code)][number] = status
     return holds
 
 
@@ -494,8 +498,17 @@ def plan_product_classifications(
             and to != HardwareClassificationChoice.UCH_SHOP
         )
         if leaving_shop:
-            for number in sorted(being_pulled.get(product, ())):
-                blocks.append(f"on shop assembly batch {number}, still being pulled - finish or cancel the pull first")
+            for number, status in sorted(being_pulled.get(product, {}).items()):
+                if status == PullRequestStatus.PENDING:
+                    # #1956: an unstarted pull can't be cancelled; the batch is discarded instead.
+                    blocks.append(
+                        f"on shop assembly batch {number}, whose pull hasn't started - discard batch {number} "
+                        "on the Shop Assembly page first"
+                    )
+                else:
+                    blocks.append(
+                        f"on shop assembly batch {number}, still being pulled - finish or cancel the pull first"
+                    )
             for number, openings in sorted(waiting.get(product, {}).items()):
                 adjusts.append(
                     f"comes off shop assembly request {number} (opening {', '.join(sorted(openings))}); "
@@ -526,28 +539,50 @@ def plan_product_classifications(
     return plans
 
 
+def _pending_shop_requests(session: Session, project_id: uuid.UUID) -> list[ShopAssemblyRequest]:
+    """The project's pending shop requests with their lines and openings, for the products a save takes
+    off them. Read once per save (#1892), not once per product leaving the shop: each product's pass
+    re-read every request and then walked its lines and openings one lazy load at a time."""
+    return list(
+        session.scalars(
+            select(ShopAssemblyRequest)
+            .options(selectinload(ShopAssemblyRequest.items), selectinload(ShopAssemblyRequest.openings))
+            .where(
+                ShopAssemblyRequest.project_id == project_id,
+                ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
+            )
+            # Read after the caller locked these requests: fresh, not what the session saw.
+            .execution_options(populate_existing=True)
+        )
+        .unique()
+        .all()
+    )
+
+
 def _take_off_waiting_shop_openings(
-    session: Session, project_id: uuid.UUID, product: Product, to: HardwareClassificationChoice, *, changed_by: str
+    session: Session,
+    project_id: uuid.UUID,
+    product: Product,
+    to: HardwareClassificationChoice,
+    *,
+    changed_by: str,
+    requests: list[ShopAssemblyRequest],
 ) -> None:
     """Remove a product leaving the shop from every opening still waiting on a pending shop request.
 
     An opening left with nothing on it is dismissed - the same write-off the manager makes by hand -
-    and a request left with nothing waiting closes out. One notice per request tells the manager."""
+    and a request left with nothing waiting closes out. One notice per request tells the manager.
+
+    `requests` is `_pending_shop_requests`, read once for the whole save. An earlier product's pass may
+    have closed one out, which is then no longer pending and is passed over, as a fresh read would."""
     from app.repositories.shop_assembly_repository import _close_if_nothing_pending
     from app.services.notification_service import SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE, create_notification
 
     category, code = product
-    requests = session.scalars(
-        select(ShopAssemblyRequest)
-        .where(
-            ShopAssemblyRequest.project_id == project_id,
-            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
-        )
-        # Read after set_product_classifications locked these requests: fresh, not what the session saw.
-        .execution_options(populate_existing=True)
-    ).all()
     now = datetime.utcnow()
     for request in requests:
+        if request.status != ShopAssemblyRequestStatus.PENDING:
+            continue
         waiting = {o.opening_number: o for o in request.openings if o.status == ShopAssemblyOpeningStatus.PENDING}
         lines = [
             i
@@ -676,14 +711,18 @@ def apply_import_reclassification(
     every change is logged where the override page's history reads it."""
     now = datetime.utcnow()
     written: list[HardwareClassificationChange] = []
+    pending: list[ShopAssemblyRequest] | None = None
     for plan in plans:
         if plan["leaves_shop_requests"]:
+            if pending is None:
+                pending = _pending_shop_requests(session, project_id)
             _take_off_waiting_shop_openings(
                 session,
                 project_id,
                 (plan["hardware_category"], plan["product_code"]),
                 plan["to_choice"],
                 changed_by=changed_by,
+                requests=pending,
             )
         written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
     session.flush()
@@ -712,7 +751,10 @@ def set_product_classifications(
     reads the classification list (#1443) only after this has written it.
 
     Every UCH Shop / UCH Site set is written to the project's classification list as well as the rows
-    (#1443). A product only on the list has no rows, so the list is all its change writes."""
+    (#1443). A product only on the list has no rows, so the list is all its change writes.
+
+    A save that writes anything moves the project's schedule revision (#1918), so an import wizard opened
+    before it is refused instead of putting back the exclusions and classifications it loaded."""
     from app.models.project import Project
 
     session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
@@ -722,6 +764,8 @@ def set_product_classifications(
 
     now = datetime.utcnow()
     written: list[HardwareClassificationChange] = []
+    # Read under the lock above, once for every product the save takes off them (#1892).
+    pending: list[ShopAssemblyRequest] | None = None
     for plan in plans:
         category, code = plan["hardware_category"], plan["product_code"]
         to = plan["to_choice"]
@@ -736,7 +780,11 @@ def set_product_classifications(
             & (ProjectExcludedItem.product_code == code)
         )
         if plan["leaves_shop_requests"]:
-            _take_off_waiting_shop_openings(session, project_id, (category, code), to, changed_by=changed_by)
+            if pending is None:
+                pending = _pending_shop_requests(session, project_id)
+            _take_off_waiting_shop_openings(
+                session, project_id, (category, code), to, changed_by=changed_by, requests=pending
+            )
         if to == HardwareClassificationChoice.BY_OTHERS:
             # Only an unclassified product gets here (#1392), and an unclassified product is never listed.
             session.add(
@@ -755,5 +803,14 @@ def set_product_classifications(
             session.execute(update(HardwareItem).where(product_rows).values(classification=_STORED[to], updated_at=now))
             write_list(session, project_id, {(category, code): _STORED[to]}, updated_by=changed_by)
         written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
+    # #1918: a saved change moves the schedule revision a PO import checks, under the project lock taken
+    # above, the lock a finalize bumps it under. A tab that opened the import wizard before this sends the
+    # exclusions it loaded, and step 2b of the finalize deletes every one it wasn't sent, so a product marked
+    # By Others here went back to being UCH's to order. Its classifications are as stale (the list it filled
+    # them in from), so any written change refuses it with the reload message rather than undoing this.
+    if written:
+        session.execute(
+            update(Project).where(Project.id == project_id).values(schedule_revision=Project.schedule_revision + 1)
+        )
     session.flush()
     return written

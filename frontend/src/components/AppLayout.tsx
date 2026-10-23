@@ -25,17 +25,33 @@ import CompanyWordmark from './CompanyWordmark';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
+// #1899: the shell renders above the app's only error boundary, so a storage access that throws (a
+// private window, blocked site data) must not take the whole app down with it. The rail just forgets.
+function readRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeRailCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* storage unavailable - the rail keeps its state for this visit */
+  }
+}
+
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [railCollapsed, setRailCollapsed] = useState(
-    () => localStorage.getItem(RAIL_COLLAPSED_KEY) === '1',
-  );
+  const [railCollapsed, setRailCollapsed] = useState(readRailCollapsed);
 
   const toggleRail = () => {
     setRailCollapsed((prev) => {
-      localStorage.setItem(RAIL_COLLAPSED_KEY, prev ? '0' : '1');
+      writeRailCollapsed(!prev);
       return !prev;
     });
   };
@@ -80,16 +96,20 @@ export default function AppLayout() {
           </Tooltip>
           {/* A real link, not a heading with an onClick: the home shortcut now answers the keyboard
               and the middle-click/new-tab a person expects of a wordmark. color inherit keeps it in
-              the app bar's paper text rather than defaulting to link blue. */}
+              the app bar's paper text rather than defaulting to link blue. minWidth 0 lets it give
+              way on a phone, where it is the only thing on the bar that can, so the account menu
+              is never clipped off the end (#1835). */}
           <Typography
             component={RouterLink}
             to="/app"
             variant="h6"
             sx={{
-              mr: 3,
+              mr: { xs: 1, sm: 3 },
               display: 'inline-flex',
               alignItems: 'center',
               gap: 1.25,
+              minWidth: 0,
+              overflow: 'hidden',
               letterSpacing: '0.01em',
               color: 'inherit',
               textDecoration: 'none',
@@ -100,7 +120,12 @@ export default function AppLayout() {
           >
             {/* The company logo. Its white keyline ring is what carries it on the ink bar. alt is
                 empty because the wordmark beside it already names the link. */}
-            <Box component="img" src={companyLogo} alt="" sx={{ height: { xs: 28, sm: 32 }, display: 'block' }} />
+            <Box
+              component="img"
+              src={companyLogo}
+              alt=""
+              sx={{ height: { xs: 28, sm: 32 }, display: 'block', flexShrink: 0 }}
+            />
             <CompanyWordmark />
           </Typography>
 

@@ -386,6 +386,7 @@ def _po_line_context(*ords):
             "qtyorder": Decimal("5"),
             "unitcost": Decimal("12.50"),
             "polnesta": 2,
+            "qtycance": Decimal("0"),
             "prev_received": Decimal("0"),
         }
         for o in ords

@@ -517,6 +517,8 @@ export default function PullRequestDetailModal({
         confirmLabel={sendLabel}
         cancelLabel="Cancel"
         onConfirm={handleComplete}
+        // #1846: the dialog stays up until the complete answers; a second click sent it again.
+        busy={completeLoading}
         onCancel={() => setConfirmCompleteOpen(false)}
       />
 

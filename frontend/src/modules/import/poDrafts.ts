@@ -42,9 +42,10 @@ export interface PODraftPayload {
   hardwareItemRefs: HardwareItemRefPayload[];
   lineItemAliases: POLineItemAliasPayload[];
   // #588: the DraftGroup this payload came from. Not part of the graphql input - toPoDraftInput
-  // strips it before sending - but kept so finalize can map its returned PO (same order) back to the
-  // draft's pre-attached documents. buildPoDrafts emits included, non-empty drafts in draftGroups
-  // order, and the backend creates POs in that same order, so purchaseOrders[i] is this[i]'s draft.
+  // strips it before sending - but kept so finalize can map its returned PO back to the draft's
+  // pre-attached documents. #1884: through poDraftOutcomes' draftIndex (an index into the drafts
+  // sent), not by position - the backend skips a draft that claims nothing, so purchaseOrders[i] is
+  // not always this[i]'s PO.
   sourceDraftId: string;
 }
 
@@ -150,4 +151,66 @@ export function buildPoDrafts(
   }
 
   return drafts;
+}
+
+/** #1883: what finalize made of one draft it was sent - poDraftOutcomes, in the order the drafts went. */
+export interface PODraftOutcomeData {
+  draftIndex: number;
+  // The PO the draft became; null when it claimed nothing and the backend skipped it (#640).
+  purchaseOrderId: string | null;
+  requestedQuantity: number;
+  claimedQuantity: number;
+}
+
+/**
+ * #1883: the drafts that came back short or were not made, as one sentence, or null when every draft
+ * got what its lines asked for. A whole-opening line resolves to what is not yet on a PO (#1186), so a
+ * buy-again line (#814) on a covered product can get fewer units than it showed, or none and no PO -
+ * which a plain "finalized successfully" hid. `labelOf` names a draft by its sourceDraftId.
+ */
+export function describeDraftShortfalls(
+  drafts: PODraftPayload[],
+  outcomes: PODraftOutcomeData[],
+  labelOf: (draftId: string) => string,
+): string | null {
+  const parts: string[] = [];
+  for (const o of outcomes) {
+    const draft = drafts[o.draftIndex];
+    if (!draft) continue;
+    const name = `'${labelOf(draft.sourceDraftId)}'`;
+    const units = (n: number) => `${n} ${n === 1 ? 'unit is' : 'units are'}`;
+    if (o.purchaseOrderId === null) {
+      parts.push(`${name} was not made: its ${units(o.requestedQuantity)} already on a purchase order`);
+    } else if (o.claimedQuantity < o.requestedQuantity) {
+      const rest = o.requestedQuantity - o.claimedQuantity;
+      parts.push(
+        `${name} got ${o.claimedQuantity} of the ${o.requestedQuantity} it asked for: the other ${units(rest)} already on a purchase order`,
+      );
+    }
+  }
+  return parts.length === 0 ? null : `${parts.join('. ')}.`;
+}
+
+/** #1884: sourceDraftId -> the id of the PO finalize made from that draft. A draft it skipped is absent. */
+export function poIdByDraft(drafts: PODraftPayload[], outcomes: PODraftOutcomeData[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const o of outcomes) {
+    const draft = drafts[o.draftIndex];
+    if (draft && o.purchaseOrderId !== null) map.set(draft.sourceDraftId, o.purchaseOrderId);
+  }
+  return map;
+}
+
+/** #1884: "2 documents on 'Hager' were not attached." for the drafts finalize made no PO from, or null. */
+export function describeStrandedDocuments(skipped: PODraftPayload[], groups: DraftGroup[]): string | null {
+  const held = skipped
+    .map((built) => groups.find((g) => g.id === built.sourceDraftId))
+    .filter((g): g is DraftGroup => (g?.attachments?.length ?? 0) > 0);
+  if (held.length === 0) return null;
+  const parts = held.map((g) => {
+    const n = g.attachments?.length ?? 0;
+    return `${n} ${n === 1 ? 'document' : 'documents'} on '${g.label || 'Untitled draft'}'`;
+  });
+  const one = held.length === 1 && held[0].attachments?.length === 1;
+  return `${parts.join(' and ')} ${one ? 'was' : 'were'} not attached.`;
 }

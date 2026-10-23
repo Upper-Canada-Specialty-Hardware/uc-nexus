@@ -28,7 +28,9 @@ const DASH = '—';
 
 const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
 
-type View = 'PENDING_APPROVAL' | 'REJECTED';
+// #1945: HELD is the approvals held on GP - claimed by an attempt that died, or approved with nothing booked
+// behind a queued receipt that stopped. Each waits for a manager to retry it or, after checking GP, release it.
+type View = 'PENDING_APPROVAL' | 'REJECTED' | 'HELD';
 
 /**
  * #909: the drafts table fits its width and never scrolls sideways; columns are resizable and
@@ -43,7 +45,7 @@ function approvalColumns(view: View): FitTableColumn[] {
     { id: 'submitted', label: 'Submitted', min: 164, weight: 0.8 },
     { id: 'units', label: 'Units', min: 64, weight: 0.4, align: 'right' },
     ...(view === 'REJECTED' ? [{ id: 'reason', label: 'Reason', min: 140, weight: 1.8 }] : []),
-    { id: 'status', label: 'Status', min: 176, weight: 1 },
+    { id: 'status', label: 'Status', min: 208, weight: 1 },
   ];
 }
 
@@ -72,7 +74,7 @@ export default function ReceiveApprovalsPage() {
   const [openDraft, setOpenDraft] = useState<ReceiveDraft | null>(null);
 
   const { data, loading, error } = useQuery<{ receiveDrafts: ReceiveDraft[] }>(GET_RECEIVE_DRAFTS, {
-    variables: { status: view },
+    variables: view === 'HELD' ? { heldOnGp: true } : { status: view },
     fetchPolicy: 'cache-and-network',
     skip: !canReview,
   });
@@ -108,6 +110,7 @@ export default function ReceiveApprovalsPage() {
       >
         <ToggleButton value="PENDING_APPROVAL">Pending</ToggleButton>
         <ToggleButton value="REJECTED">Rejected</ToggleButton>
+        <ToggleButton value="HELD">Held on GP</ToggleButton>
       </ToggleButtonGroup>
 
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
@@ -132,22 +135,26 @@ export default function ReceiveApprovalsPage() {
         <Alert severity="info">
           {view === 'PENDING_APPROVAL'
             ? 'No receives are waiting for approval.'
-            : 'No rejected receives.'}
+            : view === 'HELD'
+              ? 'No approvals are held on GP.'
+              : 'No rejected receives.'}
         </Alert>
       )}
 
       {drafts.length > 0 && (
         <FitTable storageKey="receive-approvals" columns={approvalColumns(view)}>
           {drafts.map((draft) => {
-            const openable = draft.status === 'PENDING_APPROVAL' || draft.status === 'APPROVING';
+            const stopped = draft.status === 'APPROVED' && !!draft.queuedReceiptStopped;
+            const openable = draft.status === 'PENDING_APPROVAL' || draft.status === 'APPROVING' || stopped;
             return (
             <TableRow
               key={draft.id}
               hover
               // Pending drafts open for review. APPROVING ones open too, and deliberately: that
               // is a draft whose approval died somewhere ambiguous, and the only way out is a
-              // retry carrying the key it is still claimed under. A rejected draft is back with
-              // its author, so it stays read-only here.
+              // retry carrying the key it is still claimed under. An approved one whose queued
+              // receipt stopped opens to be released (#1945). A rejected draft is back with its
+              // author, so it stays read-only here.
               sx={{ cursor: openable ? 'pointer' : 'default' }}
               onClick={() => openable && setOpenDraft(draft)}
               // #1283: an openable row takes focus and opens on Enter or Space, so review is not
@@ -205,6 +212,9 @@ export default function ReceiveApprovalsPage() {
                     needs retrying. */}
                 {draft.status === 'APPROVING' && (
                   <Chip size="small" color="warning" variant="outlined" label="Posting to GP — retry" />
+                )}
+                {stopped && (
+                  <Chip size="small" color="error" variant="outlined" label="Receipt stopped — check GP" />
                 )}
               </TableCell>
             </TableRow>

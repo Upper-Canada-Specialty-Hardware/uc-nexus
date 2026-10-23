@@ -95,7 +95,11 @@ function request(status: 'PENDING' | 'APPROVED') {
 }
 
 const mock = (status: 'PENDING' | 'APPROVED'): MockedResponse => ({
-  request: { query: GET_SHOP_ASSEMBLY_REQUESTS, variables: { status } },
+  // The history tabs page newest first (#1888); the Pending board reads unpaged.
+  request: {
+    query: GET_SHOP_ASSEMBLY_REQUESTS,
+    variables: status === 'PENDING' ? { status } : { status, limit: 200, offset: 0, newestFirst: true },
+  },
   maxUsageCount: Number.POSITIVE_INFINITY,
   result: { data: { shopAssemblyRequests: [request(status)] } },
 });

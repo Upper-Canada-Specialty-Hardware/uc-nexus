@@ -15,7 +15,15 @@ from app.auth import (
     tenant_scope,
 )
 from app.database import SessionLocal
-from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.errors import (
+    AppError,
+    ConflictError,
+    RelayCallError,
+    RelayOpUnsupportedError,
+    RelayTimeoutError,
+    RelayUnavailableError,
+    ValidationError,
+)
 from app.repositories import custom_items_repository, project_repository, tenancy, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.repositories.project_labels import project_labels
@@ -140,19 +148,22 @@ def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
 
 def _prepare_create_receive(
     *, po_id, received_by, line_items_data, warehouse_id=None, idempotency_key=None
-) -> tuple[str, dict]:
+) -> tuple[str, dict, uuid.UUID | None]:
     """Read-only: validate the receive is eligible (before the GP receipt is posted) and build the relay
-    create_receipt payload, carrying the approval's key (#1389). Returns (gp_company, payload).
+    create_receipt payload, carrying the approval's key (#1389). Returns (gp_company, payload,
+    warehouse_id).
 
     The warehouse code rides along because put-away happens after approval now (#501): a line
-    normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
+    normally has no bin yet, and the warehouse is what GP gets told instead of nothing. The warehouse
+    it names is returned (#1946) so a queued receipt is re-checked against, and booked into, the
+    building GP was told, even if the primary warehouse changes before it drains."""
     from sqlalchemy import select
 
     from app.models.purchase_order import PurchaseOrder as POModel
 
     with SessionLocal() as session:
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
-            session, po_id, received_by, line_items_data
+            session, po_id, received_by, line_items_data, check_bins=True, warehouse_id=warehouse_id
         )
         # The TENANT, not `gp_company` (#637). They carry the same value on a PO registered through
         # Nexus - `register_po_in_gp` refuses a mismatch - but they answer two different questions,
@@ -168,7 +179,7 @@ def _prepare_create_receive(
         # refuses it when the count is drafted; this repeats the check at approval on purpose, so the
         # GP write itself stays guarded however the draft got here.
         project_repository.require_gp_job_open(session, project_id)
-        warehouse_code = _warehouse_code(session, warehouse_id, company)
+        warehouse_id, warehouse_code = _receiving_warehouse(session, warehouse_id, company)
     payload = gp_po.build_create_receipt_payload(
         po_number=po_number,
         received_by=received_by,
@@ -176,11 +187,11 @@ def _prepare_create_receive(
         warehouse_code=warehouse_code,
         idempotency_key=idempotency_key,
     )
-    return gp_company, payload
+    return gp_company, payload, warehouse_id
 
 
-def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | None:
-    """The receiving warehouse's code, falling back to the primary one the booking will use.
+def _receiving_warehouse(session, warehouse_id, company: str | None = None) -> tuple[uuid.UUID | None, str | None]:
+    """The receiving warehouse's (id, code), falling back to the primary one the booking will use.
 
     The fallback is scoped to the PO's TENANT (`purchase_orders.company`, #637) so it picks the same
     building `create_receive` will book into - `is_primary` is one global flag, so an unscoped
@@ -190,7 +201,7 @@ def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | 
     if warehouse_id is None:
         warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
     warehouse = session.get(WarehouseModel, warehouse_id)
-    return warehouse.code if warehouse else None
+    return warehouse_id, (warehouse.code if warehouse else None)
 
 
 def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
@@ -248,6 +259,13 @@ def _persist_create_receive(
     """
     gp_receipt = relay_result or {}
     with SessionLocal() as session:
+        # #1945: booked only for the attempt that still holds the draft. A manager may have released the
+        # claim while this attempt was out at GP, and somebody claimed it again; booked over that, the
+        # count would land twice. Refused, the receipt GP took is held as maybe in GP by the caller.
+        if receive_draft_id is not None and not warehouse_repository.approval_still_held(
+            session, receive_draft_id, key
+        ):
+            raise ApprovalReleasedMeanwhile()
         # #632: carry the counter's remark off the draft onto the record. Read here, inside the
         # persist transaction, rather than threaded through ApprovalContext / the outbox context -
         # the draft row still exists at this point on both routes, so this is the one place that
@@ -312,7 +330,16 @@ def _is_warehouse_manager(info) -> bool:
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
     with SessionLocal() as session:
         draft, po = warehouse_repository.get_receive_draft(session, draft_id)
-        return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
+        return _draft_type(session, draft, po)
+
+
+def _draft_type(session, draft, po) -> ReceiveDraft:
+    return receive_draft_to_type(
+        draft,
+        po,
+        project_labels(session, [po.project_id if po else None]),
+        queued_receipt_stopped=bool(warehouse_repository.drafts_with_stopped_receipts(session, [draft])),
+    )
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
@@ -324,6 +351,19 @@ def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
     if set(caller_roles(info.context)) & WAREHOUSE_MANAGERS:
         return
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
+
+
+def _require_finished_approval_of(draft_id, state, scope) -> None:
+    """A key that already finished a receive answers only for the draft that receive was approved from,
+    and only for a caller in its company (#1851). The early return skipped both checks the claim makes,
+    so any manager holding a finished key could read back another draft or another company's receive."""
+    from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+
+    with SessionLocal() as session:
+        tenancy.require_receive_draft_in_scope(session, draft_id, scope)
+        draft = session.get(ReceiveDraftModel, draft_id)
+        if state.op != "create_receive" or draft is None or str(draft.receive_record_id) != state.result_id:
+            raise ValidationError("This approval key was already used for another receive.", field="idempotency_key")
 
 
 def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, scope=None, expected_updated_at=None):
@@ -360,6 +400,108 @@ def _json_line_items(line_items_data: list[dict]) -> list[dict]:
     ]
 
 
+# The code a refusal carries when the draft stays claimed because GP may hold its receipt (#1945), so the
+# review modal never words it as "nothing was posted".
+RECEIPT_MAY_BE_IN_GP = "RECEIPT_MAY_BE_IN_GP"
+
+
+def _receipt_may_be_in_gp(e: Exception, *, this_attempt: bool = False) -> ConflictError:
+    """A refusal on a resumed approval, raised with the claim held (#1945): the reason, and why the draft
+    is not back in the queue. Worded the way the ambiguous outbox case is. `this_attempt` when it is this
+    attempt's own receipt that may be in GP - a relay refusal that can follow the commit (#1857)."""
+    reason = e.message if isinstance(e, AppError) else "The approval could not be checked again."
+    who = "This approval" if this_attempt else "An earlier attempt at this approval"
+    return ConflictError(
+        f"{reason.rstrip('.')}. {who} may already have posted the receipt to "
+        "GP, so the draft stays claimed: check GP before going on - retry once the cause is fixed, or have "
+        "the receipt reconciled.",
+        code=RECEIPT_MAY_BE_IN_GP,
+    )
+
+
+class ApprovalReleasedMeanwhile(ConflictError):
+    """The draft is no longer this approval attempt's: released, and maybe claimed again, while it was out
+    at GP (#1945). Raised with the may-be-in-GP code, as the receipt the attempt sent may be in GP."""
+
+    def __init__(self, gp_took: bool = True):
+        held = (
+            "GP took the receipt, so it is held on the GP write queue"
+            if gp_took
+            else "GP may hold the receipt, so it is held on the GP write queue"
+        )
+        super().__init__(
+            f"{warehouse_repository.APPROVAL_RELEASED_MEANWHILE}. {held}: check GP before this count is approved "
+            "again, and have the receipt reconciled.",
+            code=RECEIPT_MAY_BE_IN_GP,
+        )
+
+
+def _receipt_outbox_kwargs(*, key, ctx, draft_id, gp_company, payload, warehouse_id, requested_by, maybe_in_gp) -> dict:
+    """The queued receipt an approval writes: what the drain posts and what it books."""
+    project_id, label = _receive_outbox_identity(ctx.po_id)
+    return {
+        "idempotency_key": key,
+        "op": "create_receive",
+        "relay_op": "create_receipt",
+        "company": gp_company,
+        "payload": payload,
+        "persist_context": {
+            "po_id": str(ctx.po_id),
+            "received_by": ctx.author_name,
+            # #1946: the building the payload named to GP, resolved at approval, so the drain's re-check
+            # and its persist use it rather than the primary of the day.
+            "warehouse_id": str(warehouse_id) if warehouse_id else None,
+            "line_items_data": _json_line_items(ctx.line_items_data),
+            # The worker links the draft when it drains, on the same helper this resolver calls - so the
+            # two routes into the persist cannot record different things.
+            "receive_draft_id": str(draft_id),
+        },
+        # Same entity_key as register_po_in_gp so a receipt can never be drained ahead of the
+        # registration of the PO it is against.
+        "entity_key": f"po:{ctx.po_id}",
+        "label": label,
+        "project_id": project_id,
+        "requested_by": requested_by,
+        "maybe_in_gp": maybe_in_gp,
+    }
+
+
+def _hold_receipt_released_meanwhile(session, *, kind: str, error: str, **enqueue_kwargs) -> None:
+    """Hold a receipt GP took, or may have, for an attempt whose draft was released meanwhile (#1945):
+    FAILED and maybe in GP on the GP write queue, linked to no draft. It never posts - its Retry is refused,
+    the draft being no longer its - and it is what says GP may hold a receipt nothing here booked."""
+    from sqlalchemy import select
+
+    from app.models.gp_outbox import GpWriteOutbox
+    from app.repositories import gp_outbox_repository
+
+    key = enqueue_kwargs["idempotency_key"]
+    if session.scalar(select(GpWriteOutbox.id).where(GpWriteOutbox.idempotency_key == key)) is not None:
+        return  # already on the queue under the key, which says as much
+    entry_id = gp_outbox_enqueue.enqueue(session=session, **{**enqueue_kwargs, "maybe_in_gp": True})
+    row = gp_outbox_repository.get_entry_locked(session, uuid.UUID(entry_id))
+    gp_outbox_repository.mark_failed(session, row, kind=kind, error=error, maybe_in_gp=True)
+
+
+def _hold_booking_refused(enqueue_kwargs: dict) -> None:
+    with SessionLocal() as session:
+        _hold_receipt_released_meanwhile(
+            session,
+            kind="persist_failed",
+            error=f"{warehouse_repository.APPROVAL_RELEASED_MEANWHILE}; GP took it - check GP and reconcile it",
+            **enqueue_kwargs,
+        )
+        session.commit()
+
+
+def _po_gp_company(po_id) -> str | None:
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        po = session.get(POModel, po_id)
+        return po.gp_company if po is not None else None
+
+
 def _release_draft_claim(draft_id, key) -> None:
     with SessionLocal() as session:
         warehouse_repository.release_approval_claim(session, draft_id, key)
@@ -382,6 +524,21 @@ def _queue_receipt_for_draft(draft_id, **enqueue_kwargs) -> str:
     apart, a failure between the two left a queued receipt whose draft was still APPROVING (or a
     linked draft with no row), and the worker would post a receipt the draft knew nothing about."""
     with SessionLocal() as session:
+        # #1945: only while the draft is still this attempt's. Released meanwhile, the receipt is not linked
+        # to it: one that may be in GP is held for a person to check, one that never left is not queued.
+        if not warehouse_repository.approval_still_held(session, draft_id, enqueue_kwargs["idempotency_key"]):
+            if not enqueue_kwargs.get("maybe_in_gp"):
+                raise ConflictError(
+                    f"{warehouse_repository.APPROVAL_RELEASED_MEANWHILE}. Nothing was sent to GP; reopen the draft."
+                )
+            _hold_receipt_released_meanwhile(
+                session,
+                kind="ambiguous",
+                error=f"{warehouse_repository.APPROVAL_RELEASED_MEANWHILE}; GP may hold it - check GP first",
+                **enqueue_kwargs,
+            )
+            session.commit()
+            raise ApprovalReleasedMeanwhile(gp_took=False)
         entry_id = gp_outbox_enqueue.enqueue(session=session, **enqueue_kwargs)
         _mark_draft_queued(draft_id, entry_id, session=session)
         session.commit()
@@ -413,12 +570,17 @@ class WarehouseQueries:
         status: ReceiveDraftStatus | None = None,
         po_id: strawberry.ID | None = None,
         mine: bool = False,
+        statuses: list[ReceiveDraftStatus] | None = None,
+        held_on_gp: bool = False,
     ) -> list[ReceiveDraft]:
         """Counted receives waiting on (or returned from) approval, newest first.
 
         `mine` scopes to the caller's own drafts - what a warehouse user needs to see is the state of
         their own counts, and what a manager needs is everybody's. Signed-in rather than
         manager-gated for the same reason: a rejected draft is only actionable by its author.
+        `statuses` filters to any of a set, so my drafts reads only the two it shows (#1889).
+        `heldOnGp` answers with the approvals held on GP instead (#1945): claimed, or approved with nothing
+        booked behind a queued receipt that stopped - what a manager releases once they have checked GP.
         """
         from app.models.enums import ReceiveDraftStatus as ReceiveDraftStatusDB
 
@@ -430,16 +592,22 @@ class WarehouseQueries:
                 po_id=uuid.UUID(str(po_id)) if po_id else None,
                 created_by_user_id=user["user_id"] if mine else None,
                 company=tenant_scope(info),
+                statuses=[ReceiveDraftStatusDB(s.value) for s in statuses] if statuses else None,
+                held_on_gp=held_on_gp,
             )
             labels = project_labels(session, (po.project_id for _, po in rows if po is not None))
-            return [receive_draft_to_type(draft, po, labels) for draft, po in rows]
+            stopped = warehouse_repository.drafts_with_stopped_receipts(session, [draft for draft, _ in rows])
+            return [
+                receive_draft_to_type(draft, po, labels, queued_receipt_stopped=draft.id in stopped)
+                for draft, po in rows
+            ]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
             tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
-            return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
+            return _draft_type(session, draft, po)
 
     @strawberry.field
     def project_inventory_availability(
@@ -509,6 +677,7 @@ class WarehouseQueries:
                     rejection_reason=r["rejection_reason"],
                     receipt_number=r["receipt_number"],
                     batch_number=r["batch_number"],
+                    gp_write_state=r["gp_write_state"],
                 )
                 for r in warehouse_repository.get_all_receives(
                     session,
@@ -804,10 +973,8 @@ class WarehouseQueries:
         across the selected projects. All nine grouped queries run in one session here rather than
         per-row (CLAUDE.md perf rules)."""
         with SessionLocal() as session:
-            scope = tenant_scope(info)
             ids = [uuid.UUID(str(pid)) for pid in project_ids]
-            for pid in ids:
-                tenancy.require_project_in_scope(session, pid, scope)
+            tenancy.require_projects_in_scope(session, ids, tenant_scope(info))
             rows = warehouse_repository.get_hardware_status_by_product(session, ids)
             return [
                 HardwareStatusByProduct(
@@ -820,6 +987,7 @@ class WarehouseQueries:
                     on_order=row["on_order"],
                     received_quantity=row["received_quantity"],
                     on_hand=row["on_hand"],
+                    in_pick=row["in_pick"],
                     sent_to_shop=row["sent_to_shop"],
                     staged_for_shipping=row["staged_for_shipping"],
                     shipped_out=row["shipped_out"],
@@ -1134,6 +1302,20 @@ class WarehouseMutations:
         return _load_draft_type(draft_id)
 
     @strawberry.mutation
+    def release_held_receive_approval(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
+        """Send a held approval back to the queue, on a manager's word that GP holds no receipt for it
+        (#1945). A resumed approval refused on its re-check keeps its claim, since an earlier attempt may
+        have posted the receipt, and before this nothing could release it. So does an approved draft whose
+        queued receipt was cancelled or failed with no answer from GP."""
+        user = current_user(info)
+        draft_id = uuid.UUID(str(id))
+        with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, draft_id, tenant_scope(info))
+            warehouse_repository.release_held_approval(session, draft_id, resolve_display_name(user["user_id"]))
+            session.commit()
+        return _load_draft_type(draft_id)
+
+    @strawberry.mutation
     def delete_receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> bool:
         """Throw away a count that should not have been entered. Refused once approval has started."""
         user = current_user(info)
@@ -1178,7 +1360,9 @@ class WarehouseMutations:
           receipt? Everything that answers "no" - validation, an eConnect refusal, a relay too old
           for the op - releases, because a draft parked where nobody can act on it is worse than the
           error itself. Everything ambiguous - a dispatched disconnect, a timeout - never releases,
-          because releasing it invites a second receipt for hardware GP may already have booked.
+          because releasing it invites a second receipt for hardware GP may already have booked. A
+          same-key resume of a claim (#1945) is ambiguous by itself: the attempt before it may have
+          sent the receipt, so a refusal raised before the relay has looked the key up keeps the claim.
         - Since #1389 an ambiguous failure is QUEUED rather than surfaced: the receipt carries the
           approval's key into GP, and the relay answers a repeat of the key with the receipt it already
           posted, so the outbox asking again cannot post twice. A relay too old to read the key is
@@ -1195,18 +1379,23 @@ class WarehouseMutations:
         draft_id = uuid.UUID(str(input.draft_id))
         await asyncio.to_thread(_authorize_draft_approval, info, user["user_id"], draft_id)
 
+        # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
+        # company is a Clerk round trip the first time a request asks for it.
+        scope = await asyncio.to_thread(tenant_scope, info)
         state = await asyncio.to_thread(gp_idempotency.load, key)
+        # #1873: before the row's result is resumed from - and before a claim is taken - it must be a
+        # receipt's. The finished path below checked the op; the resume did not.
+        gp_idempotency.require_op(state, "create_receive")
         if state is not None and state.result_id is not None:
             # Fully finished under this key already. The draft link was written in the same
-            # transaction as the receive, so there is nothing to repair - just answer with it.
+            # transaction as the receive, so there is nothing to repair - just answer with it, once the
+            # key is this draft's and the draft the caller's (#1851).
+            await asyncio.to_thread(_require_finished_approval_of, draft_id, state, scope)
             record = await asyncio.to_thread(_load_receive_type, uuid.UUID(state.result_id))
             draft = await asyncio.to_thread(_load_draft_type, draft_id)
             return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 
         reviewer_name = await asyncio.to_thread(resolve_display_name, user["user_id"])
-        # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
-        # company is a Clerk round trip the first time a request asks for it.
-        scope = await asyncio.to_thread(tenant_scope, info)
         ctx = await asyncio.to_thread(
             _claim_draft_for_approval,
             draft_id,
@@ -1219,14 +1408,17 @@ class WarehouseMutations:
         # GP has ALREADY run under this key and only the persist is outstanding. Re-validating here
         # would be re-asking a question GP has answered: the world can have moved since (another
         # receive against the line), and a refusal would release the claim for a receipt that is
-        # sitting in GP - after which a fresh key would post a second one.
-        resuming = state is not None and state.relay_result is not None
+        # sitting in GP - after which a fresh key would post a second one. #1963: only a genuine resume, the
+        # draft already APPROVING under this key, goes on from the ledger. A fresh claim under a key with GP's
+        # answer on it is refused at the claim (`approval_key_spent`): that answer belongs to an approval let
+        # go since, and GP's receipt may have been reversed there.
+        resuming = ctx.resumed and state is not None and state.relay_result is not None
 
         if resuming:
             relay_result = state.relay_result
         else:
             try:
-                gp_company, payload = await asyncio.to_thread(
+                gp_company, payload, receiving_warehouse_id = await asyncio.to_thread(
                     _prepare_create_receive,
                     po_id=ctx.po_id,
                     received_by=ctx.author_name,
@@ -1234,39 +1426,31 @@ class WarehouseMutations:
                     warehouse_id=ctx.warehouse_id,
                     idempotency_key=key,
                 )
-            except Exception:
+            except Exception as e:
+                if ctx.resumed:
+                    # #1945: this key already held the claim, so an earlier attempt may have sent the
+                    # receipt and died before its answer was recorded. Released, the draft would be
+                    # approved again under a fresh key and GP would take a second receipt. It stays
+                    # claimed; the retry under this key is what the relay answers with the receipt.
+                    raise _receipt_may_be_in_gp(e) from e
                 # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
                 # to the reviewer.
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 raise
 
-            async def _queue() -> ApproveReceiveDraftResult:
-                json_line_items = _json_line_items(ctx.line_items_data)
-                project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
-                entry_id = await asyncio.to_thread(
-                    _queue_receipt_for_draft,
-                    draft_id,
-                    idempotency_key=key,
-                    op="create_receive",
-                    relay_op="create_receipt",
-                    company=gp_company,
+            async def _queue(maybe_in_gp: bool = False) -> ApproveReceiveDraftResult:
+                enqueue_kwargs = await asyncio.to_thread(
+                    _receipt_outbox_kwargs,
+                    key=key,
+                    ctx=ctx,
+                    draft_id=draft_id,
+                    gp_company=gp_company,
                     payload=payload,
-                    persist_context={
-                        "po_id": str(ctx.po_id),
-                        "received_by": ctx.author_name,
-                        "warehouse_id": str(ctx.warehouse_id) if ctx.warehouse_id else None,
-                        "line_items_data": json_line_items,
-                        # The worker links the draft when it drains, on the same helper this resolver
-                        # calls - so the two routes into the persist cannot record different things.
-                        "receive_draft_id": str(draft_id),
-                    },
-                    # Same entity_key as register_po_in_gp so a receipt can never be drained ahead of
-                    # the registration of the PO it is against.
-                    entity_key=f"po:{ctx.po_id}",
-                    label=label,
-                    project_id=project_id,
+                    warehouse_id=receiving_warehouse_id,
                     requested_by=user["user_id"],
+                    maybe_in_gp=maybe_in_gp,
                 )
+                entry_id = await asyncio.to_thread(_queue_receipt_for_draft, draft_id, **enqueue_kwargs)
                 draft = await asyncio.to_thread(_load_draft_type, draft_id)
                 # Nothing is in inventory yet - the persist is deferred with the GP write.
                 return ApproveReceiveDraftResult(
@@ -1280,15 +1464,27 @@ class WarehouseMutations:
                 # #1389: a relay that would ignore the key is never sent a receipt, because the safety of
                 # every retry below rests on it. Nothing has left the backend, so the receipt waits on
                 # the queue for the workstation to update - and when no relay is connected at all, this
-                # is the same queue the undispatched failure below would have reached.
-                return await _queue()
+                # is the same queue the undispatched failure below would have reached. #1945: nothing
+                # left it THIS time; a resumed approval's earlier attempt may have.
+                return await _queue(maybe_in_gp=ctx.resumed)
 
             try:
                 relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
             except (RelayCallError, RelayOpUnsupportedError) as e:
-                # The relay answered: eConnect refused it, or this build cannot run the op. Either
-                # way GP did not commit, so the draft goes back in the queue for whoever fixes the
-                # cause - the #425 quarantine being the usual one.
+                # The relay answered: eConnect refused it, or this build cannot run the op. Either way -
+                # short of a refusal that can follow the commit (#1857) - GP did not commit, so the draft
+                # goes back in the queue for whoever fixes the cause - the #425 quarantine being the usual
+                # one. #1945: a refusal is safe to release on a resume too, because the relay looks the key
+                # up before anything else; a build that cannot run the op never looked, so a resume keeps
+                # its claim.
+                if ctx.resumed and isinstance(e, RelayOpUnsupportedError):
+                    raise _receipt_may_be_in_gp(e) from e
+                if isinstance(e, RelayCallError) and e.may_have_committed:
+                    # #1857: not GP saying no - an unplanned relay exception can follow the commit, which the
+                    # GP write queue holds as maybe in GP. Released, the draft would be approved again under
+                    # a fresh key and GP would take a second receipt; claimed, a retry goes out under this
+                    # key, which the relay answers with the receipt it posted.
+                    raise _receipt_may_be_in_gp(e, this_attempt=not ctx.resumed) from e
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 if isinstance(e, RelayCallError):
                     # #730: GP found the job inactive, closed or gone at the moment of writing. Worded
@@ -1298,26 +1494,46 @@ class WarehouseMutations:
                     if refusal is not None:
                         raise refusal from e
                 raise
-            except (RelayTimeoutError, RelayUnavailableError):
+            except (RelayTimeoutError, RelayUnavailableError) as e:
                 # #353 PR E queued the receipt that never left the backend; #1389 queues the other two as
                 # well - the socket dying with the job on the wire, and the relay not answering in time.
                 # Those used to be re-raised with the claim held, because a retry might post a second
                 # receipt; the relay now recognises the approval's key and hands back the receipt it
                 # already posted, so the outbox asking again cannot double-count. The queued row keeps
-                # the draft from a second approval, as the claim did.
-                return await _queue()
+                # the draft from a second approval, as the claim did. #1849: those two are queued as
+                # maybe in GP, so a row that later runs out or is cancelled never hands the draft back.
+                dispatched = isinstance(e, RelayTimeoutError) or e.dispatched
+                return await _queue(maybe_in_gp=dispatched or ctx.resumed)
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
-        record = await asyncio.to_thread(
-            _persist_create_receive,
-            key=key,
-            po_id=ctx.po_id,
-            received_by=ctx.author_name,
-            line_items_data=ctx.line_items_data,
-            warehouse_id=ctx.warehouse_id,
-            relay_result=relay_result,
-            receive_draft_id=draft_id,
-        )
+        try:
+            record = await asyncio.to_thread(
+                _persist_create_receive,
+                key=key,
+                po_id=ctx.po_id,
+                received_by=ctx.author_name,
+                line_items_data=ctx.line_items_data,
+                warehouse_id=ctx.warehouse_id,
+                relay_result=relay_result,
+                receive_draft_id=draft_id,
+            )
+        except ApprovalReleasedMeanwhile:
+            # #1945: GP took this receipt and the draft is no longer this attempt's, so it is booked nowhere.
+            # Held on the GP write queue as maybe in GP, so it never just vanishes.
+            enqueue_kwargs = await asyncio.to_thread(
+                _receipt_outbox_kwargs,
+                key=key,
+                ctx=ctx,
+                draft_id=draft_id,
+                gp_company=gp_company if not resuming else await asyncio.to_thread(_po_gp_company, ctx.po_id),
+                # A resume never built the payload; the held row is never sent, its Retry being refused.
+                payload=payload if not resuming else {"idempotency_key": key},
+                warehouse_id=receiving_warehouse_id if not resuming else ctx.warehouse_id,
+                requested_by=user["user_id"],
+                maybe_in_gp=True,
+            )
+            await asyncio.to_thread(_hold_booking_refused, enqueue_kwargs)
+            raise
         draft = await asyncio.to_thread(_load_draft_type, draft_id)
         return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 

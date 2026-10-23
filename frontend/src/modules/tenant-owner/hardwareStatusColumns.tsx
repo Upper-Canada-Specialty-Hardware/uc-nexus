@@ -13,6 +13,8 @@ export interface StatusRow {
   onOrder: number;
   receivedQuantity: number;
   onHand: number;
+  /** Picked off the shelf for a pull still in progress (#1939); shown inside On Hand. */
+  inPick: number;
   sentToShop: number;
   stagedForShipping: number;
   shippedOut: number;
@@ -48,9 +50,12 @@ function countColumn(
   tooltip: string,
   width = 80,
   notApplicable = false,
+  // A column whose figure is more than its own field (#1939); sorting reads the same figure.
+  value?: (row: StatusRow) => number,
 ): GridColDef {
   return {
     field,
+    ...(value ? { valueGetter: (_value: unknown, row: StatusRow) => value(row) } : {}),
     headerName: label,
     type: 'number',
     width,
@@ -63,7 +68,8 @@ function countColumn(
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(label, tooltip, { wrap: true }),
-    renderCell: (params) => (notApplicable ? renderNotApplicable() : renderCount(params.row[field] as number)),
+    renderCell: (params) =>
+      notApplicable ? renderNotApplicable() : renderCount(value ? value(params.row) : (params.row[field] as number)),
   };
 }
 
@@ -123,11 +129,17 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'Received quantity on placed POs - NOT current inventory. Stock-pool allocations and other non-PO inventory paths do not count here.',
     86,
   ),
+  // #1939: a pick takes units off the shelf, but its pull only completes when it is handed over, so
+  // until then they were in no column. They are still in the building, so they count here - the rule
+  // the page had before picks deducted the shelf: a pull's units are on hand until it completes. There
+  // is no width left at 1366 for a column of their own.
   countColumn(
     'onHand',
     'On Hand',
-    'Current project inventory across warehouse locations. Pulls are already deducted.',
+    'Current project inventory across warehouse locations, plus units picked for a pull still in progress. Completed pulls are deducted.',
     60,
+    false,
+    (row) => row.onHand + row.inPick,
   ),
   countColumn(
     'sentToShop',

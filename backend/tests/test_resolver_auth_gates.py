@@ -159,7 +159,7 @@ def test_an_admin_field_admits_an_admin(monkeypatch, signed_in):
     )
 
 
-@pytest.mark.parametrize("field", ["rejectReceiveDraft"])
+@pytest.mark.parametrize("field", ["rejectReceiveDraft", "releaseHeldReceiveApproval"])
 def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
     """The any-of requirement, in every direction.
 

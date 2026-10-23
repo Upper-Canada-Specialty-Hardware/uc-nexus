@@ -2,8 +2,10 @@
 
 import boto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import BUCKET_ACCESS_KEY_ID, BUCKET_ENDPOINT, BUCKET_NAME, BUCKET_SECRET_ACCESS_KEY
+from app.errors import AppError
 
 _client = None
 
@@ -23,16 +25,21 @@ def _get_client():
 
 def upload_file(key: str, data: bytes, content_type: str, *, as_attachment: bool = False) -> str:
     """Store an object. `as_attachment` makes a browser opening its link download it rather than
-    render it, for a type nothing vouched for."""
-    client = _get_client()
+    render it, for a type nothing vouched for.
+
+    #1935: the bucket refusing or not answering was a raw botocore error, the masked "something went
+    wrong" on a PO document or shipment photo. Nothing was stored and no row written, so it says that."""
     extra = {"ContentDisposition": "attachment"} if as_attachment else {}
-    client.put_object(
-        Bucket=BUCKET_NAME,
-        Key=key,
-        Body=data,
-        ContentType=content_type,
-        **extra,
-    )
+    try:
+        _get_client().put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+            **extra,
+        )
+    except (BotoCoreError, ClientError) as e:
+        raise AppError("The file couldn't be stored - try again.", "STORAGE_UNAVAILABLE") from e
     return key
 
 

@@ -1,4 +1,4 @@
-import { poDocumentGate } from '../poDocumentGate';
+import { canUploadPoDocuments, poDocumentGate } from '../poDocumentGate';
 import { documentCurrencyFromGp, formatGpAddress } from '../gpPoHeader';
 
 // #858: Generate PO Document is gated on GP holding the PO and having been read back.
@@ -67,5 +67,17 @@ describe('gpPoHeader helpers', () => {
     expect(documentCurrencyFromGp('Z-US$')).toBe('USD');
     expect(documentCurrencyFromGp('CAD')).toBe('CAD');
     expect(documentCurrencyFromGp('EUR')).toBeNull();
+  });
+});
+
+// #1887: the backend refuses a document on a closed or cancelled PO, so neither the detail's Upload nor
+// the generate dialog's Save to PO documents is offered on one.
+describe('canUploadPoDocuments', () => {
+  it('takes documents until the PO is closed or cancelled', () => {
+    for (const status of ['DRAFT', 'GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED']) {
+      expect(canUploadPoDocuments({ status })).toBe(true);
+    }
+    expect(canUploadPoDocuments({ status: 'CLOSED' })).toBe(false);
+    expect(canUploadPoDocuments({ status: 'CANCELLED' })).toBe(false);
   });
 });

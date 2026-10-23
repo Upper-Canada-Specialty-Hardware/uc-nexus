@@ -97,6 +97,46 @@ def test_a_loading_photo_rides_its_container_onto_the_slip(db_session, stored):
     assert [p.id for p in shipping_repository.get_packing_slip(db_session, slip.id).photos] == [photo.id]
 
 
+def test_a_loading_photo_takes_the_slip_a_confirm_stamped_while_it_uploaded(db_session, monkeypatch):
+    """#1944: the container's slip was read before the upload and never again, so a confirm that landed
+    while the photo was uploading stamped the photos it found - not this one - and the photo kept no
+    slip. It is read again under the container's lock once the upload is done."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from app.models.enums import ShipmentStatus
+    from app.models.shipment_container import ShipmentContainer
+    from app.models.shipping import PackingSlip
+
+    project = _project(db_session)
+    skid = _loaded_skid(db_session, project)
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=project.id,
+        shipped_by="tester",
+        shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.SCHEDULED,
+    )
+    db_session.add(slip)
+    db_session.flush()
+
+    def confirm_lands_meanwhile(key, data, content_type, **kw):
+        # Another transaction's confirm, as the database sees it: the session's copy of the skid is stale.
+        db_session.execute(
+            update(ShipmentContainer)
+            .where(ShipmentContainer.id == skid.id)
+            .values(packing_slip_id=slip.id)
+            .execution_options(synchronize_session=False)
+        )
+        return key
+
+    monkeypatch.setattr(storage, "upload_file", confirm_lands_meanwhile)
+    photo = _add(db_session, kind=ShipmentPhotoKind.LOADING, container_id=skid.id)
+    assert photo.packing_slip_id == slip.id
+
+
 def test_a_delivery_photo_needs_a_shipment_that_has_left_the_dock(db_session, stored):
     project = _project(db_session)
     skid = _loaded_skid(db_session, project)

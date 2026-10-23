@@ -23,6 +23,7 @@ import { useToast } from '../../components/Toast';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { useIdentity } from '../../hooks/useIdentity';
 import { extractGpError } from '../../graphql/gpError';
+import { parseMoney } from '../../utils/money';
 import { parseServerDate } from '../../utils/serverDate';
 import {
   GET_INVENTORY_VALUE,
@@ -565,8 +566,10 @@ function AverageDoorCostCard({ company, value }: { company: string; value: Inven
     },
   );
 
-  const parsed = Number.parseFloat(draft);
-  const invalid = Number.isNaN(parsed) || parsed < 0;
+  // #1912: the whole amount or nothing, as #1558 made the door counts - parseFloat stopped at the
+  // first comma and saved a typed "1,250.00" as 1. The money rule every typed amount keeps.
+  const parsed = parseMoney(draft);
+  const invalid = !Number.isFinite(parsed) || parsed < 0;
 
   const updated = value.averageDoorCostUpdatedAt
     ? parseServerDate(value.averageDoorCostUpdatedAt).toLocaleString()
