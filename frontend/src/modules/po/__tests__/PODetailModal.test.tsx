@@ -656,6 +656,49 @@ describe('PODetailModal', () => {
     expect(cancelCalls).toEqual([{ id: 'po-1' }]);
   });
 
+  it('holds the cancel confirm while the cancel is in flight, so a double click sends it once (#1846)', async () => {
+    let calls = 0;
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: CANCEL_PO, variables: { id: 'po-1' } },
+        result: () => {
+          calls += 1;
+          return {
+            data: {
+              cancelPo: {
+                __typename: 'PurchaseOrder',
+                id: 'po-1',
+                poNumber: null,
+                requestNumber: 'REQ-001',
+                status: 'CANCELLED',
+                notes: null,
+                updatedAt: '2026-07-02T12:00:00Z',
+                lineItems: [],
+                receiveRecords: [],
+                documents: [],
+              },
+            },
+          };
+        },
+        delay: 200,
+        // Served twice if asked twice, so a second send would be counted rather than refused by the mock.
+        maxUsageCount: 2,
+      },
+    ];
+    const { onClose } = renderModal(draftPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel PO' }));
+    const message = await screen.findByText(/Cancelling removes this draft from the PO list for good/);
+    const confirmDialog = message.closest('[role="dialog"]') as HTMLElement;
+    const confirm = within(confirmDialog).getByRole('button', { name: 'Cancel PO' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(await within(confirmDialog).findByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(calls).toBe(1);
+  });
+
   // Cancelling makes no relay call, so cancelling a registered PO left GP holding a live PO against
   // the job while Nexus dropped it from every list. Once GP has the PO, GP is where it gets unwound.
   it('offers no Cancel PO button once the PO is registered in GP', () => {

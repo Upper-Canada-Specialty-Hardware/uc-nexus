@@ -1344,9 +1344,11 @@ export default function PODetailModal({
         open={confirmCancelOpen}
         title="Cancel PO"
         message="Cancelling removes this draft from the PO list for good, and returns its hardware to the schedule as still needing to be ordered. This cannot be undone."
-        confirmLabel="Cancel PO"
+        confirmLabel={cancelLoading ? 'Cancelling…' : 'Cancel PO'}
         cancelLabel="Go Back"
         onConfirm={handleCancelPO}
+        // #1846: held while the cancel is in flight, so a second click can't send it twice.
+        busy={cancelLoading}
         onCancel={() => setConfirmCancelOpen(false)}
       />
     </>

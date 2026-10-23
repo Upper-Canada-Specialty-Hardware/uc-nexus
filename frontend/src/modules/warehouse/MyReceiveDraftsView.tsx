@@ -98,6 +98,9 @@ export default function MyReceiveDraftsView() {
     fetchPolicy: 'cache-and-network',
   });
   const [deleteDraft] = useMutation(DELETE_RECEIVE_DRAFT);
+  // #1846: the confirm is held from the click until the dialog closes - through the refetch after the
+  // delete too, which the mutation's own loading flag does not cover - so a second click can't send it twice.
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const drafts = data?.receiveDrafts ?? [];
   const rejected = drafts.filter((d) => d.status === 'REJECTED');
@@ -105,6 +108,7 @@ export default function MyReceiveDraftsView() {
 
   const handleDelete = async () => {
     if (!deleting) return;
+    setDeleteBusy(true);
     try {
       await deleteDraft({ variables: { id: deleting.id } });
       showToast('Draft deleted.', 'success');
@@ -113,6 +117,7 @@ export default function MyReceiveDraftsView() {
       showToast(err instanceof Error ? userMessage(err) : 'Deleting this draft failed', 'error');
     } finally {
       setDeleting(null);
+      setDeleteBusy(false);
     }
   };
 
@@ -177,8 +182,9 @@ export default function MyReceiveDraftsView() {
         open={deleting !== null}
         title="Delete this draft?"
         message={`The count of ${deleting?.totalQuantity ?? 0} units against ${deleting?.poNumber ?? 'this PO'} is lost, and its packing slip comes off the PO unless another count uses it. Nothing has been posted to GP, so you can re-enter it from Receiving.`}
-        confirmLabel="Delete"
+        confirmLabel={deleteBusy ? 'Deleting…' : 'Delete'}
         onConfirm={handleDelete}
+        busy={deleteBusy}
         onCancel={() => setDeleting(null)}
       />
     </Box>
